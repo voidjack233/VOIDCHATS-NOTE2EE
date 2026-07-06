@@ -1,0 +1,13 @@
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+
+void_gateway/_build/
+void_gateway/deps/
+void_gateway/.elixir_ls/
+**/void_gateway/_build/
+**/void_gateway/deps/
+**/void_gateway/.elixir_ls/

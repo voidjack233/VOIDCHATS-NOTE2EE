@@ -1,0 +1,34 @@
+node_modules/
+.env
+minio-data/
+backups/
+voidapp-backups/
+*.dump
+*.rdb
+
+# MinIO data
+minio-data/
+
+# Java compiled files
+VoidCONF/*.class
+VoidCONF/*.jar
+VOID0000-api/docs/gateway-protocol.md
+VOID0000-api/docs/gateway-roadmap.md
+VOID0000-api/docs/recovery-v2.md
+VOID0000-api/docs/sql/2026-03-12_recovery_key_backups.sql
+VOID0000-api/test/test/ws.gateway.app.e2e.test.js
+VOID0000-api/test/test/ws.gateway.protocol.e2e.test.js
+VOID0000-api/test/test/ws.gateway.e2e.helpers.js
+VOID0000-api/docs/sql/2026-03-12_conversation_key_epochs.sql
+VOID0000-api/docs/conversation-e2ee-v2.md
+VOID0000-api/docs/sql/2026-03-12_conversation_invites.sql
+VOID0000-api/docs/sql/2026-03-14_signal_protocol_phase1.sql
+VOID0000-api/docs/sql/2026-03-14_wrapper_public_key.sql
+VOID0000-api/docs/sql/2026-03-15_signal_protocol_phase3_device_ids.sql
+VOID0000-api/scripts/migrate.js
+!VOID0000-api/scripts/migrate.js
+VOID0000-www/docs/conversation-flow-map.md
+VOID0000-www/docs/channels-roadmap.md
+VOID0000-www-safe-path/
+VOID0000-api/void_gateway/erl_crash.dump
+VOID0000-www/.*/

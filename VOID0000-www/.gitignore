@@ -1,0 +1,35 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+!vendor/
+!vendor/ts-mls/
+!vendor/ts-mls/dist/
+!vendor/ts-mls/dist/**
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+docs/*
+!docs/message-scroll-mechanism.md
+!docs/project-flow-map.md
+!docs/secure-chat-recovery-limitations.md
+!docs/crypto/
+!docs/crypto/*.md

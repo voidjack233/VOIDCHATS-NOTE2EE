@@ -1,0 +1,52 @@
+{
+  "name": "void-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon server/entrypoints/account-server.js",
+    "dev:conversations": "nodemon server/entrypoints/conversation-server.js",
+    "dev:messages": "nodemon server/entrypoints/message-server.js",
+    "dev:social": "nodemon server/entrypoints/social-server.js",
+    "dev:workers": "nodemon server/entrypoints/worker-server.js",
+    "start": "node server/entrypoints/account-server.js",
+    "start:conversations": "node server/entrypoints/conversation-server.js",
+    "start:messages": "node server/entrypoints/message-server.js",
+    "start:social": "node server/entrypoints/social-server.js",
+    "start:workers": "node server/entrypoints/worker-server.js",
+    "test": "node --test server/routes/conversations/members/*.test.js",
+    "lint": "eslint .",
+    "migrate": "node scripts/migrate.js",
+    "migrate:status": "node scripts/migrate.js --status",
+    "backfill:conversation-public-ids": "node server/scripts/backfillConversationPublicIds.js",
+    "migrate:legacy-group-to-general": "node server/scripts/migrateLegacyGroupToGeneral.js"
+  },
+  "dependencies": {
+    "argon2": "^0.44.0",
+    "bcryptjs": "^3.0.3",
+    "blurhash": "^2.0.5",
+    "bullmq": "^5.70.1",
+    "canvas": "^3.2.1",
+    "cassandra-driver": "^4.8.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dompurify": "^3.3.1",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "ioredis": "^5.10.0",
+    "jsdom": "^28.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "minio": "^8.0.7",
+    "nodemailer": "^7.0.13",
+    "pg": "^8.18.0",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.34.5",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "eslint": "^10.0.0",
+    "nodemon": "^3.1.11"
+  }
+}
