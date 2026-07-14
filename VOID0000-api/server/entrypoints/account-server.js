@@ -46,8 +46,7 @@ app.use(
 
 securityMiddleware(allowedOrigins).forEach(mw => app.use(mw));
 
-// Encrypted attachment uploads are AES-GCM ciphertext encoded as base64 JSON.
-// A 10 MB source image expands past 10 MB once encrypted + base64 encoded.
+// Some upload-style JSON payloads include base64 data, so keep this above the raw file cap.
 app.use(express.json({ limit: '25mb' }));
 app.use(cookieParser());
 

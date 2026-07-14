@@ -2,7 +2,6 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { useMessageList } from '../../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../../Services/hooks/Chats/useReactions';
-import type { ConversationSecurityState } from '../../../Services/Chat/conversationSecurityState';
 import {
   sendImageOnlyMessage,
   sendMessage,
@@ -58,10 +57,6 @@ import type {
 
 interface MessageViewProps {
   conversation: Conversation;
-  encryptionKey: CryptoKey | null;
-  keyVersion?: number;
-  encryptionError?: string | null;
-  conversationSecurityState?: ConversationSecurityState;
   onSendNotice?: (message: string | null) => void;
   members: Record<string, ConversationMember>;
   typingParticipants?: TypingParticipant[];
@@ -107,10 +102,6 @@ const NEWER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
 
 const MessageViewV2 = memo(function MessageViewV2({
   conversation,
-  encryptionKey,
-  keyVersion,
-  encryptionError,
-  conversationSecurityState,
   onSendNotice,
   members,
   typingParticipants = [],
@@ -181,7 +172,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const { friends } = useFriends();
   const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const currentMember = user?.id ? members[user.id] || null : null;
-  const waitForEncryptionBootstrap = !encryptionKey && conversationSecurityState?.status === 'recovering';
   const getMessageHeightForWindowing = useCallback((message: Message) => {
     const cachedHeight = messageHeightCacheRef.current.get(String(message.message_id));
     if (typeof cachedHeight === 'number' && Number.isFinite(cachedHeight) && cachedHeight > 0) {
@@ -237,13 +227,10 @@ const MessageViewV2 = memo(function MessageViewV2({
     conversation,
     user?.id,
     currentMember,
-    encryptionKey,
-    keyVersion,
     messageEvents,
     messageUpdate,
     messageDelete,
     handleInitReactionsFromMessages,
-    waitForEncryptionBootstrap,
     {
       getMessageHeight: getMessageHeightForWindowing,
       onHistoryRateLimited: handleHistoryRateLimited,
@@ -347,7 +334,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   });
 
   const handleRetryFailedMessage = useCallback(async (failedMessage: Message) => {
-    if (!encryptionKey || failedMessage.local_status !== 'failed') {
+    if (failedMessage.local_status !== 'failed') {
       return;
     }
 
@@ -357,7 +344,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
 
     const content = typeof failedMessage.content === 'string' &&
-      failedMessage.content !== '[encrypted]' &&
       failedMessage.content !== '[deleted]'
       ? failedMessage.content
       : '';
@@ -383,20 +369,19 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     try {
       const retryOptions = {
-        key_version: failedMessage.key_version || keyVersion || 1,
-        message_type: failedMessage.message_type || 'mls_application',
+        message_type: failedMessage.message_type || 'text',
         reply_to: failedMessage.reply_to || undefined,
+        attachments,
         forwarded: failedMessage.forwarded || null,
         mentions: failedMessage.mentions || undefined,
         linkPreview: failedMessage.link_preview ?? null,
       };
       const sentMessage = content.trim()
-        ? await sendMessage(conversation.id, content, encryptionKey, {
+        ? await sendMessage(conversation.id, content, {
             client_message_id: localClientId,
             ...retryOptions,
-            secure_attachments: attachments,
           })
-        : await sendImageOnlyMessage(conversation.id, encryptionKey, attachments, {
+        : await sendImageOnlyMessage(conversation.id, attachments, {
             client_message_id: localClientId,
             ...retryOptions,
           });
@@ -431,7 +416,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     } finally {
       retryingFailedMessageIdsRef.current.delete(localClientId);
     }
-  }, [conversation.id, encryptionKey, keyVersion, mergeVisibleMessages, onSendNotice, user?.id]);
+  }, [conversation.id, mergeVisibleMessages, onSendNotice, user?.id]);
 
   // ── Reset on conversation switch ──
   useEffect(() => {
@@ -584,7 +569,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const metaFontSize = Math.max(10, chatFontScale - 4);
   const replyFontSize = Math.max(11, chatFontScale - 2);
   const bubbleFontSize = chatFontScale;
-  const encryptedFontSize = Math.max(10, chatFontScale - 3);
 
   const openBrowserLink = useCallback((url: string) => {
     const openedWindow = window.open(url, '_blank', 'noopener,noreferrer');
@@ -615,18 +599,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     ...visualMessages.map((message) => ({ kind: 'message' as const, message })),
     ...(typingParticipants.length > 0 ? [{ kind: 'typing' as const, id: 'typing-indicator' as const }] : []),
   ], [typingParticipants.length, visualMessages]);
-
-  const showCachedHistoryFallback = Boolean(
-    !encryptionKey &&
-      (
-        conversationSecurityState?.showCachedHistoryFallback ||
-        encryptionError
-      ),
-  );
-  const isSecureChatPreparing =
-    !encryptionKey &&
-    !encryptionError &&
-    conversationSecurityState?.status !== 'blocked';
 
   useConversationPreviewCache({
     conversation,
@@ -828,11 +800,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       return;
     }
 
-    if (!encryptionKey) {
-      showMessageJumpNotice('Message unavailable');
-      return;
-    }
-
     pendingMessageJumpTargetRef.current = targetMessageId;
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
@@ -864,7 +831,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       messageJumpFallbackTimeoutRef.current = null;
     }, 1200);
   }, [
-    encryptionKey,
     loadMessageContext,
     scrollToMessageById,
     showMessageJumpNotice,
@@ -1215,7 +1181,6 @@ const MessageViewV2 = memo(function MessageViewV2({
         metaFontSize={metaFontSize}
         replyFontSize={replyFontSize}
         bubbleFontSize={bubbleFontSize}
-        encryptedFontSize={encryptedFontSize}
         currentUserId={user?.id}
         replyParent={message.reply_to ? getReplyParent(message.reply_to) : null}
         replyParentLoading={message.reply_to ? isReplyParentLoading(message.reply_to) : false}
@@ -1236,7 +1201,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         onReply={onReply}
         onJumpToMessage={handleJumpToMessage}
         onEdit={onEdit}
-        onRetryFailed={encryptionKey ? handleRetryFailedMessage : undefined}
+        onRetryFailed={handleRetryFailedMessage}
         onDelete={handleDelete}
         onToggleReaction={handleToggleReaction}
         onOpenImageViewer={openImageViewer}
@@ -1248,8 +1213,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [
     conversation.type,
     density,
-    encryptionKey,
-    encryptedFontSize,
     formatTime,
     getReplyParent,
     isReplyParentLoading,
@@ -1316,11 +1279,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         density={density}
       >
         {listItems.length === 0 ? (
-          <EmptyMessageTimelineState
-            isSecureChatPreparing={isSecureChatPreparing}
-            showCachedHistoryFallback={showCachedHistoryFallback}
-            conversationSecurityState={conversationSecurityState}
-          />
+          <EmptyMessageTimelineState />
         ) : (
           listItems.map((item) => (
             <Fragment key={item.kind === 'message' ? item.message.message_id : item.id}>
@@ -1358,7 +1317,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         onReply={onReply}
         onForward={onForward}
         onEdit={onEdit}
-        onRetryFailed={encryptionKey ? handleRetryFailedMessage : undefined}
+        onRetryFailed={handleRetryFailedMessage}
         onDelete={handleDelete}
         onCloseProfile={() => setSelectedProfileId(null)}
         onCloseFriend={() => setSelectedFriend(null)}

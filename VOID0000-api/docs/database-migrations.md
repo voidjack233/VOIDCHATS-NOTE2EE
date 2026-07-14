@@ -1,6 +1,7 @@
 # Database Migrations
 
-This repo has a canonical migration path for the Postgres and ScyllaDB schema used by the app.
+This repository has a canonical migration path for its PostgreSQL and ScyllaDB
+schema. New deployments should start with fresh database targets.
 
 ## Commands
 
@@ -10,140 +11,90 @@ Run all pending migrations:
 npm run migrate
 ```
 
-Check status without applying anything:
+Check status without applying migrations:
 
 ```bash
 npm run migrate:status
 ```
 
-## What This Covers
+## Canonical Schema
 
-Canonical migrations cover:
+PostgreSQL migrations run in this order:
 
-- core user / auth / security tables
-  - `users`
-  - `user_profiles`
-  - `user_preferences`
-  - `friendships`
-  - `email_verifications`
-  - `password_resets`
-  - `refresh_tokens`
-  - `user_2fa`
-  - `user_2fa_backup_codes`
-  - `ip_security_logs`
-  - `trust_scores`
-  - `user_keys`
-  - `user_key_backups`
-- conversation tables
+- `0000_core_schema.sql` creates accounts, profiles, authentication security,
+  friendships and blocks, and theme preferences.
+- `0001_conversation_schema.sql` creates conversations, memberships,
+  categories, DM pairs, invite links, and join requests without key versions or
+  membership-rotation state.
+- `0002_dm_hidden_muted.sql` adds per-user DM visibility and mute settings.
+- `0003_message_notifications_pref.sql` adds message notification preferences.
+- `0004_private_attachment_objects.sql` stores private object ownership.
+- `0005_push_subscriptions.sql` stores browser push subscriptions.
 
-- `conversations`
-- `conversation_categories`
-- `conversation_members`
-- `conversation_key_rotations`
-- `conversation_membership_rotations`
-- `dm_pairs`
-- `conversation_invite_links`
-- `conversation_join_requests`
-- `mls_key_packages`
-- `mls_group_states`
-- `mls_welcome_messages`
-- `mls_commit_messages`
-- `mls_group_key_archive`
-- ScyllaDB message storage tables
-  - `messages`
-  - `message_edits`
-  - `message_reactions`
-  - `user_reactions`
-  - `reaction_counts`
+ScyllaDB uses one fresh baseline:
 
-Migration order matters:
+- `0000_message_storage.cql` stores message `content`, edit history, message
+  metadata, link previews, and reactions.
 
-- `0000_core_schema.sql`
-- `0001_conversation_schema.sql`
-- `0002_mls_schema.sql`
-- migrations `0003` through `0013` in numeric order
-- `0014_membership_rotation_reservations.sql`
-- `0015_mls_claimable_key_packages.sql`
-- `0016_account_mls_backups.sql`
-- `0017_trust_scores.sql`
-- `db/scylla-migrations/0000_message_storage.cql`
-- `db/scylla-migrations/0001_message_metadata.cql`
-- `db/scylla-migrations/0002_message_link_preview.cql`
+The migration runner also creates its migration bookkeeping tables. It does
+not clone any existing data.
 
-The `0000` prefix is intentional because later conversation migrations reference `users(id)`.
+## Account Import
 
-## Membership Rotation
-
-`0014_membership_rotation_reservations.sql` puts group member add, invite approval, and member removal on one serialized MLS reservation lane. The API and web client are expected to agree on `operation_id` for finalize and rollback requests.
-
-This migration clears only unfinished `pending_add_*`, `pending_remove_*`, and `pending_approve_*` intents. A user who had one of those changes prepared but not finalized will need to retry it.
-
-## KeyPackage Backup Gate
-
-`0015_mls_claimable_key_packages.sql` quarantines public MLS KeyPackages until the owning authenticated client includes their matching private KeyPackages in a freshly uploaded encrypted MLS-state backup.
-
-Unconsumed KeyPackages are intentionally not claimable until the account opens the app and refreshes its encrypted MLS backup.
-
-The API and web client should be deployed together for this schema because clients must include the backed-up private KeyPackage refs needed to activate staged KeyPackages.
-
-`0016_account_mls_backups.sql` stores a separate MLS snapshot encrypted by the already-unlocked account identity. It lets an active account replenish and activate KeyPackages automatically after login without retaining the password or requiring a manual backup action. Password and recovery backups remain responsible for restoring that account identity on a new browser.
-
-`0017_trust_scores.sql` adds durable account trust-score state. That state helps the auth/security layer treat repeated weird login/captcha behavior as a pattern instead of forgetting everything on every process restart.
-
-## Limitations
-
-This covers the relational Postgres schema and the canonical ScyllaDB message storage schema.
-
-It does **not** manage:
-
-- Valkey state
-- MinIO buckets / object lifecycle
-- PM2 process state
-
-## Runtime behavior
-
-MLS routes are not responsible for creating or altering tables at runtime.
-The server should verify that the Postgres and Scylla schema are already present.
-
-If MLS schema pieces are missing, run:
+The one-time account importer is:
 
 ```bash
-npm run migrate
+npm run import:accounts
 ```
 
-That same command also creates the Scylla keyspace and message-storage tables used by the conversation routes.
+It copies only:
 
-## Multi-instance safety
+- users, password hashes, verification status, and profiles
+- theme preset, colors, density, spacing, font scale, and notification preference
+- accepted friendships
+- blocked relationships stored as friendship rows with `status='blocked'`
+- 2FA methods and backup codes when explicitly preserved
 
-`npm run migrate` takes a global PostgreSQL advisory lock before applying migrations.
+It does not copy messages, reactions, conversations, memberships, invites,
+attachments, pending friend requests, sessions, password-reset tokens, email
+challenges, push subscriptions, security logs, or data outside the listed
+account scope.
 
-That means if two app instances or deploy hooks try to run migrations at the same time:
+The importer requires separate `SOURCE_*` and `TARGET_*` PostgreSQL settings,
+an empty target, and this exact confirmation value:
 
-- one runner waits
-- the other finishes first
-- Postgres and Scylla schema changes are serialized through one migration gate
+```bash
+ACCOUNT_IMPORT_CONFIRM=IMPORT_ACCOUNTS_INTO_VOID
+```
 
-`npm run migrate:status` stays read-only and does not take the lock.
+If any source account has enabled 2FA, choose one mode explicitly:
 
-## Important note about data rows
+```bash
+ACCOUNT_IMPORT_2FA_MODE=preserve
+```
 
-`npm run migrate` creates schema plus migration bookkeeping rows.
+Preserving 2FA requires the new deployment to use the same TOTP encryption key.
+Use `reset` only if affected users should enroll in 2FA again.
 
-It does **not** clone your existing live data such as:
+Profile rows retain `avatar_filename`; matching objects must be copied
+separately from the `avatars` MinIO bucket before cutover.
 
-- users
-- conversations
-- messages
-- reactions
+## Intended Cutover
 
-If you want existing rows copied into a new environment, that is a database export/import or backfill task, not a schema migration task.
+1. Create separate PostgreSQL and ScyllaDB targets with new names.
+2. Point a non-production `.env` at those targets and apply migrations.
+3. Finish and test the backend and frontend plaintext conversion.
+4. Stop account writes briefly on the old app and take a final cold backup.
+5. Run the account importer once and copy profile avatars.
+6. Validate logins, friendships, blocks, themes, and 2FA.
+7. Point the new deployment at the new databases.
 
-## Compatibility Scripts
+## Multi-Instance Safety
 
-These compatibility aliases are available for older setup notes or muscle memory:
+`npm run migrate` takes a global PostgreSQL advisory lock before applying
+PostgreSQL and ScyllaDB migrations. Concurrent migration attempts are therefore
+serialized. `npm run migrate:status` remains read-only and does not take the
+lock.
 
-- `node scripts/add-first-message-at.js`
-- `node scripts/add-group-permissions.js`
-- `node scripts/add-conversation-unread-count.js`
-
-They delegate to the canonical migration runner.
+Valkey data, MinIO objects, and PM2 process state are outside the migration
+runner.

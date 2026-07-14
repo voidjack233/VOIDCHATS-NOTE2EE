@@ -220,7 +220,7 @@ export function useMessageActions({
   }, [emojiPickerTarget, onToggleReaction, userId]);
 
   const handleCopyMessageText = useCallback(async (content?: string) => {
-    if (!content || content === '[encrypted]' || content === '[deleted]') return;
+    if (!content || content === '[deleted]') return;
 
     try {
       await navigator.clipboard.writeText(content);

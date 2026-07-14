@@ -36,13 +36,13 @@ function getConversationSubtitle(conversation: Conversation) {
 function getForwardPreview(message: Message | null) {
   if (!message) return null;
   if (message.is_deleted) return '[deleted]';
-  if (message.content && message.content !== '[encrypted]') {
+  if (message.content) {
     return message.content;
   }
   if ((message.attachments?.length ?? 0) > 0) {
     return '[attachment]';
   }
-  return '[encrypted]';
+  return 'Message unavailable';
 }
 
 export default function ForwardMessageModal({
@@ -158,7 +158,7 @@ export default function ForwardMessageModal({
               <MessagePreviewText
                 content={getForwardPreview(message)}
                 maxLength={140}
-                fallback="[encrypted]"
+                fallback="Message unavailable"
               />
             </div>
           </div>

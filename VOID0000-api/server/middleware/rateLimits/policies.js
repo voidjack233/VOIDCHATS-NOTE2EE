@@ -277,30 +277,6 @@ export const RATE_LIMIT_POLICIES = Object.freeze({
     logAction: 'LINK_PREVIEW_RATE_LIMIT_HIT',
   }),
 
-  mlsSync: userTokenBucket({
-    keyPrefix: 'mls:sync',
-    refillWindowSec: 60,
-    bucketSize: 30,
-  }),
-
-  mlsKeyPackageCheck: userTokenBucket({
-    keyPrefix: 'mls:kp-check',
-    refillWindowSec: 60,
-    bucketSize: 20,
-  }),
-
-  mlsKeyPackagePublish: userTokenBucket({
-    keyPrefix: 'mls:kp-publish',
-    refillWindowSec: 60,
-    bucketSize: 30,
-  }),
-
-  mlsGroupKeyArchive: userTokenBucket({
-    keyPrefix: 'mls:archive',
-    refillWindowSec: 60,
-    bucketSize: 10,
-  }),
-
   userSearch: userTokenBucket({
     keyPrefix: 'users:search',
     refillWindowSec: 60,

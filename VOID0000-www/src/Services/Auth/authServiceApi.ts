@@ -518,16 +518,6 @@ export const authService = {
   async changePassword(
     currentPassword: string,
     newPassword: string,
-    keyBackup?: {
-      encrypted_private_key: string;
-      iv: string;
-      salt: string;
-      key_id: string;
-      mls_state_encrypted?: string;
-      mls_state_iv?: string;
-      mls_state_salt?: string;
-      mls_key_package_refs?: string[];
-    } | null,
     twoFactor?: {
       method: string;
       code: string;
@@ -538,7 +528,6 @@ export const authService = {
       body: JSON.stringify({
         currentPassword,
         newPassword,
-        keyBackup: keyBackup || null,
         twoFactorMethod: twoFactor?.method || null,
         twoFactorCode: twoFactor?.code || null,
       }),

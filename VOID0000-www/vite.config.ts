@@ -1,7 +1,6 @@
 import { defineConfig, loadEnv, type PluginOption } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { fileURLToPath, URL } from 'node:url'
 
 function emitBuildVersionPlugin(buildVersion: string): PluginOption {
   return {
@@ -34,11 +33,6 @@ export default defineConfig(({ mode }) => {
   return {
     base: '/',
     plugins: [emitBuildVersionPlugin(buildVersion), react(), tailwindcss()],
-    resolve: {
-      alias: {
-        crypto: fileURLToPath(new URL('./src/shims/browserCrypto.ts', import.meta.url)),
-      },
-    },
     define: {
       __BUILD_VERSION__: JSON.stringify(buildVersion),
     },

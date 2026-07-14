@@ -20,7 +20,6 @@ export interface Conversation {
   name: string | null;
   slowmode_seconds?: number;
   owner_id: string | null;
-  current_key_version?: number | null;
   icon_filename: string | null;
   icon_url?: string | null;
   parent_conversation_id?: string | null;
@@ -50,15 +49,10 @@ export interface Attachment {
   blurhash?: string;
   width?: number;
   height?: number;
-  encrypted?: boolean;
-  iv?: string;
-  key?: string;
   mime?: string;
   name?: string;
   size?: number;
 }
-
-export type MessageCryptoProtocol = 'legacy_aes' | 'mls';
 
 export interface ReactionMap {
   [emoji: string]: string[] | { count: number; me: boolean };
@@ -92,12 +86,7 @@ export interface Message {
   message_id: string;
   client_message_id?: string | null;
   sender_id: string;
-  encrypted_content: string | null;
-  iv: string | null;
-  key_version: number;
-  encrypted_link_preview?: string | null;
-  link_preview_iv?: string | null;
-  link_preview_key_version?: number | null;
+  content: string;
   message_type: string;
   reply_to: string | null;
   attachments?: string[];
@@ -105,44 +94,12 @@ export interface Message {
   edited_at: string | null;
   is_deleted: boolean;
   created_at: string;
-  content?: string;
   reactions?: ReactionMap;
   forwarded?: ForwardedMessageMetadata | null;
   mentions?: MessageMentionMetadata[];
   link_preview?: LinkPreviewMetadata | null;
-  protocol?: MessageCryptoProtocol | null;
-  protocol_version?: number | null;
-  decryption_failed?: boolean;
   local_status?: 'sending' | 'sent' | 'failed' | 'queued';
   local_client_id?: string;
-}
-
-export interface KeyBackupRecord {
-  encrypted_private_key: string;
-  iv: string;
-  salt: string;
-  key_id: string;
-  created_at?: string;
-  recovery_encrypted_private_key?: string | null;
-  recovery_iv?: string | null;
-  recovery_salt?: string | null;
-  recovery_key_id?: string | null;
-  recovery_configured_at?: string | null;
-  mls_state_encrypted?: string | null;
-  mls_state_iv?: string | null;
-  mls_state_salt?: string | null;
-  recovery_mls_state_encrypted?: string | null;
-  recovery_mls_state_iv?: string | null;
-  recovery_mls_state_salt?: string | null;
-  account_mls_state_encrypted?: string | null;
-  account_mls_state_iv?: string | null;
-  account_mls_state_key_id?: string | null;
-}
-
-export interface MessageDecryptionContext {
-  conversation?: Conversation;
-  userId?: string;
-  currentKeyVersion?: number;
 }
 
 export interface ConversationMember {
@@ -150,8 +107,6 @@ export interface ConversationMember {
   role: string;
   nickname: string | null;
   joined_at: string;
-  joined_key_version?: number | null;
-  history_start_version?: number | null;
   username: string;
   display_name: string | null;
   avatar_url: string | null;
@@ -202,18 +157,3 @@ export interface InvitePreview {
 export interface ConversationDetails extends Conversation {
   members?: ConversationMember[];
 }
-
-export interface HandshakeCacheEntry {
-  members: Record<string, ConversationMember>;
-  key: CryptoKey;
-  version: number;
-  keysByVersion: Record<number, CryptoKey>;
-}
-
-export type VersionedDecryptableMessage = {
-  encrypted_content: string | null;
-  iv: string | null;
-  is_deleted: boolean;
-  key_version?: number;
-  [key: string]: any;
-};

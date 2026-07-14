@@ -54,7 +54,7 @@ function getPostLoginDestination() {
 
 export function useLogin() {
   const navigate = useNavigate();
-  const { refreshUser, setLoginPassword } = useUser();
+  const { refreshUser } = useUser();
   const [formData, setFormData] = useState<LoginForm>({ identifier: '', password: '' });
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -149,7 +149,6 @@ export function useLogin() {
       }
 
       // Pass password for E2E key recovery before refreshing user
-      setLoginPassword(formData.password);
 
       await refreshUser();
       setFormData(prev => ({ ...prev, password: '' }));
@@ -219,7 +218,6 @@ export function useLogin() {
       }
 
       // Pass password for E2E key recovery
-      setLoginPassword(formData.password);
 
       // Success! Clear 2FA state and finish login
       setTwoFactorData(null);

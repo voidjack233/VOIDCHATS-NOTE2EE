@@ -1,11 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../../../db.js';
-import {
-  canAccessMessageForHistory,
-  cassandra,
-  getConversationKeyState,
-  scylla,
-} from '../messages/shared.js';
+import { cassandra, scylla } from '../messages/shared.js';
 import { normalizeConversationRow } from './shared.js';
 
 const router = Router();
@@ -18,12 +13,8 @@ function buildLastMessagePreview(messageRow, currentUserId) {
     return 'Message deleted';
   }
 
-  if (
-    messageRow.message_type === 'system' &&
-    typeof messageRow.encrypted_content === 'string' &&
-    messageRow.encrypted_content.trim().length > 0
-  ) {
-    return messageRow.encrypted_content.trim();
+  if (typeof messageRow.content === 'string' && messageRow.content.trim().length > 0) {
+    return messageRow.content.trim();
   }
 
   const attachmentCount = Array.isArray(messageRow.attachments)
@@ -38,7 +29,7 @@ function buildLastMessagePreview(messageRow, currentUserId) {
     return attachmentCount > 1 ? `Sent ${attachmentCount} attachments` : 'Sent an attachment';
   }
 
-  return 'Encrypted message';
+  return 'Message';
 }
 
 async function hydrateConversationPreview(row, userId) {
@@ -54,7 +45,7 @@ async function hydrateConversationPreview(row, userId) {
 
   try {
     const result = await scylla.execute(
-      `SELECT message_id, sender_id, encrypted_content, message_type, attachments, is_deleted, created_at, key_version
+      `SELECT message_id, sender_id, content, message_type, attachments, is_deleted, created_at
        FROM messages
        WHERE conversation_id = ?
        ORDER BY message_id DESC
@@ -63,24 +54,7 @@ async function hydrateConversationPreview(row, userId) {
       { prepare: true }
     );
 
-    let latestVisible = result.rows[0] || null;
-
-    if (row.type !== 'dm') {
-      const keyState = await getConversationKeyState(row, userId);
-      if (!keyState) {
-        latestVisible = null;
-      } else {
-        latestVisible = (result.rows || []).find((messageRow) =>
-          canAccessMessageForHistory(
-            {
-              key_version: messageRow.key_version,
-              created_at: messageRow.created_at?.toISOString() || null,
-            },
-            keyState
-          )
-        ) || null;
-      }
-    }
+    const latestVisible = result.rows[0] || null;
 
     return {
       ...row,
@@ -116,7 +90,6 @@ export async function getUserConversations(userId) {
          c.icon_filename,
          c.owner_id,
          c.parent_conversation_id,
-         c.current_key_version,
          c.first_message_at,
          c.category_id,
          c.permissions,

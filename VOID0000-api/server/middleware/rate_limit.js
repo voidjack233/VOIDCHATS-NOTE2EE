@@ -29,14 +29,4 @@ export const messageReactionToggleLimiter = createConfiguredLimiter(
   RATE_LIMIT_POLICIES.messageReactionToggle,
 );
 export const linkPreviewLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.linkPreview);
-export const mlsSyncLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.mlsSync);
-export const mlsKeyPackageCheckLimiter = createConfiguredLimiter(
-  RATE_LIMIT_POLICIES.mlsKeyPackageCheck,
-);
-export const mlsKeyPackagePublishLimiter = createConfiguredLimiter(
-  RATE_LIMIT_POLICIES.mlsKeyPackagePublish,
-);
-export const mlsGroupKeyArchiveLimiter = createConfiguredLimiter(
-  RATE_LIMIT_POLICIES.mlsGroupKeyArchive,
-);
 export const userSearchLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.userSearch);

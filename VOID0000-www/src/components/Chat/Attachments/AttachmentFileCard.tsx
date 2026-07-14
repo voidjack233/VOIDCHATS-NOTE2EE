@@ -9,7 +9,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
-import { resolveAttachmentObjectUrl } from '../../../Services/Crypto/attachmentEncryption';
+import { resolveAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
 
 interface AttachmentFileCardProps {
   attachment: Attachment;

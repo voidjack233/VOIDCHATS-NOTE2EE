@@ -1,6 +1,6 @@
 // src/pages/Chat/Chats.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ShieldAlert, KeyRound } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../../components/Chat/Conversation/ConversationSettings';
 import { useAuth } from '../../Services/hooks/Auth/useAuth';
@@ -24,7 +24,6 @@ import { useConnectionStatus } from '../../Services/hooks/common/useConnectionSt
 import { useServiceHealth } from '../../Services/hooks/common/useServiceHealth';
 import ChatSidebar from './ChatSidebar';
 import ConversationHeader from './ConversationHeader';
-import ConversationSecurityBanner from './ConversationSecurityBanner';
 import ChatStatusBanners from './ChatStatusBanners';
 
 const normalizeText = (value?: string | null) => {
@@ -43,103 +42,13 @@ const ChatDashboard = () => {
     groupConversationId?: string;
   }>();
   const { loading, user } = useAuth();
-  const {
-    keyStatusLoading,
-    mlsRecoveryGate,
-    isLoggingOut,
-    retryMlsRecoveryWithPassword,
-    retryMlsRecoveryWithRecoveryKey,
-    continueWithoutLocalSecureHistory,
-    logout,
-  } = useUser();
+  const { isLoggingOut } = useUser();
 
   const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const { isOnline, showReconnectBanner } = useConnectionStatus();
   const serviceHealth = useServiceHealth();
   const serviceIssue = serviceHealth.issues[0] || null;
-  const currentUserId = user?.id || null;
-  const [hasCompletedInitialKeyStatusLoad, setHasCompletedInitialKeyStatusLoad] = useState(false);
-  const [showBackgroundSecureKeyBanner, setShowBackgroundSecureKeyBanner] = useState(false);
-  const hasObservedInitialKeyStatusLoadRef = useRef(false);
-
-  useEffect(() => {
-    hasObservedInitialKeyStatusLoadRef.current = false;
-    setHasCompletedInitialKeyStatusLoad(false);
-    setShowBackgroundSecureKeyBanner(false);
-  }, [currentUserId]);
-
-  useEffect(() => {
-    if (!currentUserId || loading || isLoggingOut) {
-      return;
-    }
-
-    if (keyStatusLoading) {
-      if (!hasCompletedInitialKeyStatusLoad) {
-        hasObservedInitialKeyStatusLoadRef.current = true;
-      }
-      return;
-    }
-
-    if (!hasCompletedInitialKeyStatusLoad && hasObservedInitialKeyStatusLoadRef.current) {
-      setHasCompletedInitialKeyStatusLoad(true);
-    }
-  }, [currentUserId, hasCompletedInitialKeyStatusLoad, isLoggingOut, keyStatusLoading, loading]);
-
-  useEffect(() => {
-    if (
-      !currentUserId ||
-      loading ||
-      keyStatusLoading ||
-      isLoggingOut ||
-      mlsRecoveryGate.active ||
-      hasCompletedInitialKeyStatusLoad ||
-      hasObservedInitialKeyStatusLoadRef.current
-    ) {
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      if (!hasObservedInitialKeyStatusLoadRef.current) {
-        setHasCompletedInitialKeyStatusLoad(true);
-      }
-    }, 1200);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [
-    currentUserId,
-    hasCompletedInitialKeyStatusLoad,
-    isLoggingOut,
-    keyStatusLoading,
-    loading,
-    mlsRecoveryGate.active,
-  ]);
-
-  const isInitialSecureBootLoading = Boolean(currentUserId) &&
-    keyStatusLoading &&
-    !hasCompletedInitialKeyStatusLoad;
-  const isBackgroundSecureKeyLoading = Boolean(currentUserId) &&
-    keyStatusLoading &&
-    hasCompletedInitialKeyStatusLoad &&
-    !isLoggingOut &&
-    !mlsRecoveryGate.active;
-  const showFullscreenPreparing = isLoggingOut || loading || (isInitialSecureBootLoading && !mlsRecoveryGate.active);
-
-  useEffect(() => {
-    if (!isBackgroundSecureKeyLoading) {
-      setShowBackgroundSecureKeyBanner(false);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      setShowBackgroundSecureKeyBanner(true);
-    }, 900);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [isBackgroundSecureKeyLoading]);
+  const showFullscreenPreparing = isLoggingOut || loading;
 
   // Independently detect bootstrap stalls (API down before the gateway ever
   // connects). The gateway stall timer in useConnectionStatus only fires once
@@ -148,7 +57,7 @@ const ChatDashboard = () => {
   const [bootstrapStalled, setBootstrapStalled] = useState(false);
   const bootstrapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const isBootstrapping = (loading || isInitialSecureBootLoading) && !isLoggingOut;
+    const isBootstrapping = loading && !isLoggingOut;
     if (isBootstrapping) {
       if (!bootstrapTimerRef.current) {
         bootstrapTimerRef.current = setTimeout(() => setBootstrapStalled(true), 8000);
@@ -160,7 +69,7 @@ const ChatDashboard = () => {
       }
       setBootstrapStalled(false);
     }
-  }, [isInitialSecureBootLoading, isLoggingOut, loading]);
+  }, [isLoggingOut, loading]);
 
   // Friends from the shared FriendsProvider — single source of truth
   const { friends } = useFriends();
@@ -187,19 +96,12 @@ const ChatDashboard = () => {
   const [ownSendJumpRequest, setOwnSendJumpRequest] = useState(0);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
-  const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
-  const [mlsRecoveryError, setMlsRecoveryError] = useState('');
-  const [isSubmittingMlsRecoveryKey, setIsSubmittingMlsRecoveryKey] = useState(false);
   const memberDisplayCacheRef = useRef<Record<string, ConversationMember>>({});
 
   const {
     members,
     activeConversation,
     activeGroup,
-    encryptionKey,
-    keyVersion,
-    encryptionError,
-    conversationSecurityState,
     typingUsers,
     messageEvents,
     editingMessage,
@@ -213,7 +115,6 @@ const ChatDashboard = () => {
     handleMessageSent,
     handleStartDM,
     handleBackToMe,
-    handleEncryptionKeyResolved,
     openConversationByIdentifier,
     openGroupByIdentifier,
   } = useChatManager(user);
@@ -379,11 +280,6 @@ const ChatDashboard = () => {
     });
   }, [members]);
 
-  useEffect(() => {
-    setMlsRecoveryKey('');
-    setMlsRecoveryError('');
-    setIsSubmittingMlsRecoveryKey(false);
-  }, [mlsRecoveryGate.active, mlsRecoveryGate.reason]);
 
   const messageDisplayMembers = useMemo(
     () => ({
@@ -510,57 +406,18 @@ const ChatDashboard = () => {
     ? `@${resolvedDmUsername}`
     : '';
 
-  const getMlsRecoveryGateCopy = () => {
-    switch (mlsRecoveryGate.reason) {
-      case 'recovery_key_required':
-        return {
-          title: 'Secure chat recovery needs your recovery key',
-          body:
-            'Your account has secure chat history to restore. Enter the recovery key you saved for this account to unlock encrypted chat in this browser.',
-        };
-      case 'password_required':
-        return {
-          title: 'Legacy secure chat recovery needs your password',
-          body:
-            'This account only has the older password-wrapped chat backup. Enter your current account password below, then set up a recovery key in Account settings after recovery finishes.',
-        };
-      case 'restore_failed':
-        return {
-          title: 'Secure chat recovery did not complete',
-          body:
-            'The previous MLS restore attempt did not unlock the secure backup cleanly. Try your current account password again below. If that still fails, use another signed-in browser session that can still read your chats before continuing here.',
-        };
-      case 'local_state_lost':
-        return {
-          title: 'Secure chat state was lost',
-          body:
-            'Re-signing in may recover your conversations. If you continue anyway, some conversations and message history may stay unreadable on this browser.',
-        };
-      default:
-        return {
-          title: 'Secure chat recovery is incomplete',
-          body:
-            'The server reported MLS recovery data for this account, but this browser still has no usable conversation state. Sign out and log in again with your password so account recovery can retry.',
-        };
-    }
-  };
-
   if (showFullscreenPreparing) {
-    // If the gateway/API is unreachable during startup, surface the reconnect
-    // UX instead of the indefinite "Preparing..." spinner.
-    // showReconnectBanner covers: offline immediately, or gateway stalled 8s+.
-    // bootstrapStalled covers: /api/me or key-fetch hung before gateway starts.
     if (!isLoggingOut && (showReconnectBanner || bootstrapStalled)) {
       return (
-        <div className="min-h-screen bg-void-bg-main flex items-center justify-center px-6">
+        <div className="flex min-h-screen items-center justify-center bg-void-bg-main px-6">
           <div className="w-full max-w-sm rounded-2xl border border-white/8 bg-white/4 p-6 text-center">
             <div className="mx-auto mb-4 h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-white/55" />
             <p className="text-sm font-medium text-void-text">
-              {isOnline ? 'Reconnecting to server\u2026' : 'You\u2019re offline'}
+              {isOnline ? 'Reconnecting to server...' : "You're offline"}
             </p>
             <p className="mt-1.5 text-xs text-void-text-muted">
               {isOnline
-                ? 'The server is not responding yet. Retrying\u2026'
+                ? 'The server is not responding yet. Retrying...'
                 : 'Check your connection. The app will resume automatically.'}
             </p>
           </div>
@@ -569,162 +426,15 @@ const ChatDashboard = () => {
     }
 
     return (
-      <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
-        <div className="text-void-text text-lg font-medium">
+      <div className="flex min-h-screen items-center justify-center bg-void-bg-main">
+        <div className="text-lg font-medium text-void-text">
           {isLoggingOut ? 'Signing you out...' : 'Preparing...'}
         </div>
       </div>
     );
   }
 
-  if (mlsRecoveryGate.active) {
-    const gateCopy = getMlsRecoveryGateCopy();
-    const canRetryWithRecoveryKey = mlsRecoveryGate.reason === 'recovery_key_required';
-    const canRetryWithPassword =
-      mlsRecoveryGate.reason === 'password_required' || mlsRecoveryGate.reason === 'restore_failed';
-    const shouldSignInAgain = mlsRecoveryGate.reason === 'local_state_lost';
-    return (
-      <div className="min-h-screen bg-void-bg-main text-void-text flex items-center justify-center p-6">
-        <div className="w-full max-w-xl bg-void-bg-sec border border-void-border rounded-2xl shadow-2xl p-8 space-y-6">
-          <div className="space-y-3">
-            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-              <ShieldAlert className="w-6 h-6 text-amber-400" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold">{gateCopy.title}</h1>
-              <p className="text-sm text-void-text-muted mt-2">
-                {gateCopy.body}
-              </p>
-            </div>
-          </div>
-
-          {(canRetryWithRecoveryKey || canRetryWithPassword) && (
-            <div className="space-y-3">
-              <label className="block">
-                <span className="mb-2 block text-sm font-medium text-void-text">
-                  {canRetryWithRecoveryKey ? 'Recovery Key' : 'Account Password'}
-                </span>
-                <input
-                  type={canRetryWithRecoveryKey ? 'text' : 'password'}
-                  value={mlsRecoveryKey}
-                  onChange={(e) => {
-                    setMlsRecoveryKey(e.target.value);
-                    if (mlsRecoveryError) setMlsRecoveryError('');
-                  }}
-                  placeholder={canRetryWithRecoveryKey ? 'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX' : 'Enter your password'}
-                  autoComplete={canRetryWithRecoveryKey ? 'off' : 'current-password'}
-                  className="w-full rounded-xl border border-void-border bg-gray-900 px-4 py-3 text-sm text-void-text placeholder-void-text-muted focus:outline-none focus:border-blue-500"
-                  disabled={isSubmittingMlsRecoveryKey}
-                />
-              </label>
-
-              {mlsRecoveryError && (
-                <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3">
-                  <p className="text-sm text-red-400">{mlsRecoveryError}</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="flex flex-col sm:flex-row gap-3">
-            {canRetryWithRecoveryKey && (
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!mlsRecoveryKey.trim()) {
-                    setMlsRecoveryError('Enter your recovery key to continue secure chat recovery.');
-                    return;
-                  }
-
-                  setIsSubmittingMlsRecoveryKey(true);
-                  setMlsRecoveryError('');
-
-                  try {
-                    await retryMlsRecoveryWithRecoveryKey(mlsRecoveryKey);
-                  } catch (err) {
-                    if (
-                      err instanceof Error &&
-                      ['INVALID_RECOVERY_KEY', 'RECOVERY_NOT_CONFIGURED', 'RECOVERY_KEY_MISMATCH'].includes(err.message)
-                    ) {
-                      setMlsRecoveryError('That recovery key could not unlock this chat backup. Check the key and try again.');
-                    } else {
-                      setMlsRecoveryError('Secure chat recovery could not continue yet. Try again.');
-                    }
-                  } finally {
-                    setIsSubmittingMlsRecoveryKey(false);
-                  }
-                }}
-                disabled={isSubmittingMlsRecoveryKey}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white px-4 py-3 font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <KeyRound className="w-4 h-4" />
-                {isSubmittingMlsRecoveryKey ? 'Trying recovery key...' : 'Continue with Recovery Key'}
-              </button>
-            )}
-            {canRetryWithPassword && (
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!mlsRecoveryKey.trim()) {
-                    setMlsRecoveryError('Enter your account password to continue secure chat recovery.');
-                    return;
-                  }
-
-                  setIsSubmittingMlsRecoveryKey(true);
-                  setMlsRecoveryError('');
-
-                  try {
-                    await retryMlsRecoveryWithPassword(mlsRecoveryKey);
-                  } catch (err) {
-                    if (err instanceof Error && err.message === 'INVALID_ACCOUNT_PASSWORD') {
-                      setMlsRecoveryError('That password could not unlock your secure chat backup. Try your current password again.');
-                    } else if (err instanceof Error && err.message === 'PASSWORD_REQUIRED') {
-                      setMlsRecoveryError('Enter your account password to continue secure chat recovery.');
-                    } else {
-                      setMlsRecoveryError('Secure chat recovery could not continue yet. Try again.');
-                    }
-                  } finally {
-                    setIsSubmittingMlsRecoveryKey(false);
-                  }
-                }}
-                disabled={isSubmittingMlsRecoveryKey}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white px-4 py-3 font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <KeyRound className="w-4 h-4" />
-                {isSubmittingMlsRecoveryKey ? 'Trying password...' : 'Continue with Password'}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={async () => {
-                await logout();
-                navigate('/auth', { replace: true });
-              }}
-              disabled={isSubmittingMlsRecoveryKey}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-void-border bg-gray-900 text-void-text px-4 py-3 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {shouldSignInAgain ? 'Sign In Again' : 'Sign Out'}
-            </button>
-            {shouldSignInAgain && (
-              <button
-                type="button"
-                onClick={() => {
-                  continueWithoutLocalSecureHistory();
-                }}
-                disabled={isSubmittingMlsRecoveryKey}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-400/25 bg-amber-500/10 text-amber-100 px-4 py-3 font-medium hover:bg-amber-500/15 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Continue Anyway
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   const isFriendsPaneVisible = !displayConversation;
-  const securityBannerMessage = conversationSecurityState?.message || encryptionError;
 
   const openFriendsPane = () => {
     handleBackToMe();
@@ -790,11 +500,6 @@ const ChatDashboard = () => {
         notice={sendNotice}
         onDismissNotice={() => setSendNotice(null)}
       />
-      {showBackgroundSecureKeyBanner && (
-        <div className="border-b border-blue-400/10 bg-blue-500/8 px-4 py-1.5 text-center text-[11px] font-medium text-blue-100/80">
-          Preparing secure chat keys in the background...
-        </div>
-      )}
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
       {/* Modals */}
       {showProfile && user?.profile_id && (
@@ -809,7 +514,6 @@ const ChatDashboard = () => {
             setShowCreateGroup(false);
             setConvRefresh((n) => n + 1);
           }}
-          currentUserId={user.id}
         />
       )}
       {showConvSettings && displayConversation && user?.id && (
@@ -919,19 +623,9 @@ const ChatDashboard = () => {
               />
 
               <>
-                {securityBannerMessage && (
-                  <ConversationSecurityBanner
-                    message={securityBannerMessage}
-                    securityState={conversationSecurityState}
-                  />
-                )}
                 <MessageView
                   key={activeConversation.id}
                   conversation={activeConversation}
-                  encryptionKey={encryptionKey}
-                  keyVersion={keyVersion}
-                  encryptionError={encryptionError}
-                  conversationSecurityState={conversationSecurityState}
                   onSendNotice={showSendNotice}
                   members={messageDisplayMembers}
                   typingParticipants={typingParticipants}
@@ -950,10 +644,6 @@ const ChatDashboard = () => {
                 <MessageInput
                   currentUserId={user?.id}
                   conversation={activeConversation}
-                  encryptionKey={encryptionKey}
-                  keyVersion={keyVersion}
-                  conversationSecurityState={conversationSecurityState}
-                  onEncryptionKeyResolved={handleEncryptionKeyResolved}
                   onMessageSent={(msg) => {
                     handleMessageSent(msg);
                     if (activeConversation?.id) setLastSentConversationId(activeConversation.id);

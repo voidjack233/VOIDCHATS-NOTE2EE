@@ -110,7 +110,7 @@ export default function MembersTab({
         <div className="mt-4 space-y-3 md:mt-5">
           {memberRemovalPaused && (
             <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-              Member removal is temporarily paused while we stabilize encrypted key delivery.
+              Member removal is temporarily unavailable.
             </div>
           )}
 

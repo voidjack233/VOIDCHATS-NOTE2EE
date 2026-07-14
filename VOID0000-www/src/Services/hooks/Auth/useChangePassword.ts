@@ -1,13 +1,10 @@
 import { useState } from 'react';
 import { authService } from '../../Auth/authServiceApi';
-import { useUser } from '../../Auth/UserContext';
-import { prepareSecureBackup } from '../../Auth/secureBackup';
 
 export function useChangePassword() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
-  const { user } = useUser();
 
   const changePassword = async (
     currentPassword: string,
@@ -19,21 +16,9 @@ export function useChangePassword() {
     setSuccess(false);
 
     try {
-      let keyBackup = null;
-      if (user?.id) {
-        try {
-          keyBackup = await prepareSecureBackup(user.id, newPassword);
-        } catch (err) {
-          if (!(err instanceof Error) || err.message !== 'LOCAL_KEY_MISSING') {
-            throw err;
-          }
-        }
-      }
-
       const result = await authService.changePassword(
         currentPassword,
         newPassword,
-        keyBackup,
         twoFactor || null,
       );
 

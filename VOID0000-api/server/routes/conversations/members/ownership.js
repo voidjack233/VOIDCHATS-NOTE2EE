@@ -2,7 +2,6 @@ import { pool } from '../../../db.js';
 import {
   emitConversationUpdate,
   getChildChannelIds,
-  normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../../utils/groupMembership.js';
 
@@ -114,10 +113,6 @@ export function registerMemberOwnershipRoutes(router) {
       await client.query('COMMIT');
       committed = true;
 
-      const currentKeyVersion = normalizeKeyVersion(
-        membershipConversation.current_key_version,
-        1,
-      );
       const updatedConversation = {
         ...membershipConversation,
         owner_id: targetUserId,
@@ -127,7 +122,6 @@ export function registerMemberOwnershipRoutes(router) {
         await emitConversationUpdate(
           updatedConversation,
           memberIds,
-          currentKeyVersion,
           memberIds.length,
           memberRolesById,
         );
@@ -144,7 +138,6 @@ export function registerMemberOwnershipRoutes(router) {
             : null,
           type: membershipConversation.type,
           owner_id: targetUserId,
-          current_key_version: currentKeyVersion,
           member_count: memberIds.length,
           role: 'admin',
         },

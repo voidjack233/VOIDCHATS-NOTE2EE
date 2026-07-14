@@ -228,7 +228,7 @@ const NotificationsTab = () => {
                     Browser Push
                   </div>
                   <p className="mt-1 text-xs text-void-text-muted">
-                    Sends E2EE-safe alerts when this browser is closed or in the background. Message text is never included.
+                    Sends privacy-safe alerts when this browser is closed or in the background. Message text is never included.
                   </p>
                   {pushStatus?.reason && (
                     <p className="mt-2 text-xs text-void-text-muted">{pushStatus.reason}</p>

@@ -3,7 +3,6 @@ import { API_URL } from '../../config';
 import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext'; 
 import { gateway } from '../../Gateway/gateway';
-import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { fetchAppBootstrap } from '../../bootstrap';
 
 export interface FriendRequest {
@@ -106,16 +105,10 @@ export function FriendProvider({ children }: { children: ReactNode }) {
         headers: { 'X-CSRF-Token': csrf || '' },
         credentials: 'include'
       });
-      const data = await res.json().catch(() => null);
       if (res.ok) {
         // Update cache directly
         setIncoming(prev => prev.filter(r => r.friendship_id !== friendshipId));
 
-        const requesterId = data?.friendship?.requester_id;
-        if (user?.id && typeof requesterId === 'string' && requesterId.length > 0) {
-          // Best-effort warmup for DM crypto bootstrap.
-          void chatCryptoProtocolService.preWarmForDm(user.id, requesterId);
-        }
         return { success: true };
       }
       return { success: false };

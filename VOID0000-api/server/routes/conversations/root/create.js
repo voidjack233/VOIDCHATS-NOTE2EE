@@ -31,8 +31,8 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const convResult = await client.query(
-      `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, public_id, current_key_version)
-       VALUES ('group', $1, $2, NULL, $3, 1)
+      `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, public_id)
+       VALUES ('group', $1, $2, NULL, $3)
        RETURNING *`,
       [name.trim(), userId, conversationSnowflake.nextId()]
     );
@@ -40,8 +40,8 @@ router.post('/', async (req, res) => {
     const conversation = convResult.rows[0];
 
     await client.query(
-      `INSERT INTO conversation_members (conversation_id, user_id, role, joined_key_version, history_start_version)
-       VALUES ($1, $2, 'owner', 1, 1)`,
+      `INSERT INTO conversation_members (conversation_id, user_id, role)
+       VALUES ($1, $2, 'owner')`,
       [conversation.id, userId]
     );
 
@@ -57,26 +57,13 @@ router.post('/', async (req, res) => {
 
       if (friendCheck.rows.length > 0) {
         await client.query(
-          `INSERT INTO conversation_members (conversation_id, user_id, role, joined_key_version, history_start_version)
-           VALUES ($1, $2, 'member', 1, 1)
+          `INSERT INTO conversation_members (conversation_id, user_id, role)
+           VALUES ($1, $2, 'member')
            ON CONFLICT DO NOTHING`,
           [conversation.id, memberId]
         );
       }
     }
-
-    await client.query(
-      `INSERT INTO conversation_key_rotations (
-         conversation_id,
-         previous_key_version,
-         new_key_version,
-         rotated_by_user_id,
-         reason,
-         affected_user_id
-       )
-       VALUES ($1, NULL, 1, $2, 'create', NULL)`,
-      [conversation.id, userId]
-    );
 
     await client.query('COMMIT');
 

@@ -17,7 +17,7 @@ export function estimateMessageRowHeight(message: Message, density: Density): nu
   const content = typeof message.content === 'string' ? message.content : '';
   const hasTextBubble = Boolean(
     message.is_deleted ||
-    (content && content !== '[encrypted]') ||
+    content ||
     (message.attachments?.length ?? 0) === 0,
   );
   const approxCharsPerLine = density === 'comfortable' ? 44 : 52;

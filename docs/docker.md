@@ -43,7 +43,7 @@ The Docker Nginx edge is the normal local entrypoint. It routes:
 - account/control routes to `api:3001`
 - message, reaction, and attachment routes to `message-api:3002`
 - friends/profile routes to `social-api:3004`
-- conversation/group/MLS routes to `conversation-api:3005`
+- conversation/group routes to `conversation-api:3005`
 - `/gateway` to the Phoenix gateway on `gateway:4001`
 - public avatar bucket paths to MinIO
 - private chat attachment downloads to the message API

@@ -2,9 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import {
   Check,
   Loader2,
-  Lock,
   PencilLine,
-  UserRound,
   X,
 } from 'lucide-react';
 import UserAvatar from '../../common/UserAvatar';
@@ -24,13 +22,6 @@ interface DirectConversationSettingsProps {
   onConversationUpdated?: (conversation: Conversation) => Promise<void> | void;
   onClose: () => void;
 }
-
-const dmModeMeta = {
-  label: 'MLS',
-  description: 'MLS mode is enforced for 1-on-1 conversations.',
-};
-
-const dmModeBadgeClassName = 'bg-amber-500/15 text-amber-300 ring-amber-500/30';
 
 function getMemberDisplayName(member: ConversationMember | null | undefined) {
   if (!member) return 'Unknown User';
@@ -100,14 +91,13 @@ export default function DirectConversationSettings({
         const message = await sendSystemEvent(
           conversation.id,
           text,
-          conversation.current_key_version || 1,
         );
         onMessageCreated?.(message);
       } catch (error) {
         console.warn('Failed to post DM nickname system message:', error);
       }
     },
-    [conversation.current_key_version, conversation.id, onMessageCreated],
+    [conversation.id, onMessageCreated],
   );
 
   const startEditingNickname = useCallback(
@@ -347,28 +337,6 @@ export default function DirectConversationSettings({
                 ) : null}
               </section>
 
-              <section className="flex items-start gap-3 rounded-2xl border border-void-bg-hover bg-void-bg-main/35 p-4 md:p-5">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-void-accent/10 text-void-accent">
-                  <Lock className="h-5 w-5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-semibold text-void-text">Encryption Mode</h3>
-                    <span
-                      className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${dmModeBadgeClassName}`}
-                    >
-                      {dmModeMeta.label}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
-                    {dmModeMeta.description} There are no extra 1-on-1 encryption switches to configure here.
-                  </p>
-                  <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-void-bg-hover bg-void-bg-sec px-3 py-2 text-sm text-void-text">
-                    <UserRound className="h-4 w-4 text-void-text-muted" />
-                    Message Security: MLS
-                  </div>
-                </div>
-              </section>
             </div>
           </div>
         </div>

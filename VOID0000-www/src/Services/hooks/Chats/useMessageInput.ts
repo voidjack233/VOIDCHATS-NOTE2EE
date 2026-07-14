@@ -1,25 +1,19 @@
-// src/Services/hooks/Chats/useMessageInput.ts
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { debugLog } from '../../utils/debugLog';
-import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnectionStatus } from '../common/useConnectionStatus';
 import { useServiceHealth } from '../common/useServiceHealth';
 import {
-  sendMessage,
-  sendImageOnlyMessage,
   editMessage,
-  updateMessageLinkPreview,
-  uploadEncryptedAttachments,
+  sendImageOnlyMessage,
+  sendMessage,
   sendTypingStart,
-  bootstrapDmKey,
-  getEncryptionKey,
-  Message,
-  Conversation,
-  ConversationMember,
-  LinkPreviewMetadata,
-  MessageMentionMetadata,
+  updateMessageLinkPreview,
+  uploadAttachments,
+  type Conversation,
+  type ConversationMember,
+  type LinkPreviewMetadata,
+  type Message,
+  type MessageMentionMetadata,
 } from '../../Chat/chatService';
-import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { queuedSendStore } from '../../Chat/queuedSendStore';
 import { resolveMessageMentions } from '../../Chat/messageMentions';
 import { fetchLinkPreview, getFirstPreviewableUrl } from '../../Chat/linkPreviewService';
@@ -43,14 +37,10 @@ interface UseMessageInputProps {
   currentUserId?: string;
   conversation: Conversation;
   members?: ConversationMember[];
-  encryptionKey: CryptoKey | null;
-  keyVersion: number;
-  conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
   shouldJumpToPresentAfterOwnSend?: () => boolean;
   onOwnMessageSentFromHistory?: (message: Message) => Promise<void> | void;
   onSendError?: (message: string | null) => void;
-  onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
   replyTo?: Message | null;
@@ -75,69 +65,25 @@ interface AttachmentAlertState {
 const MAX_ATTACHMENTS = 5;
 const IMAGE_ACCEPT_TYPES = 'image/jpeg,image/png,image/gif,image/webp';
 const MAX_ATTACHMENT_FILE_SIZE = 10 * 1024 * 1024;
-const MLS_MESSAGE_TYPE = 'mls_application';
 const DEFAULT_ATTACHMENT_PERMISSION = 'everyone';
 
-function isDmPeerNotReadyError(error: unknown): boolean {
-  const code =
-    error && typeof error === 'object' && 'code' in error
-      ? (error as { code?: unknown }).code
-      : null;
-  const message = (
-    error instanceof Error
-      ? error.message
-      : error && typeof error === 'object' && 'message' in error
-        ? (error as { message?: unknown }).message
-        : error
-  );
-  const normalizedMessage = String(message || '').toLowerCase();
-
-  return (
-    code === 'DM_RECIPIENT_KEYS_MISSING' ||
-    code === 'MLS_ADD_KEY_PACKAGE_MISSING' ||
-    normalizedMessage.includes('account secure keys are still preparing') ||
-    normalizedMessage.includes('no published mls key packages') ||
-    normalizedMessage.includes('not ready for secure group add yet')
-  );
-}
-
 function getSendErrorNotice(error: any): string {
-  if (error?.code === 'MEMBERSHIP_ROTATION_PENDING') {
-    return 'Securing group membership. Try again in a moment.';
-  }
-
   if (typeof error?.retry_after_seconds === 'number' && error.retry_after_seconds > 0) {
     return error.error || error.message || `Slowmode is active. Try again in ${error.retry_after_seconds}s.`;
   }
-
   const message = typeof error?.message === 'string' ? error.message : '';
-  if (
-    error?.code === 'REQUEST_TIMEOUT' ||
-    error?.name === 'AbortError' ||
-    message.toLowerCase().includes('timed out')
-  ) {
+  if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError' || message.toLowerCase().includes('timed out')) {
     return message || 'Message send timed out. Check your connection and retry.';
   }
-
-  if (
-    error?.code === 'STALE_KEY_VERSION' ||
-    message.includes('key_version') ||
-    message.includes('Not a member')
-  ) {
-    return 'Encryption keys changed. Reopen this conversation, then try again.';
-  }
-
   if (message.toLowerCase().includes('failed to fetch') || message.toLowerCase().includes('network')) {
     return 'Message was not sent. Check your connection and retry.';
   }
-
   return message || 'Message was not sent. Try again.';
 }
 
 function isTransientSendFailure(error: any): boolean {
   const status = Number(error?.status ?? error?.statusCode);
   const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
-
   return (
     error?.code === 'REQUEST_TIMEOUT' ||
     error?.name === 'AbortError' ||
@@ -150,60 +96,34 @@ function isTransientSendFailure(error: any): boolean {
 
 function getQueuedSendNotice(error: any): string {
   const status = Number(error?.status ?? error?.statusCode);
-
   if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError') {
-    return 'Message timed out and was queued. It will retry automatically when the service responds.';
+    return 'Message timed out and was queued. It will retry automatically.';
   }
-
   if (status >= 500) {
     return 'Message service is having trouble. Your message was queued and will retry automatically.';
   }
-
-  return 'Message was queued and will retry automatically when your connection recovers.';
+  return 'Message was queued and will retry when your connection recovers.';
 }
 
 function getAttachmentUploadErrorLabel(error: any): string {
   const status = Number(error?.status ?? error?.statusCode);
   const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
-
-  if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError' || message.includes('timed out')) {
-    return 'Upload timed out';
-  }
-
-  if (status >= 500) {
-    return 'Service unavailable';
-  }
-
-  if (message.includes('failed to fetch') || message.includes('network')) {
-    return 'Waiting for network';
-  }
-
+  if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError' || message.includes('timed out')) return 'Upload timed out';
+  if (status >= 500) return 'Service unavailable';
+  if (message.includes('failed to fetch') || message.includes('network')) return 'Waiting for network';
   return 'Upload failed';
 }
 
 const resolveAttachmentAccess = (conversation: Conversation) => {
   if (conversation.type === 'dm') {
-    return {
-      allowed: true,
-      required: DEFAULT_ATTACHMENT_PERMISSION as 'everyone' | 'admins' | 'owner',
-    };
+    return { allowed: true, required: DEFAULT_ATTACHMENT_PERMISSION as 'everyone' | 'admins' | 'owner' };
   }
 
   const required = conversation.permissions?.who_can_send_attachments ?? DEFAULT_ATTACHMENT_PERMISSION;
   const role = conversation.role;
-
-  if (role === 'owner') {
-    return { allowed: true, required };
-  }
-
-  if (required === 'everyone') {
-    return { allowed: role !== 'viewer', required };
-  }
-
-  if (required === 'admins') {
-    return { allowed: role === 'admin', required };
-  }
-
+  if (role === 'owner') return { allowed: true, required };
+  if (required === 'everyone') return { allowed: role !== 'viewer', required };
+  if (required === 'admins') return { allowed: role === 'admin', required };
   return { allowed: false, required };
 };
 
@@ -211,14 +131,10 @@ export const useMessageInput = ({
   currentUserId,
   conversation,
   members,
-  encryptionKey,
-  keyVersion,
-  conversationSecurityState,
   onMessageSent,
   shouldJumpToPresentAfterOwnSend,
   onOwnMessageSentFromHistory,
   onSendError,
-  onEncryptionKeyResolved,
   editingMessage,
   onCancelEdit,
   replyTo,
@@ -237,48 +153,35 @@ export const useMessageInput = ({
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
   const flushingQueuedSendIdsRef = useRef<Set<string>>(new Set());
-  const attachmentAccess = resolveAttachmentAccess(conversation);
-  const attachmentsAllowed = attachmentAccess.allowed;
-  const attachmentsRestrictionLabel =
-    attachmentAccess.required === 'everyone'
-      ? null
-      : attachmentAccess.required === 'admins'
-        ? 'Admins'
-        : 'Owner';
-  const messageServiceDegraded = serviceHealth.issues.some((issue) => (
-    issue.service === 'Message service' &&
-    (issue.status === undefined || issue.status >= 500)
-  ));
-
-  // Changed to HTMLTextAreaElement
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const resolveDraftMentions = useCallback((draftText: string): MessageMentionMetadata[] => {
-    if (conversation.type !== 'group') {
-      return [];
-    }
+  const attachmentAccess = resolveAttachmentAccess(conversation);
+  const attachmentsAllowed = attachmentAccess.allowed;
+  const attachmentsRestrictionLabel = attachmentAccess.required === 'everyone'
+    ? null
+    : attachmentAccess.required === 'admins' ? 'Admins' : 'Owner';
+  const messageServiceDegraded = serviceHealth.issues.some((issue) => (
+    issue.service === 'Message service' && (issue.status === undefined || issue.status >= 500)
+  ));
 
-    return resolveMessageMentions(draftText, members || []);
-  }, [conversation.type, members]);
+  const resolveDraftMentions = useCallback((draftText: string): MessageMentionMetadata[] => (
+    conversation.type === 'group' ? resolveMessageMentions(draftText, members || []) : []
+  ), [conversation.type, members]);
 
-  // Auto-resize textarea as text changes
   useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto'; // Reset height to recalculate
-      // Set max height to around ~120px (about 5-6 lines) before scrolling
-      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
-    }
+    if (!inputRef.current) return;
+    inputRef.current.style.height = 'auto';
+    inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
   }, [text]);
 
   useEffect(() => {
-    if (editingMessage) {
-      setText(editingMessage.content || '');
-      setLinkPreview(editingMessage.link_preview || null);
-      setDismissedLinkPreviewUrl(null);
-      inputRef.current?.focus();
-    }
+    if (!editingMessage) return;
+    setText(editingMessage.content || '');
+    setLinkPreview(editingMessage.link_preview || null);
+    setDismissedLinkPreviewUrl(null);
+    inputRef.current?.focus();
   }, [editingMessage]);
 
   useEffect(() => {
@@ -299,7 +202,6 @@ export const useMessageInput = ({
       setLinkPreviewLoading(false);
       return;
     }
-
     if (linkPreview?.url === previewUrl) {
       setLinkPreviewLoading(false);
       return;
@@ -311,21 +213,15 @@ export const useMessageInput = ({
       setLinkPreviewLoading(true);
       fetchLinkPreview(previewUrl, controller.signal)
         .then((preview) => {
-          if (controller.signal.aborted) return;
-          setLinkPreview(preview);
+          if (!controller.signal.aborted) setLinkPreview(preview);
         })
         .catch(() => {
-          if (!controller.signal.aborted) {
-            setLinkPreview(null);
-          }
+          if (!controller.signal.aborted) setLinkPreview(null);
         })
         .finally(() => {
-          if (!controller.signal.aborted) {
-            setLinkPreviewLoading(false);
-          }
+          if (!controller.signal.aborted) setLinkPreviewLoading(false);
         });
     }, 250);
-
     return () => {
       window.clearTimeout(timer);
       controller.abort();
@@ -344,531 +240,208 @@ export const useMessageInput = ({
         reader.onerror = () => resolve(null);
         reader.readAsDataURL(file);
       });
-
       if (preview) {
-        setAttachments((prev) =>
-          prev.map((a) => (a.id === id ? { ...a, preview } : a))
-        );
+        setAttachments((previous) => previous.map((attachment) => (
+          attachment.id === id ? { ...attachment, preview } : attachment
+        )));
       }
     }
 
     try {
-      const [attachment] = await uploadEncryptedAttachments(conversation.id, [file]);
-      setAttachments((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, url: attachment ?? null, uploading: false, error: undefined, file: undefined } : a))
-      );
-    } catch (error: any) {
-      const uploadErrorLabel = getAttachmentUploadErrorLabel(error);
-      setAttachments((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, uploading: false, error: uploadErrorLabel } : a))
-      );
+      const [url] = await uploadAttachments(conversation.id, [file]);
+      setAttachments((previous) => previous.map((attachment) => (
+        attachment.id === id
+          ? { ...attachment, url: url ?? null, uploading: false, error: undefined, file: undefined }
+          : attachment
+      )));
+    } catch (error) {
+      setAttachments((previous) => previous.map((attachment) => (
+        attachment.id === id
+          ? { ...attachment, uploading: false, error: getAttachmentUploadErrorLabel(error) }
+          : attachment
+      )));
     }
   }, [conversation.id]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
     if (!attachmentsAllowed) return;
-
     let oversizedCount = 0;
-    const arr = Array.from(files).filter((file) => {
-      if (file.size > MAX_ATTACHMENT_FILE_SIZE) {
-        oversizedCount += 1;
-        return false;
-      }
-
-      return true;
+    const accepted = Array.from(files).filter((file) => {
+      if (file.size <= MAX_ATTACHMENT_FILE_SIZE) return true;
+      oversizedCount += 1;
+      return false;
     });
-
     if (oversizedCount > 0) {
       setAttachmentAlert({
         title: 'Attachment Too Large',
-        message:
-          oversizedCount === 1
-            ? 'The maximum upload size is 10MB per attachment. Please choose a smaller file.'
-            : `${oversizedCount} attachments were skipped because the maximum upload size is 10MB per attachment.`,
+        message: oversizedCount === 1
+          ? 'The maximum upload size is 10MB per attachment. Please choose a smaller file.'
+          : `${oversizedCount} attachments were skipped because the maximum upload size is 10MB per attachment.`,
       });
     }
 
-    const slots = MAX_ATTACHMENTS - attachments.length;
-    if (slots <= 0) return;
-    if (arr.length === 0) return;
-
-    const toAdd = arr.slice(0, slots).map((f) => ({
+    const filesToAdd = accepted.slice(0, Math.max(0, MAX_ATTACHMENTS - attachments.length)).map((file) => ({
       id: `${Date.now()}-${Math.random()}`,
       preview: '',
       url: null,
-      name: f.name,
-      mime: f.type || 'application/octet-stream',
-      size: f.size,
+      name: file.name,
+      mime: file.type || 'application/octet-stream',
+      size: file.size,
       spoiler: false,
       uploading: true,
-      file: f,
+      file,
     }));
-
-    setAttachments((prev) => [...prev, ...toAdd]);
-    toAdd.forEach(({ id, file }) => uploadFile(file, id));
+    if (filesToAdd.length === 0) return;
+    setAttachments((previous) => [...previous, ...filesToAdd]);
+    filesToAdd.forEach(({ id, file }) => void uploadFile(file, id));
   }, [attachments.length, attachmentsAllowed, uploadFile]);
 
-  const dismissAttachmentAlert = useCallback(() => {
-    setAttachmentAlert(null);
-  }, []);
-
   const removeAttachment = useCallback((id: string) => {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setAttachments((previous) => previous.filter((attachment) => attachment.id !== id));
   }, []);
-
   const toggleAttachmentSpoiler = useCallback((id: string) => {
-    setAttachments((prev) => prev.map((attachment) => (
+    setAttachments((previous) => previous.map((attachment) => (
       attachment.id === id && attachment.preview
         ? { ...attachment, spoiler: !attachment.spoiler }
         : attachment
     )));
   }, []);
-
   const retryAttachment = useCallback((id: string) => {
     const target = attachments.find((attachment) => attachment.id === id);
-    if (!target?.file || target.uploading) {
-      return;
-    }
-
-    setAttachments((prev) =>
-      prev.map((attachment) =>
-        attachment.id === id
-          ? { ...attachment, uploading: true, error: undefined, url: null }
-          : attachment
-      )
-    );
+    if (!target?.file || target.uploading) return;
+    setAttachments((previous) => previous.map((attachment) => (
+      attachment.id === id ? { ...attachment, uploading: true, error: undefined, url: null } : attachment
+    )));
     void uploadFile(target.file, id);
   }, [attachments, uploadFile]);
 
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+  const handlePaste = useCallback((event: React.ClipboardEvent) => {
     if (!attachmentsAllowed) return;
-
-    const items = Array.from(e.clipboardData.items).filter((item) => item.kind === 'file');
-    if (items.length === 0) return;
-    e.preventDefault();
-    const files = items.map((item) => item.getAsFile()!).filter(Boolean);
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (files.length === 0) return;
+    event.preventDefault();
     addFiles(files);
   }, [addFiles, attachmentsAllowed]);
 
-  const openMediaPicker = useCallback(() => {
-    if (!attachmentsAllowed) return;
-    mediaInputRef.current?.click();
-  }, [attachmentsAllowed]);
-
-  const openFilePicker = useCallback(() => {
-    if (!attachmentsAllowed) return;
-    fileInputRef.current?.click();
-  }, [attachmentsAllowed]);
-
-  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!attachmentsAllowed) {
-      e.target.value = '';
-      return;
-    }
-
-    if (e.target.files) {
-      addFiles(e.target.files);
-      e.target.value = '';
-    }
+  const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    if (attachmentsAllowed && event.target.files) addFiles(event.target.files);
+    event.target.value = '';
   }, [addFiles, attachmentsAllowed]);
 
-  const resolveSendCrypto = useCallback(async (): Promise<{
-    key: CryptoKey;
-    version: number;
-    bootstrapped: boolean;
-  }> => {
-    if (conversationSecurityState && !conversationSecurityState.canSend) {
-      throw new Error(
-        conversationSecurityState.message || 'Secure chat is not ready for this conversation yet.',
-      );
-    }
-
-    if (conversation.type !== 'dm') {
-      if (encryptionKey) {
-        return { key: encryptionKey, version: keyVersion, bootstrapped: false };
-      }
-      throw new Error('Secure chat is still loading for this conversation.');
-    }
-
-    if (!currentUserId) {
-      throw new Error('You must be signed in to send secure messages.');
-    }
-
-    const peerUserId = conversation.dm_user_id;
-    if (!peerUserId) {
-      throw new Error('This conversation is still loading secure recipient details.');
-    }
-
-    if (encryptionKey) {
-      const localMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(conversation.id);
-      if (localMembers === null) {
-        debugLog('[DM_SEND] local MLS member coverage unknown; keeping resolved encryption key', {
-          conversation_id: conversation.id,
-          expected_peer: peerUserId,
-        });
-        return { key: encryptionKey, version: keyVersion, bootstrapped: false };
-      }
-
-      const hasValidLocalCoverage =
-        localMembers.includes(currentUserId) &&
-        localMembers.includes(peerUserId);
-
-      if (hasValidLocalCoverage) {
-        try {
-          const refreshed = await getEncryptionKey(currentUserId, conversation);
-          return { ...refreshed, bootstrapped: true };
-        } catch {
-          return { key: encryptionKey, version: keyVersion, bootstrapped: false };
-        }
-      }
-
-      console.warn('[DM_SEND] in-memory DM key missing peer coverage, repairing before send', {
-        conversation_id: conversation.id,
-        local_members: localMembers,
-        expected_peer: peerUserId,
-      });
-    }
-
-    try {
-      const recovered = await getEncryptionKey(currentUserId, conversation);
-      const recoveredMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(conversation.id);
-      if (recoveredMembers === null) {
-        debugLog('[DM_SEND] recovered DM key with unknown local member coverage', {
-          conversation_id: conversation.id,
-          expected_peer: peerUserId,
-        });
-        return { ...recovered, bootstrapped: false };
-      }
-
-      const recoveredCoverageValid =
-        recoveredMembers.includes(currentUserId) &&
-        recoveredMembers.includes(peerUserId);
-
-      if (recoveredCoverageValid) {
-        return { ...recovered, bootstrapped: true };
-      }
-    } catch (err) {
-      console.warn('[DM_SEND] account-synced DM key recovery before bootstrap failed', {
-        conversation_id: conversation.id,
-        error: err instanceof Error ? err.message : String(err || ''),
-      });
-    }
-
-    try {
-      const result = await bootstrapDmKey(conversation, currentUserId, peerUserId);
-      return { ...result, bootstrapped: true };
-    } catch (err) {
-      if (isDmPeerNotReadyError(err)) {
-        throw new Error('Preparing secure chat keys...');
-      }
-      throw err;
-    }
-  }, [conversation, conversationSecurityState, currentUserId, encryptionKey, keyVersion]);
-
   const getPlaceholder = () => {
-    if (conversationSecurityState && !conversationSecurityState.canSend) {
-      if (conversationSecurityState.status === 'recovering') {
-        return 'Recovering secure conversation state...';
-      }
-      return 'Secure chat recovery required before sending';
-    }
-
-    if (!encryptionKey) return 'Setting up encryption...';
-    if (!editingMessage && slowmodeRemaining > 0) {
-      return `Slowmode active: wait ${slowmodeRemaining}s`;
-    }
+    if (!editingMessage && slowmodeRemaining > 0) return `Slowmode active: wait ${slowmodeRemaining}s`;
     if (attachments.length > 0) return 'Add a caption... (optional)';
-    if (conversation.type === 'dm') {
-      return `Message ${conversation.dm_display_name || conversation.dm_username || 'user'}`;
-    }
+    if (conversation.type === 'dm') return `Message ${conversation.dm_display_name || conversation.dm_username || 'user'}`;
     return `Message ${conversation.name || 'conversation'}`;
   };
 
-  const isSlowmodeBlocked =
-    !editingMessage &&
-    slowmodeRemaining > 0 &&
-    !['owner', 'admin'].includes(conversation.role);
-
-  const hasSendCrypto = !!encryptionKey;
-
-  const canSend =
-    !sending &&
-    !isSlowmodeBlocked &&
-    conversationSecurityState?.canSend !== false &&
-    hasSendCrypto &&
-    (
-    text.trim().length > 0 || attachments.some((a) => a.url)
-  ) &&
-    !attachments.some((a) => a.uploading);
+  const isSlowmodeBlocked = !editingMessage && slowmodeRemaining > 0 && !['owner', 'admin'].includes(conversation.role);
+  const canSend = !sending && !isSlowmodeBlocked &&
+    (text.trim().length > 0 || attachments.some((attachment) => attachment.url)) &&
+    !attachments.some((attachment) => attachment.uploading);
 
   useEffect(() => {
     if (slowmodeRemaining <= 0) return;
-
-    const timer = window.setInterval(() => {
-      setSlowmodeRemaining((prev) => {
-        if (prev <= 1) {
-          window.clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
+    const timer = window.setTimeout(() => {
+      setSlowmodeRemaining((remaining) => Math.max(0, remaining - 1));
     }, 1000);
-
-    return () => window.clearInterval(timer);
+    return () => window.clearTimeout(timer);
   }, [slowmodeRemaining]);
 
-  // Auto-retry queued secure sends when encryptionKey becomes available.
-  // Loads from persistent IndexedDB store so queued messages survive
-  // conversation switch, refresh, and crash.
   useEffect(() => {
-    if (!encryptionKey || !isOnline || messageServiceDegraded) return;
-
+    if (!isOnline || messageServiceDegraded) return;
     let cancelled = false;
-
-    (async () => {
-      let pending;
-      try {
-        pending = await queuedSendStore.getByConversation(conversation.id);
-      } catch {
-        return;
-      }
-      if (cancelled || pending.length === 0) return;
-
-      debugLog('[QUEUED_SEND] encryption key available, flushing queued sends', {
-        conversation_id: conversation.id,
-        count: pending.length,
-      });
-
-      for (const queued of pending) {
-        if (cancelled) break;
-        if (flushingQueuedSendIdsRef.current.has(queued.local_client_id)) {
-          continue;
-        }
-
+    void queuedSendStore.getByConversation(conversation.id).then(async (queuedSends) => {
+      for (const queued of queuedSends) {
+        if (cancelled || flushingQueuedSendIdsRef.current.has(queued.local_client_id)) continue;
         flushingQueuedSendIdsRef.current.add(queued.local_client_id);
         try {
-          const sendCrypto = await resolveSendCrypto();
-          if (sendCrypto.bootstrapped) {
-            onEncryptionKeyResolved?.(sendCrypto.key, sendCrypto.version);
-          }
-
-          onMessageSent({
-            conversation_id: queued.conversation_id,
-            message_id: queued.local_client_id,
-            sender_id: queued.sender_id,
-            encrypted_content: null,
-            iv: null,
-            key_version: sendCrypto.version,
-            message_type: MLS_MESSAGE_TYPE,
-            protocol: 'mls',
-            protocol_version: 1,
-            reply_to: queued.reply_to_id,
-            attachments: queued.uploaded_urls,
-            is_edited: false,
-            edited_at: null,
-            is_deleted: false,
-            created_at: queued.created_at,
-            content: queued.text || undefined,
-            reactions: {},
-            link_preview: queued.link_preview || undefined,
-            mentions: queued.mentions ?? undefined,
-            local_status: 'sending',
-            local_client_id: queued.local_client_id,
-          });
-
-          let msg: Message;
-          if (queued.text) {
-            msg = await sendMessage(conversation.id, queued.text, sendCrypto.key, {
-              client_message_id: queued.local_client_id,
-              key_version: sendCrypto.version,
-              message_type: MLS_MESSAGE_TYPE,
-              reply_to: queued.reply_to_id || undefined,
-              secure_attachments: queued.uploaded_urls,
-              linkPreview: queued.link_preview || undefined,
-              mentions: queued.mentions ?? undefined,
-            });
-          } else if (queued.uploaded_urls.length > 0) {
-            msg = await sendImageOnlyMessage(conversation.id, sendCrypto.key, queued.uploaded_urls, {
-              client_message_id: queued.local_client_id,
-              key_version: sendCrypto.version,
-              message_type: MLS_MESSAGE_TYPE,
-              reply_to: queued.reply_to_id || undefined,
-              mentions: queued.mentions ?? undefined,
-            });
-          } else {
-            await queuedSendStore.remove(conversation.id, queued.local_client_id);
-            continue;
-          }
-
-          debugLog('[QUEUED_SEND] queued message sent successfully', {
-            local_client_id: queued.local_client_id,
-            message_id: msg.message_id,
-          });
+          const options = {
+            client_message_id: queued.local_client_id,
+            reply_to: queued.reply_to_id || undefined,
+            linkPreview: queued.link_preview || null,
+            mentions: queued.mentions || [],
+          };
+          const message = queued.text.trim()
+            ? await sendMessage(conversation.id, queued.text, { ...options, attachments: queued.uploaded_urls })
+            : await sendImageOnlyMessage(conversation.id, queued.uploaded_urls, options);
           await queuedSendStore.remove(conversation.id, queued.local_client_id);
-          onMessageSent({
-            ...msg,
-            local_status: 'sent',
-            local_client_id: queued.local_client_id,
-          });
-        } catch (retryErr) {
-          if (!isTransientSendFailure(retryErr) && !isDmPeerNotReadyError(retryErr)) {
-            console.error('[QUEUED_SEND] queued retry failed permanently, marking failed', {
-              local_client_id: queued.local_client_id,
-              error: retryErr,
-            });
+          onMessageSent({ ...message, local_status: 'sent', local_client_id: queued.local_client_id });
+        } catch (error) {
+          if (!isTransientSendFailure(error)) {
             await queuedSendStore.remove(conversation.id, queued.local_client_id).catch(() => {});
-            onMessageSent({
-              conversation_id: queued.conversation_id,
-              message_id: queued.local_client_id,
-              sender_id: queued.sender_id,
-              encrypted_content: null,
-              iv: null,
-              key_version: 1,
-              message_type: MLS_MESSAGE_TYPE,
-              protocol: 'mls',
-              protocol_version: 1,
-              reply_to: queued.reply_to_id,
-              attachments: queued.uploaded_urls,
-              is_edited: false,
-              edited_at: null,
-              is_deleted: false,
-              created_at: queued.created_at,
-              content: queued.text || undefined,
-              reactions: {},
-              link_preview: queued.link_preview || undefined,
-              mentions: queued.mentions ?? undefined,
-              local_status: 'failed',
-              local_client_id: queued.local_client_id,
-            });
-            onSendError?.(getSendErrorNotice(retryErr));
-          } else {
-            // Leave in store for future retry.
-            console.error('[QUEUED_SEND] retry failed, will retry later', {
-              local_client_id: queued.local_client_id,
-              error: retryErr,
-            });
+            onSendError?.(getSendErrorNotice(error));
           }
         } finally {
           flushingQueuedSendIdsRef.current.delete(queued.local_client_id);
         }
       }
-    })();
-
+    });
     return () => { cancelled = true; };
-  }, [
-    conversation.id,
-    encryptionKey,
-    isOnline,
-    messageServiceDegraded,
-    onEncryptionKeyResolved,
-    onMessageSent,
-    onSendError,
-    resolveSendCrypto,
-  ]);
+  }, [conversation.id, isOnline, messageServiceDegraded, onMessageSent, onSendError]);
 
   useEffect(() => {
-    const isTypingEligible =
-      conversationSecurityState?.canSend !== false &&
-      !!encryptionKey &&
-      !sending &&
-      text.trim().length > 0 &&
-      !editingMessage;
-
-    if (!isTypingEligible) {
-      return;
-    }
-
+    const typingEligible = !sending && text.trim().length > 0 && !editingMessage;
+    if (!typingEligible) return;
     let cancelled = false;
     const emitTyping = async () => {
       const now = Date.now();
       if (now - lastTypingSentAtRef.current < 2200) return;
-
       lastTypingSentAtRef.current = now;
-      try {
-        await sendTypingStart(conversation.id);
-      } catch {
-        // Typing signals are best-effort and should never block input.
-      }
+      await sendTypingStart(conversation.id).catch(() => {});
     };
-
     void emitTyping();
     const timer = window.setInterval(() => {
-      if (!cancelled) {
-        void emitTyping();
-      }
+      if (!cancelled) void emitTyping();
     }, 2200);
-
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [conversation.id, conversationSecurityState, editingMessage, encryptionKey, sending, text]);
+  }, [conversation.id, editingMessage, sending, text]);
 
   const handleSend = async () => {
     if (!canSend) return;
-
     const trimmed = text.trim();
     const activePreviewUrl = getFirstPreviewableUrl(trimmed);
-    let activeLinkPreview =
-      activePreviewUrl && linkPreview?.url === activePreviewUrl
-        ? linkPreview
-        : null;
+    const activeLinkPreview = activePreviewUrl && linkPreview?.url === activePreviewUrl ? linkPreview : null;
     const resolvedMentions = trimmed ? resolveDraftMentions(trimmed) : [];
-    const previousText = text;
-    const previousAttachments = attachments;
-    const previousLinkPreview = linkPreview;
-    const previousDismissedLinkPreviewUrl = dismissedLinkPreviewUrl;
-    const uploadedAttachments = attachments
-      .filter((a) => a.url)
-      .map((a) => {
-        if (!a.spoiler) {
-          return a.url!;
-        }
-
-        return serializeAttachment({
-          ...parseAttachment(a.url!),
-          spoiler: true,
-        });
-      });
-    const shouldCreatePendingMessage = !editingMessage && (trimmed.length > 0 || uploadedAttachments.length > 0);
+    const previous = { text, attachments, linkPreview, dismissedLinkPreviewUrl };
+    const uploadedAttachments = attachments.filter((attachment) => attachment.url).map((attachment) => (
+      attachment.spoiler
+        ? serializeAttachment({ ...parseAttachment(attachment.url!), spoiler: true })
+        : attachment.url!
+    ));
+    const shouldCreatePendingMessage = !editingMessage && Boolean(trimmed || uploadedAttachments.length);
     const localClientId = shouldCreatePendingMessage
       ? `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       : null;
-    const optimisticMessage: Message | null = shouldCreatePendingMessage
-      ? {
-          conversation_id: conversation.id,
-          message_id: localClientId as string,
-          sender_id: currentUserId || 'local-user',
-          encrypted_content: null,
-          iv: null,
-          key_version: keyVersion,
-          message_type: MLS_MESSAGE_TYPE,
-          protocol: 'mls',
-          protocol_version: 1,
-          reply_to: replyTo?.message_id || null,
-          attachments: uploadedAttachments,
-          is_edited: false,
-          edited_at: null,
-          is_deleted: false,
-          created_at: new Date().toISOString(),
-          content: trimmed || undefined,
-          reactions: {},
-          link_preview: activeLinkPreview || undefined,
-          mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
-          local_status: 'sending',
-          local_client_id: localClientId as string,
-        }
-      : null;
-    const shouldJumpAfterOwnSend = Boolean(
-      shouldCreatePendingMessage &&
-      !editingMessage &&
-      shouldJumpToPresentAfterOwnSend?.()
-    );
+    const optimisticMessage: Message | null = localClientId ? {
+      conversation_id: conversation.id,
+      message_id: localClientId,
+      sender_id: currentUserId || 'local-user',
+      content: trimmed,
+      message_type: 'text',
+      reply_to: replyTo?.message_id || null,
+      attachments: uploadedAttachments,
+      is_edited: false,
+      edited_at: null,
+      is_deleted: false,
+      created_at: new Date().toISOString(),
+      reactions: {},
+      link_preview: activeLinkPreview || undefined,
+      mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
+      local_status: 'sending',
+      local_client_id: localClientId,
+    } : null;
+    const shouldJumpAfterOwnSend = Boolean(optimisticMessage && shouldJumpToPresentAfterOwnSend?.());
     const applyOwnSendResult = async (message: Message) => {
       if (shouldJumpAfterOwnSend && onOwnMessageSentFromHistory) {
         await onOwnMessageSentFromHistory(message);
       }
-
       onMessageSent(message);
     };
 
@@ -879,129 +452,61 @@ export const useMessageInput = ({
     setDismissedLinkPreviewUrl(null);
     setSending(true);
     onSendError?.(null);
-    const didRenderOptimisticMessage = Boolean(optimisticMessage && !shouldJumpAfterOwnSend);
-    if (optimisticMessage && !shouldJumpAfterOwnSend) {
-      onMessageSent(optimisticMessage);
-    }
+    const renderedOptimisticMessage = Boolean(optimisticMessage && !shouldJumpAfterOwnSend);
+    if (optimisticMessage && !shouldJumpAfterOwnSend) onMessageSent(optimisticMessage);
 
     try {
-      const sendCrypto = await resolveSendCrypto();
-      if (sendCrypto.bootstrapped) {
-        onEncryptionKeyResolved?.(sendCrypto.key, sendCrypto.version);
-      }
-
       if (editingMessage) {
-        await editMessage(
-          conversation.id,
-          editingMessage.message_id,
-          trimmed,
-          sendCrypto.key,
-          sendCrypto.version,
-          {
-            messageType: editingMessage.message_type || null,
-            secureAttachments: editingMessage.attachments,
-            forwarded: editingMessage.forwarded,
-            linkPreview: activeLinkPreview,
-            mentions: resolvedMentions,
-          }
-        );
+        await editMessage(conversation.id, editingMessage.message_id, trimmed, {
+          messageType: editingMessage.message_type,
+          attachments: editingMessage.attachments,
+          forwarded: editingMessage.forwarded,
+          linkPreview: activeLinkPreview,
+          mentions: resolvedMentions,
+        });
         onEditComplete?.(editingMessage.message_id, {
           content: trimmed,
           mentions: resolvedMentions,
           forwarded: editingMessage.forwarded,
           link_preview: activeLinkPreview || undefined,
-          message_type: editingMessage.message_type || null,
+          message_type: editingMessage.message_type,
         });
         onCancelEdit?.();
-      } else if (trimmed) {
-        const msg = await sendMessage(conversation.id, trimmed, sendCrypto.key, {
+      } else {
+        const options = {
           client_message_id: localClientId || undefined,
-          key_version: sendCrypto.version,
-          message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
-          secure_attachments: uploadedAttachments,
+          attachments: uploadedAttachments,
           linkPreview: activeLinkPreview,
           mentions: resolvedMentions,
-        });
-        const sentMessage: Message = localClientId ? {
-          ...msg,
-          link_preview: activeLinkPreview || msg.link_preview,
-          local_status: 'sent',
-          local_client_id: localClientId,
-        } : {
-          ...msg,
-          link_preview: activeLinkPreview || msg.link_preview,
         };
+        const message = trimmed
+          ? await sendMessage(conversation.id, trimmed, options)
+          : await sendImageOnlyMessage(conversation.id, uploadedAttachments, options);
+        const sentMessage = localClientId
+          ? { ...message, local_status: 'sent' as const, local_client_id: localClientId }
+          : message;
         await applyOwnSendResult(sentMessage);
-        if (activePreviewUrl && previousDismissedLinkPreviewUrl !== activePreviewUrl) {
-          const previewUrl = activePreviewUrl;
-          const previewAtSend = activeLinkPreview;
-          void (async () => {
-            try {
-              const preview = previewAtSend?.url === previewUrl
-                ? previewAtSend
-                : await fetchLinkPreview(previewUrl);
-              if (!preview) return;
+        onCancelReply?.();
 
-              const previewUpdate = await updateMessageLinkPreview(
-                conversation.id,
-                msg.message_id,
-                preview,
-                sendCrypto.key,
-                msg.key_version || sendCrypto.version,
-              );
-              onMessageSent({
-                ...sentMessage,
-                ...previewUpdate,
-              });
-            } catch (previewError) {
-              console.warn('[LINK_PREVIEW] failed to attach encrypted preview after send', previewError);
-            }
-          })();
+        if (activePreviewUrl && previous.dismissedLinkPreviewUrl !== activePreviewUrl && !activeLinkPreview) {
+          void fetchLinkPreview(activePreviewUrl)
+            .then(async (preview) => {
+              if (!preview) return;
+              const update = await updateMessageLinkPreview(conversation.id, message.message_id, preview);
+              onMessageSent({ ...sentMessage, ...update });
+            })
+            .catch((error) => console.warn('[LINK_PREVIEW] failed to attach preview after send', error));
         }
-        onCancelReply?.();
-        if (conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
-          setSlowmodeRemaining(conversation.slowmode_seconds);
-        }
-      } else if (uploadedAttachments.length > 0) {
-        const msg = await sendImageOnlyMessage(conversation.id, sendCrypto.key, uploadedAttachments, {
-          client_message_id: localClientId || undefined,
-          key_version: sendCrypto.version,
-          message_type: MLS_MESSAGE_TYPE,
-          reply_to: replyTo?.message_id || undefined,
-          mentions: resolvedMentions,
-        });
-        await applyOwnSendResult(localClientId ? {
-          ...msg,
-          local_status: 'sent',
-          local_client_id: localClientId,
-        } : msg);
-        onCancelReply?.();
         if (conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
           setSlowmodeRemaining(conversation.slowmode_seconds);
         }
       }
-    } catch (err: any) {
-      console.error('Send failed:', err);
-
-      const isPeerNotReady =
-        conversation.type === 'dm' &&
-        isDmPeerNotReadyError(err);
-
-      if ((isPeerNotReady || isTransientSendFailure(err)) && optimisticMessage && localClientId) {
-        // Queue the message locally — don't restore input, don't mark failed.
-        // The message stays visible with 'queued' status and will be retried
-        // automatically when encryption/service health becomes usable again.
-        debugLog('[QUEUED_SEND] queuing message for deferred secure send', {
-          conversation_id: conversation.id,
-          local_client_id: localClientId,
-        });
-        await applyOwnSendResult({
-          ...optimisticMessage,
-          local_status: 'queued',
-          local_client_id: localClientId,
-        });
-        queuedSendStore.put({
+    } catch (error: any) {
+      console.error('Send failed:', error);
+      if (isTransientSendFailure(error) && optimisticMessage && localClientId) {
+        await applyOwnSendResult({ ...optimisticMessage, local_status: 'queued' });
+        await queuedSendStore.put({
           conversation_id: conversation.id,
           local_client_id: localClientId,
           sender_id: currentUserId || 'local-user',
@@ -1011,61 +516,38 @@ export const useMessageInput = ({
           link_preview: activeLinkPreview || undefined,
           mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
           created_at: optimisticMessage.created_at,
-        }).catch((e) => console.error('[QUEUED_SEND] failed to persist queued send', e));
-        onSendError?.(
-          isPeerNotReady
-            ? 'Message queued. It will retry automatically when secure delivery is ready.'
-            : getQueuedSendNotice(err),
-        );
+        }).catch((queueError) => console.error('[QUEUED_SEND] failed to persist queued send', queueError));
+        onSendError?.(getQueuedSendNotice(error));
       } else {
-        // Normal failure path. If we already rendered an optimistic bubble,
-        // leave the failed bubble visible so the user can retry from there.
-        if (!didRenderOptimisticMessage) {
-          setText(previousText);
-          setAttachments(previousAttachments);
-          setLinkPreview(previousLinkPreview);
-          setDismissedLinkPreviewUrl(previousDismissedLinkPreviewUrl);
+        if (!renderedOptimisticMessage) {
+          setText(previous.text);
+          setAttachments(previous.attachments);
+          setLinkPreview(previous.linkPreview);
+          setDismissedLinkPreviewUrl(previous.dismissedLinkPreviewUrl);
         }
-        if (didRenderOptimisticMessage && optimisticMessage && localClientId) {
-          onMessageSent({
-            ...optimisticMessage,
-            local_status: 'failed',
-            local_client_id: localClientId,
-          });
+        if (renderedOptimisticMessage && optimisticMessage) {
+          onMessageSent({ ...optimisticMessage, local_status: 'failed' });
         }
-
-        if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
-          setSlowmodeRemaining(err.retry_after_seconds);
-        }
-        onSendError?.(getSendErrorNotice(err));
+        if (typeof error?.retry_after_seconds === 'number') setSlowmodeRemaining(error.retry_after_seconds);
+        onSendError?.(getSendErrorNotice(error));
       }
     } finally {
       setSending(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Check if the user is on a mobile device
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-    if (e.key === 'Enter' && !e.shiftKey) {
-      if (!isMobile) {
-        // Desktop behavior: Regular Enter sends the message.
-        // (Shift + Enter is naturally ignored here, so it creates a new line)
-        e.preventDefault();
-        handleSend();
-      }
-      // Mobile behavior: We do absolutely nothing here. 
-      // The native mobile "Return" key will just create a new line like normal.
+    if (event.key === 'Enter' && !event.shiftKey && !isMobile) {
+      event.preventDefault();
+      void handleSend();
     }
-
-    if (e.key === 'Escape') {
+    if (event.key === 'Escape') {
       if (editingMessage) onCancelEdit?.();
       if (replyTo) onCancelReply?.();
     }
   };
 
-  // ADDED THIS BACK IN!
   const handleCancelAction = () => {
     if (editingMessage) {
       onCancelEdit?.();
@@ -1080,9 +562,7 @@ export const useMessageInput = ({
     const previewUrl = linkPreview?.url || getFirstPreviewableUrl(text);
     setLinkPreview(null);
     setLinkPreviewLoading(false);
-    if (previewUrl) {
-      setDismissedLinkPreviewUrl(previewUrl);
-    }
+    if (previewUrl) setDismissedLinkPreviewUrl(previewUrl);
   };
 
   return {
@@ -1104,15 +584,15 @@ export const useMessageInput = ({
     getPlaceholder,
     handleSend,
     handleKeyDown,
-    handleCancelAction, // Now this resolves correctly
+    handleCancelAction,
     handlePaste,
-    openMediaPicker,
-    openFilePicker,
+    openMediaPicker: () => attachmentsAllowed && mediaInputRef.current?.click(),
+    openFilePicker: () => attachmentsAllowed && fileInputRef.current?.click(),
     handleFileChange,
     removeAttachment,
     toggleAttachmentSpoiler,
     retryAttachment,
     removeLinkPreview,
-    dismissAttachmentAlert,
+    dismissAttachmentAlert: () => setAttachmentAlert(null),
   };
 };

@@ -3,13 +3,13 @@ import LegalLayout, {
   LegalSection,
 } from '../components/common/LegalLayout';
 
-const LAST_UPDATED = 'April 1, 2026';
+const LAST_UPDATED = 'July 6, 2026';
 
 export default function PrivacyPolicy() {
   return (
     <LegalLayout
       title="Privacy Policy"
-      subtitle="This page explains the basic privacy facts for VOID: what data the app uses, why it uses it, and what is or is not covered by end-to-end encryption."
+      subtitle="This page explains what data VOID uses, why it uses it, and how it is stored."
       lastUpdated={LAST_UPDATED}
       active="privacy"
     >
@@ -19,8 +19,8 @@ export default function PrivacyPolicy() {
             'basic account and profile data such as username, email address, password hash, display name, bio, and uploaded profile or group images',
             'security and device data such as IP address, user-agent, device identifiers, device fingerprint, session records, and login or abuse-prevention logs',
             'conversation data such as friendships, conversation membership, nicknames, invites, join requests, message metadata, and attachments',
-            'two-factor, public-key, and encrypted key-backup data if you use those features',
-            'local browser data such as settings, cached account data, queued sends, and local encryption or MLS state',
+            'two-factor authentication data if you use that feature',
+            'local browser data such as settings, cached account data, and queued sends',
           ]}
         />
       </LegalSection>
@@ -30,26 +30,21 @@ export default function PrivacyPolicy() {
           items={[
             'to create accounts, verify email, reset passwords, and keep users signed in',
             'to deliver direct messages, group chats, invites, media, and notifications',
-            'to support encryption, key backup, recovery, and conversation state sync',
+            'to keep conversations and account settings in sync across sessions',
             'to detect abuse, spam, suspicious activity, and service misuse',
             'to operate, secure, debug, and improve the service',
           ]}
         />
       </LegalSection>
 
-      <LegalSection title="3. Encryption">
+      <LegalSection title="3. Message Privacy">
         <p>
-          VOID uses encryption for supported messages, supported encrypted attachment flows, and
-          encrypted key backups.
+          Messages and attachments are processed and stored by VOID so they can be delivered,
+          synchronized, moderated, and recovered as part of the service.
         </p>
         <p>
-          Not all data in VOID is end-to-end encrypted. Account information, session data, security
-          logs, device identifiers, message metadata, avatars, group icons, and invite preview data
-          may exist outside end-to-end encryption.
-        </p>
-        <p>
-          Some attachments may be stored as encrypted ciphertext when they use the encrypted
-          attachment flow. Profile images and group images do not use that same path.
+          Use the service with that expectation and avoid sharing information you do not want
+          stored by the service.
         </p>
       </LegalSection>
 

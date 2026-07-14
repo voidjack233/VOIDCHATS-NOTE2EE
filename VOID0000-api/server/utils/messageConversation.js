@@ -6,7 +6,7 @@ export async function resolveMessageStorageConversation(conversation, db = pool)
   }
 
   const result = await db.query(
-    `SELECT id, public_id, type, owner_id, parent_conversation_id, current_key_version, slowmode_seconds
+    `SELECT id, public_id, type, owner_id, parent_conversation_id, slowmode_seconds
      FROM conversations
      WHERE parent_conversation_id = $1
        AND type = 'channel'

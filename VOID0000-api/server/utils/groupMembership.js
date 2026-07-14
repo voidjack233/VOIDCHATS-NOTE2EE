@@ -2,11 +2,6 @@ import { EVENTS } from '../gateway/protocol.js';
 import { sendLiveEventToUser } from '../gateway/client.js';
 import { findConversationByIdentifier } from './conversationIdentity.js';
 
-export function normalizeKeyVersion(value, fallback = 1) {
-  const parsed = parseInt(String(value ?? fallback), 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 export function uniqueUserIds(values = []) {
   return [...new Set(
     values
@@ -35,7 +30,7 @@ export async function resolveMembershipConversation(db, requestedConversationId)
   }
 
   const parentResult = await db.query(
-    `SELECT id, public_id, type, owner_id, parent_conversation_id, current_key_version, permissions
+    `SELECT id, public_id, type, owner_id, parent_conversation_id, permissions
      FROM conversations
      WHERE id = $1
      LIMIT 1`,
@@ -71,11 +66,10 @@ export async function ensureGroupOwner(db, conversationId) {
   }
 
   const membersResult = await db.query(
-    `SELECT user_id::text AS user_id, role, joined_at, joined_key_version
+    `SELECT user_id::text AS user_id, role, joined_at
      FROM conversation_members
      WHERE conversation_id = $1
      ORDER BY joined_at ASC NULLS LAST,
-              joined_key_version ASC NULLS LAST,
               user_id ASC`,
     [conversationId],
   );
@@ -144,7 +138,6 @@ export async function validateFriendships(db, requesterId, memberIds) {
 export async function emitConversationUpdate(
   conversation,
   memberIds,
-  currentKeyVersion,
   memberCount,
   memberRolesById = null,
 ) {
@@ -155,7 +148,6 @@ export async function emitConversationUpdate(
         public_id: conversation.public_id ? String(conversation.public_id) : null,
         type: conversation.type,
         owner_id: conversation.owner_id || null,
-        current_key_version: currentKeyVersion,
         member_count: memberCount,
         updated_at: new Date().toISOString(),
         ...(memberRolesById && memberRolesById[memberId]

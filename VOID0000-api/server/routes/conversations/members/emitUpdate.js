@@ -2,7 +2,6 @@ import { pool } from '../../../db.js';
 import {
   emitConversationUpdate,
   getGroupMembership,
-  normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../../utils/groupMembership.js';
 
@@ -27,9 +26,8 @@ export function registerMemberEmitUpdateRoute(router) {
         [conversation.id]
       );
       const memberIds = membersResult.rows.map((row) => row.user_id);
-      const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
 
-      await emitConversationUpdate(conversation, memberIds, currentKeyVersion, memberIds.length);
+      await emitConversationUpdate(conversation, memberIds, memberIds.length);
 
       res.json({ success: true });
     } catch (err) {

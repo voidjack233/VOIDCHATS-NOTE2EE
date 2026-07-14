@@ -1,6 +1,6 @@
 # VOID-CHATS
 
-This is my chat app hobby project.
+This is my service-managed chat app hobby project.
 
 It works, but it is still a personal project and not a polished product. Expect rough edges, unfinished ideas, and setup steps that assume you are comfortable running local infrastructure.
 
@@ -11,7 +11,7 @@ Read the next few sections before trying to set it up. They explain the service 
 - Bare-metal/manual setup is only supported on Linux.
 - Docker Compose exists for local dev/testing and may work outside Linux, but it is not the production deployment story.
 - The stack is not a one-command install.
-- This project includes encrypted chat/media work, but I am not claiming the project is secure or formally audited end to end.
+- Messages and attachments are handled by the service for delivery, sync, moderation, and recovery.
 - There may still be hidden vulnerabilities, logic mistakes, or rough UX corners.
 - If you want a clean production messenger out of the box, this is probably not that.
 
@@ -26,7 +26,7 @@ Read the next few sections before trying to set it up. They explain the service 
 - `VOIDADMIN`
   small internal admin panel for users and security logs
 - `docs`
-  setup notes, flow map, recovery notes, future notes
+  setup notes, flow map, backup notes, and deployment notes
 
 ## About The Docs
 
@@ -46,7 +46,7 @@ Short version:
 
 or
 
-You can use Docker. it work on my machine :) 
+You can use Docker. it work on my machine :)
 
 Commands:
 
@@ -113,9 +113,9 @@ VOID has:
 - account auth with short-lived access cookies, refresh-token rotation, CSRF protection, captcha, trust scoring, and 2FA flows
 - friends, profiles, sessions, presence, and realtime gateway plumbing
 - DMs and group conversations
-- group owners, admins, members, invites, ownership transfer, and self-leave
+- group owners, admins, members, invites, ownership transfer, and leave-group flows
 - a simple group settings UI with `Profile`, `Members`, `Invites`, and `Permissions`
-- encrypted chat/media work built around the MLS path
+- service-side message storage for message history, edits, replies, reactions, link previews, and attachments
 
 Not included:
 
@@ -123,7 +123,7 @@ Not included:
 - a separate group access-control page
 - voice calls and video calls
 - self-service account deletion
-- a formal security or cryptography audit
+- a formal third-party security review
 
 Group permissions use simple built-in roles like owner, admin, and member. There is no custom role-builder UI in this repo.
 
@@ -135,43 +135,17 @@ Self-service account deletion is not in the app because this setup is tiny, roug
 
 VOID includes:
 
-- MLS-backed encrypted chat work
-- encrypted media
-- durable MLS sync
 - auth, sessions, presence, captcha/trust protection, and realtime chat infrastructure
+- server-side authorization checks for conversations, members, invites, messages, reactions, and attachments
+- private attachment object routing through authenticated API paths
+- short-lived access cookies, refresh-token rotation, and server-side refresh-token hashing
+- 2FA flows and CSRF protection
 
 VOID does **not** have:
 
-- a formal end-to-end cryptography audit
 - a formal third-party security review of the whole stack
 - a guarantee that there are no hidden vulnerabilities
-
-The biggest explicit crypto caveat is `ts-mls`.
-
-This project uses a vendored copy of:
-
-- [`ts-mls`](https://github.com/LukaJCB/ts-mls) `1.6.2`, stored in [`VOID0000-www/vendor/ts-mls`](VOID0000-www/vendor/ts-mls)
-
-Credit to:
-
-- [`LukaJCB`](https://github.com/LukaJCB), the upstream maintainer of `ts-mls`
-
-Upstream states that `ts-mls` has **not** undergone a formal security audit yet, so I do not want this repo to pretend otherwise.
-The package is vendored so future upstream or npm updates do not silently change the MLS code used by this project.
-
-What that means:
-
-- the MLS path is real
-- the MLS path is still not something I would market as a formally audited messenger
-
-One more implementation note:
-
-- the recovery path uses a user-created recovery key so fresh devices do not have to depend only on the account password
-- during login or legacy password-based encrypted-chat recovery, the frontend may keep the raw account password in browser memory briefly so it can finish password-derived key restore / backup work
-- that password is not meant to persist in `localStorage`, `sessionStorage`, or IndexedDB
-- target behavior is short-lived retention only: usually just for the immediate bootstrap pass, with a fallback max window of about 2 minutes before it is cleared
-- the device may store the recovery key locally in an encrypted browser record so it can refresh recovery-key backups
-- this is a tradeoff in the recovery design, not something I consider perfect forever
+- a claim that the service operator cannot access message or attachment data
 
 Account-security note:
 
@@ -183,8 +157,8 @@ Account-security note:
 
 Related notes:
 
-- [VOID0000-www/docs/secure-chat-recovery-limitations.md](VOID0000-www/docs/secure-chat-recovery-limitations.md)
 - [VOID0000-www/docs/project-flow-map.md](VOID0000-www/docs/project-flow-map.md)
+- [VOID0000-www/docs/message-scroll-mechanism.md](VOID0000-www/docs/message-scroll-mechanism.md)
 
 ## Main Open-Source Building Blocks
 
@@ -202,8 +176,6 @@ Frontend:
   routing
 - `socket.io-client`
   realtime client transport
-- `ts-mls`
-  MLS-based encrypted chat layer
 - `emoji-picker-react`
   emoji picker UI
 - `blurhash`
@@ -226,7 +198,7 @@ API:
 - `bullmq`
   queueing work
 - `sharp`
-  server-side image processing for non-encrypted image flows like avatars
+  server-side image processing for avatars and attachment metadata
 - `argon2`
   password hashing
 - `jsonwebtoken`
@@ -250,7 +222,7 @@ Full dependency lists live in:
 ## Repo Layout
 
 ```text
-VOIDAPP/
+repo-root/
 ├── VOID0000-api/
 │   ├── db/
 │   ├── scripts/
@@ -259,26 +231,3 @@ VOIDAPP/
 ├── VOID0000-www/
 └── docs/
 ```
-
-## A Few Final Honest Notes
-
-- This repo targets Linux infra first, but Docker Compose exists for local testing.
-- If you are on Windows or macOS without Docker, you are outside the setup path I actually used.
-- If you deploy this publicly, do your own security review.
-- Keep raw backend, gateway, and MinIO ports loopback-only. Let Nginx or your tunnel be the public door.
-- Profile and group pictures are public-read. Chat attachment blobs are private and downloaded through the authenticated API path.
-- If you fork this, feel free to simplify things. I did not optimize it for textbook purity.
-
-Future notes live here:
-
-- [docs/future-notes.md](docs/future-notes.md)
-
-Backup notes live here:
-
-- [docs/backups.md](docs/backups.md)
-
-
-If you guys have alot of time and the Setup step is not working... (figure it out by yourself) XD
-
-
-One last note: if you see the root `package.json`, `package-lock.json`, or `server.js`, treat them as legacy root files. The normal run path uses `VOID0000-www`, split services inside `VOID0000-api`, and `VOID0000-api/void_gateway`.

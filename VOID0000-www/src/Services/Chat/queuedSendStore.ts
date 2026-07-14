@@ -1,10 +1,7 @@
 // src/Services/Chat/queuedSendStore.ts
 //
-// Lightweight IndexedDB store for queued secure-send messages.
-// These are messages the user pressed Send on in a fresh DM, but the
-// recipient had no usable key material yet.  They survive conversation
-// switch, refresh, and crash, and are retried automatically when the
-// encryption key becomes available.
+// Lightweight IndexedDB store for messages waiting on network recovery.
+// They survive conversation switches, refreshes, and browser crashes.
 
 import type { LinkPreviewMetadata } from './chatTypes';
 

@@ -23,13 +23,13 @@ import LinkPreviewCard from './LinkPreviewCard';
 import MessagePreviewText from './MessagePreviewText';
 import UserAvatar from '../../common/UserAvatar';
 import { parseAttachment, parseAttachments } from '../../../Services/Chat/chatService';
-import { CHAT_FORWARDED_MLS_MESSAGE_TYPE } from '../../../Services/Chat/chatUtils';
+import { CHAT_FORWARDED_MESSAGE_TYPE } from '../../../Services/Chat/chatUtils';
 import { getMentionUsernames } from '../../../Services/Chat/messageMentions';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../../Services/Chat/reactionLimits';
 import {
   getCachedAttachmentObjectUrl,
   resolveAttachmentObjectUrl,
-} from '../../../Services/Crypto/attachmentEncryption';
+} from '../../../Services/Chat/attachmentService';
 import { getMessageDateLabel } from './useMessageLayout';
 import {
   extractMessageTextSegments,
@@ -79,7 +79,6 @@ interface MessageItemProps {
   metaFontSize: number;
   replyFontSize: number;
   bubbleFontSize: number;
-  encryptedFontSize: number;
   currentUserId?: string;
   replyParent: Message | null;
   replyParentLoading?: boolean;
@@ -198,8 +197,6 @@ function getReplyAttachmentLabel(attachment: Attachment): string {
 function getReplyPreviewAttachmentCacheKey(attachment: Attachment): string {
   return [
     attachment.url || '',
-    attachment.iv || '',
-    attachment.key || '',
     attachment.mime || '',
     attachment.name || '',
   ].join('::');
@@ -254,7 +251,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     !firstAttachmentIsSpoiler &&
     firstAttachmentCacheKey
     ? getCachedAttachmentObjectUrl(firstAttachment) ||
-      (firstAttachment.encrypted === true ? null : replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey)) ||
+      replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey) ||
       null
     : null;
   const [resolvedThumbnail, setResolvedThumbnail] = useState<{ cacheKey: string | null; url: string | null }>({
@@ -300,7 +297,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   const mediaPlaceholderClass = isOwn ? 'bg-void-accent/45 text-white/80' : 'bg-void-bg-hover/65 text-void-text-muted';
   const hasReadableText = Boolean(
     replyParent?.content &&
-    replyParent.content !== '[encrypted]' &&
     replyParent.content !== '[deleted]' &&
     replyParent.content !== UNAVAILABLE_REPLY_CONTENT,
   );
@@ -314,9 +310,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
         ? null
         : firstAttachment
           ? getReplyAttachmentLabel(firstAttachment)
-          : replyParent.content === '[encrypted]'
-            ? 'Encrypted message'
-            : 'Message unavailable';
+          : 'Message unavailable';
   const shouldShowTextPreview = hasReadableText || !hasPreviewImage;
   const hasTextAndImagePreview = hasPreviewImage && shouldShowTextPreview;
   useEffect(() => {
@@ -331,12 +325,10 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     }
 
     const cachedUrl = getCachedAttachmentObjectUrl(firstAttachment) ||
-      (firstAttachment.encrypted === true ? null : replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey)) ||
+      replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey) ||
       null;
     if (cachedUrl) {
-      if (firstAttachment.encrypted !== true) {
-        replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, cachedUrl);
-      }
+      replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, cachedUrl);
       setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url: cachedUrl });
       return undefined;
     }
@@ -350,9 +342,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     const pendingUrl = replyPreviewAttachmentUrlPromises.get(firstAttachmentCacheKey) ||
       resolveAttachmentObjectUrl(firstAttachment, { conversationId: replyAttachmentConversationId })
         .then((url) => {
-          if (firstAttachment.encrypted !== true) {
-            replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, url);
-          }
+          replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, url);
           replyPreviewAttachmentUrlPromises.delete(firstAttachmentCacheKey);
           return url;
         })
@@ -528,7 +518,6 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
   prev.metaFontSize === next.metaFontSize &&
   prev.replyFontSize === next.replyFontSize &&
   prev.bubbleFontSize === next.bubbleFontSize &&
-  prev.encryptedFontSize === next.encryptedFontSize &&
   prev.currentUserId === next.currentUserId &&
   prev.replyParent === next.replyParent &&
   prev.replyParentLoading === next.replyParentLoading &&
@@ -553,7 +542,6 @@ const MessageItem = memo(function MessageItem({
   metaFontSize,
   replyFontSize,
   bubbleFontSize,
-  encryptedFontSize,
   currentUserId,
   replyParent,
   replyParentLoading = false,
@@ -624,7 +612,7 @@ const MessageItem = memo(function MessageItem({
   const d = DENSITY[density];
   const isSystem = message.message_type === 'system';
   const isForwardedMessage =
-    message.message_type === CHAT_FORWARDED_MLS_MESSAGE_TYPE || Boolean(message.forwarded);
+    message.message_type === CHAT_FORWARDED_MESSAGE_TYPE || Boolean(message.forwarded);
   const isOwn = message.sender_id === currentUserId;
   const isSending = message.local_status === 'sending';
   const isQueued = message.local_status === 'queued';
@@ -755,7 +743,7 @@ const MessageItem = memo(function MessageItem({
     ? 'box-decoration-clone break-all rounded-md bg-white/12 px-1 py-0.5 font-medium text-sky-100 underline decoration-sky-100/90 decoration-2 underline-offset-2 transition-colors hover:bg-white/18 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/35'
     : 'box-decoration-clone break-all rounded-md bg-void-bg-main/65 px-1 py-0.5 font-medium text-sky-400 underline decoration-sky-400/90 decoration-2 underline-offset-2 transition-colors hover:bg-void-bg-main hover:text-sky-300 focus:outline-none focus:ring-2 focus:ring-void-accent/35';
   const inviteUrl = useMemo(() => {
-    if (!message.content || message.content === '[encrypted]') return null;
+    if (!message.content) return null;
     const segments = extractMessageTextSegments(message.content);
     const inviteSegment = segments.find((segment) => (
       segment.type === 'link' && getInviteCodeFromMessageUrl(segment.url)
@@ -768,7 +756,7 @@ const MessageItem = memo(function MessageItem({
     [inviteUrl],
   );
   const firstMessageUrl = useMemo(() => {
-    if (!message.content || message.content === '[encrypted]') return null;
+    if (!message.content) return null;
     const firstLink = extractMessageTextSegments(message.content).find(
       (segment) => segment.type === 'link',
     );
@@ -1149,7 +1137,7 @@ const MessageItem = memo(function MessageItem({
       )}
     </div>
   ) : null;
-  const messageHasRealContent = Boolean(message.content && message.content !== '[encrypted]');
+  const messageHasRealContent = Boolean(message.content);
   const messageTextBubble = message.is_deleted ? (
     <div
       className={`${d.bubblePadding} rounded-2xl italic text-void-text-muted bg-void-bg-hover/50`}
@@ -1172,7 +1160,7 @@ const MessageItem = memo(function MessageItem({
         } ${isPending ? 'brightness-90' : ''} ${isFailed ? 'ring-1 ring-orange-400/45' : ''}`}
         style={{ fontSize: `${bubbleFontSize}px` }}
       >
-        {messageHasRealContent ? (
+        {messageHasRealContent && (
           <FormattedMessageText
             content={message.content || ''}
             linkClassName={linkClassName}
@@ -1181,10 +1169,6 @@ const MessageItem = memo(function MessageItem({
             enableMentions={enableMentions}
             mentionUsernames={enableMentions ? getMentionUsernames(message.mentions) : undefined}
           />
-        ) : (
-          <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>
-            encrypted
-          </span>
         )}
         {message.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
         {isPending && (

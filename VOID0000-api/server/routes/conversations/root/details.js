@@ -29,8 +29,6 @@ router.get('/:conversationId', async (req, res) => {
                 'role', cm.role,
                 'nickname', cm.nickname,
                 'joined_at', cm.joined_at,
-                'joined_key_version', cm.joined_key_version,
-                'history_start_version', cm.history_start_version,
                 'username', u.username,
                 'display_name', up.display_name,
                 'avatar_filename', up.avatar_filename,
@@ -54,8 +52,6 @@ router.get('/:conversationId', async (req, res) => {
 
     conversation.members = conversation.members.map((member) => ({
       ...member,
-      joined_key_version: member.joined_key_version != null ? parseInt(member.joined_key_version, 10) : null,
-      history_start_version: member.history_start_version != null ? parseInt(member.history_start_version, 10) : null,
       avatar_url: resolveUserAvatarUrl(member.avatar_filename),
     }));
 

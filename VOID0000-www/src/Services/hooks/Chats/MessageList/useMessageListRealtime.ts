@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import {
   deleteMessage,
-  resolveMessageCryptoMetadata,
   type Message,
 } from '../../../Chat/chatService';
 import { messageSync } from '../../../Chat/chatSync';
@@ -67,19 +66,14 @@ const useMessageListRealtime = ({
           conversation_id: record.conversation_id,
           message_id: record.local_client_id,
           sender_id: record.sender_id,
-          encrypted_content: null,
-          iv: null,
-          key_version: 1,
-          message_type: 'mls_application',
-          protocol: 'mls' as const,
-          protocol_version: 1,
+          message_type: 'text',
           reply_to: record.reply_to_id,
           attachments: record.uploaded_urls,
           is_edited: false,
           edited_at: null,
           is_deleted: false,
           created_at: record.created_at,
-          content: record.text || undefined,
+          content: record.text || '',
           reactions: {},
           link_preview: record.link_preview ?? undefined,
           mentions: record.mentions ?? undefined,
@@ -122,19 +116,16 @@ const useMessageListRealtime = ({
       const localStatus = newMessage.local_status;
       const localClientId = getLocalClientId(newMessage);
 
-      const cryptoMetadata = resolveMessageCryptoMetadata(newMessage);
       const normalizedMessage: Message = {
         ...newMessage,
         conversation_id: normalizedConversationId,
-        message_type: newMessage.message_type || 'mls_application',
+        message_type: newMessage.message_type || 'text',
         reply_to: newMessage.reply_to ?? null,
         is_edited: Boolean(newMessage.is_edited),
         edited_at: newMessage.edited_at ?? null,
         is_deleted: Boolean(newMessage.is_deleted),
         created_at: newMessage.created_at || new Date().toISOString(),
         reactions: newMessage.reactions || {},
-        protocol: cryptoMetadata.protocol,
-        protocol_version: cryptoMetadata.protocol_version,
         local_status: localStatus,
         local_client_id: localClientId,
       };
@@ -154,8 +145,7 @@ const useMessageListRealtime = ({
           conversation_id: normalizedMessage.conversation_id,
           message_id: normalizedMessage.message_id,
           sender_id: normalizedMessage.sender_id,
-          content: normalizedMessage.content ?? null,
-          key_version: normalizedMessage.key_version ?? null,
+          content: normalizedMessage.content,
           message_type: normalizedMessage.message_type,
           reply_to: normalizedMessage.reply_to,
           is_edited: normalizedMessage.is_edited,
@@ -167,8 +157,6 @@ const useMessageListRealtime = ({
           forwarded: normalizedMessage.forwarded ?? undefined,
           mentions: normalizedMessage.mentions ?? undefined,
           link_preview: normalizedMessage.link_preview ?? undefined,
-          protocol: normalizedMessage.protocol ?? null,
-          protocol_version: normalizedMessage.protocol_version ?? null,
         };
 
         messageSync.storeIncomingMessage(localMessage).catch(console.error);
@@ -240,16 +228,13 @@ const useMessageListRealtime = ({
         message.message_id === messageUpdate.message_id
           ? {
               ...message,
-              content: hasContentUpdate ? messageUpdate.content : message.content,
+              content: hasContentUpdate ? (messageUpdate.content ?? '') : message.content,
               is_edited: messageUpdate.is_edited ?? message.is_edited,
               edited_at: messageUpdate.edited_at ?? message.edited_at,
               forwarded: messageUpdate.forwarded ?? message.forwarded,
               mentions: messageUpdate.mentions ?? message.mentions,
               link_preview: hasLinkPreviewUpdate ? messageUpdate.link_preview : message.link_preview,
               message_type: messageUpdate.message_type ?? message.message_type,
-              encrypted_link_preview: messageUpdate.encrypted_link_preview ?? message.encrypted_link_preview,
-              link_preview_iv: messageUpdate.link_preview_iv ?? message.link_preview_iv,
-              link_preview_key_version: messageUpdate.link_preview_key_version ?? message.link_preview_key_version,
             }
           : message
       ))
@@ -263,7 +248,7 @@ const useMessageListRealtime = ({
     setMessages((previous) =>
       previous.map((message) => (
         message.message_id === messageDelete.message_id
-          ? { ...message, is_deleted: true, content: '[deleted]', encrypted_content: null }
+          ? { ...message, is_deleted: true, content: '[deleted]' }
           : message
       ))
     );
@@ -276,7 +261,7 @@ const useMessageListRealtime = ({
       setMessages((previous) =>
         previous.map((message) => (
           message.message_id === messageId
-            ? { ...message, is_deleted: true, content: '[deleted]', encrypted_content: null }
+            ? { ...message, is_deleted: true, content: '[deleted]' }
             : message
         ))
       );

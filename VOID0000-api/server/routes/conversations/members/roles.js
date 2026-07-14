@@ -2,7 +2,6 @@ import { pool } from '../../../db.js';
 import {
   emitConversationUpdate,
   getChildChannelIds,
-  normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../../utils/groupMembership.js';
 
@@ -90,15 +89,9 @@ export function registerMemberRoleRoutes(router) {
       const memberRolesById = Object.fromEntries(
         memberRowsResult.rows.map((row) => [row.user_id, row.role])
       );
-      const currentKeyVersion = normalizeKeyVersion(
-        membershipConversation.current_key_version,
-        1,
-      );
-
       await emitConversationUpdate(
         membershipConversation,
         memberIds,
-        currentKeyVersion,
         memberIds.length,
         memberRolesById,
       );

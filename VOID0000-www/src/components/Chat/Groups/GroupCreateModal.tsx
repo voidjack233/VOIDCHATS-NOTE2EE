@@ -1,15 +1,14 @@
 // src/components/Chat/Groups/GroupCreateModal.tsx
 import { useState, useRef } from 'react';
 import { X, Camera } from 'lucide-react';
-import { createSecureGroup, uploadConversationIcon } from '../../../Services/Chat/chatService';
+import { createGroup, uploadConversationIcon } from '../../../Services/Chat/chatService';
 
 interface GroupCreateModalProps {
   onClose: () => void;
   onCreated: (conversationId: string) => void;
-  currentUserId: string;
 }
 
-const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModalProps) => {
+const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
   const [name, setName] = useState('');
   const [iconPreview, setIconPreview] = useState<string | null>(null);
   const [iconData, setIconData] = useState<string | null>(null);
@@ -39,7 +38,7 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
     setError('');
 
     try {
-      const { conversation } = await createSecureGroup(name.trim(), [], currentUserId);
+      const { conversation } = await createGroup(name.trim(), []);
 
       if (iconData) {
         try {

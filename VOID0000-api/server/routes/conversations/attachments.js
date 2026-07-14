@@ -1,8 +1,6 @@
 // server/routes/conversations/attachments.js
 // POST /api/conversations/:conversationId/attachments
-// Uploads opaque encrypted blobs and returns private API download URLs.
-// Encrypted-media uploads store ciphertext only; the file key/iv lives in
-// the message's encrypted payload, not in object storage.
+// Uploads private attachment objects and returns authenticated download URLs.
 
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
@@ -14,9 +12,8 @@ import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissi
 const router = Router({ mergeParams: true });
 
 const MAX_FILES = 5;
-const MAX_FILE_BYTES = 14 * 1024 * 1024; // ~10 MB source image after encryption + base64
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const LEGACY_ATTACHMENT_KEY_PATTERN = /^msg-[0-9a-f-]{36}\.bin$/i;
 
 function getConversationDownloadIdentifier(conversation) {
   return conversation.public_id ? String(conversation.public_id) : String(conversation.id);
@@ -68,8 +65,7 @@ async function streamAttachmentObject(res, objectKey) {
 }
 
 // POST /api/conversations/:conversationId/attachments
-// Body:
-//   Encrypted: { files: [{ data: '<base64 ciphertext>', encrypted: true }] }
+// Body: { files: [{ data: '<base64 file bytes>', mime?: 'image/png' }] }
 // Returns: { urls: ['/api/conversations/:id/attachments/:attachmentId'] }
 router.post('/', async (req, res) => {
   const userId = req.user.id;
@@ -119,43 +115,37 @@ router.post('/', async (req, res) => {
 
   for (const file of files) {
     const { data } = file;
-    const isEncryptedUpload = file?.encrypted === true;
 
     if (!data || typeof data !== 'string') {
       return res.status(400).json({ error: 'Each file must have a data field' });
     }
 
-    if (data.length > MAX_FILE_BYTES) {
+    const fileBuffer = Buffer.from(data, 'base64');
+    if (!fileBuffer.length) {
+      return res.status(400).json({ error: 'Attachment payload was empty' });
+    }
+
+    if (fileBuffer.length > MAX_FILE_BYTES) {
       return res.status(400).json({
-        error: 'File too large. Maximum 10MB per image after client-side encryption overhead.',
+        error: 'File too large. Maximum 10MB per attachment.',
         code: 'ATTACHMENT_TOO_LARGE',
       });
     }
 
-    if (!isEncryptedUpload) {
-      return res.status(400).json({
-        error: 'Plaintext attachment uploads are disabled. Encrypt attachments client-side before upload.',
-        code: 'PLAINTEXT_ATTACHMENTS_DISABLED',
-      });
-    }
-
     try {
-      const encryptedBuffer = Buffer.from(data, 'base64');
-      if (!encryptedBuffer.length) {
-        return res.status(400).json({ error: 'Encrypted attachment payload was empty' });
-      }
-
       const attachmentId = randomUUID();
       const filename = `${conversation.id}/${attachmentId}.bin`;
+      const contentType = typeof file?.mime === 'string' && file.mime.trim()
+        ? file.mime.trim().slice(0, 255)
+        : 'application/octet-stream';
 
       await minioClient.putObject(
         ATTACH_BUCKET,
         filename,
-        encryptedBuffer,
-        encryptedBuffer.length,
+        fileBuffer,
+        fileBuffer.length,
         {
-          'Content-Type': 'application/octet-stream',
-          'X-Amz-Meta-Encrypted': '1',
+          'Content-Type': contentType,
         }
       );
 
@@ -180,29 +170,6 @@ router.post('/', async (req, res) => {
     urls,
     blurhashes,
   });
-});
-
-// GET /api/conversations/:conversationId/attachments/legacy/:objectName
-// Compatibility path for old encrypted payloads that stored public MinIO URLs.
-router.get('/legacy/:objectName', async (req, res) => {
-  const userId = req.user.id;
-  const { conversationId: conversationIdentifier, objectName } = req.params;
-
-  if (!LEGACY_ATTACHMENT_KEY_PATTERN.test(objectName || '')) {
-    return res.status(400).json({ error: 'Invalid attachment object key' });
-  }
-
-  try {
-    const resolved = await resolveConversationForMember(conversationIdentifier, userId);
-    if (!resolved.conversation) {
-      return res.status(resolved.status).json(resolved.body);
-    }
-
-    return streamAttachmentObject(res, objectName);
-  } catch (err) {
-    console.error('Legacy attachment download error:', err);
-    return res.status(500).json({ error: 'Attachment download failed' });
-  }
 });
 
 // GET /api/conversations/:conversationId/attachments/:attachmentId

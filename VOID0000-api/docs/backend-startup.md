@@ -31,7 +31,7 @@ At runtime it is split into:
   - runs from `server/entrypoints/social-server.js`
   - default port: `3004`
 - `voidapp-conversation-service`
-  - conversations, groups, members, invites, and MLS metadata
+  - conversations, groups, members, invites, and permissions
   - runs from `server/entrypoints/conversation-server.js`
   - default port: `3005`
 - `voidapp-gateway-phoenix`
@@ -66,7 +66,7 @@ That migration command now covers:
 
 - core user / auth / security tables
 - conversation tables
-- MLS tables
+- message storage tables
 
 ## Main Startup Files
 

@@ -86,7 +86,7 @@ const Dashboard = () => {
               </div>
               <div className="text-left">
                 <h3 className="text-lg font-semibold">Messages</h3>
-                <p className="text-indigo-200 text-sm">Chat with friends · End-to-end encrypted</p>
+                <p className="text-indigo-200 text-sm">Chat with friends and groups</p>
               </div>
             </div>
           </button>

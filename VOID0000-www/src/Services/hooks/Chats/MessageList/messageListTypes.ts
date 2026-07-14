@@ -19,9 +19,6 @@ export interface MessageUpdate {
   forwarded?: ForwardedMessageMetadata | null;
   mentions?: MessageMentionMetadata[];
   link_preview?: LinkPreviewMetadata | null;
-  encrypted_link_preview?: string | null;
-  link_preview_iv?: string | null;
-  link_preview_key_version?: number | null;
 }
 
 export interface MessageDelete {

@@ -356,7 +356,7 @@ const GroupConversationSettings = ({
                 Remove <span className="font-semibold text-void-text">{getMemberLabel(membersSection.kickConfirmMember)}</span> from this group?
               </>
             }
-            detail="They will lose access to future encrypted messages."
+            detail="They will no longer be able to open this group or receive new messages."
             confirmLabel="Remove Member"
             confirmVariant="danger"
             busy={
@@ -379,7 +379,7 @@ const GroupConversationSettings = ({
             detail={
               membersSection.leaveConfirmMode === 'delete'
                 ? 'This cannot be undone.'
-                : 'You will lose access to future encrypted messages.'
+                : 'You will no longer be able to open this group or receive new messages.'
             }
             confirmLabel={membersSection.leaveConfirmMode === 'delete' ? 'Delete and Leave' : 'Leave Group'}
             confirmVariant="danger"

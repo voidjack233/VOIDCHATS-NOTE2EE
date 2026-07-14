@@ -26,43 +26,6 @@ export function conversationPublicId(conversation) {
   return conversation?.public_id ? String(conversation.public_id) : null;
 }
 
-export function normalizeKeyVersion(value, fallback = 1) {
-  const parsed = parseInt(String(value ?? fallback), 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-export async function getConversationKeyState(conversation, userId) {
-  if (!conversation || conversation.type === 'dm') {
-    return {
-      currentKeyVersion: normalizeKeyVersion(conversation?.current_key_version, 1),
-      historyStartVersion: 1,
-      joinedAt: null,
-      role: null,
-    };
-  }
-
-  const keyConversationId = conversation.parent_conversation_id || conversation.id;
-  const result = await pool.query(
-    `SELECT c.current_key_version, cm.history_start_version, cm.joined_at, cm.role
-     FROM conversations c
-     JOIN conversation_members cm ON cm.conversation_id = c.id
-     WHERE c.id = $1 AND cm.user_id = $2
-     LIMIT 1`,
-    [keyConversationId, userId]
-  );
-
-  if (result.rows.length === 0) {
-    return null;
-  }
-
-  return {
-    currentKeyVersion: normalizeKeyVersion(result.rows[0].current_key_version, 1),
-    historyStartVersion: normalizeKeyVersion(result.rows[0].history_start_version, 1),
-    joinedAt: result.rows[0].joined_at ? new Date(result.rows[0].joined_at).toISOString() : null,
-    role: result.rows[0].role || null,
-  };
-}
-
 export async function resolveConversationContexts(conversationIdentifier) {
   const conversation = await findConversationByIdentifier(conversationIdentifier);
   if (!conversation) {
@@ -80,43 +43,14 @@ export async function resolveConversationContexts(conversationIdentifier) {
   };
 }
 
-export function canAccessMessageForHistory(message, keyState) {
-  if (!keyState) return false;
-
-  if (normalizeKeyVersion(message.key_version, 1) < keyState.historyStartVersion) {
-    return false;
-  }
-
-  if (keyState.role === 'owner') {
-    return true;
-  }
-
-  if (!keyState.joinedAt || !message.created_at) {
-    return true;
-  }
-
-  const joinedAt = Date.parse(keyState.joinedAt);
-  const createdAt = Date.parse(message.created_at);
-
-  if (Number.isNaN(joinedAt) || Number.isNaN(createdAt)) {
-    return true;
-  }
-
-  return createdAt >= joinedAt;
-}
-
 export function mapStoredMessageRow(row, conversationPublic) {
   return {
     conversation_id: row.conversation_id.toString(),
     conversation_public_id: conversationPublic,
     message_id: row.message_id.toString(),
     sender_id: row.sender_id.toString(),
-    encrypted_content: row.is_deleted ? null : row.encrypted_content,
-    iv: row.is_deleted ? null : row.iv,
-    key_version: row.key_version,
-    encrypted_link_preview: row.is_deleted ? null : row.encrypted_link_preview,
-    link_preview_iv: row.is_deleted ? null : row.link_preview_iv,
-    link_preview_key_version: row.is_deleted ? null : row.link_preview_key_version,
+    content: row.is_deleted ? '[deleted]' : (row.content || ''),
+    link_preview: row.is_deleted ? null : parseStoredMessageMetadata(row.link_preview),
     message_type: row.message_type,
     reply_to: row.reply_to?.toString() || null,
     attachments: row.is_deleted ? [] : (row.attachments || []),

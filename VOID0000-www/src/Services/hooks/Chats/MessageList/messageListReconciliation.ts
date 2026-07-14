@@ -65,9 +65,6 @@ const isEquivalentMessage = (
 ) => (
   String(existingMessage.conversation_id) === String(nextMessage.conversation_id) &&
   existingMessage.sender_id === nextMessage.sender_id &&
-  existingMessage.encrypted_content === nextMessage.encrypted_content &&
-  existingMessage.iv === nextMessage.iv &&
-  existingMessage.key_version === nextMessage.key_version &&
   existingMessage.message_type === nextMessage.message_type &&
   (existingMessage.reply_to ?? null) === (nextMessage.reply_to ?? null) &&
   existingMessage.is_edited === nextMessage.is_edited &&
@@ -75,8 +72,6 @@ const isEquivalentMessage = (
   existingMessage.is_deleted === nextMessage.is_deleted &&
   existingMessage.created_at === nextMessage.created_at &&
   (existingMessage.content ?? null) === (nextMessage.content ?? null) &&
-  (existingMessage.protocol ?? null) === (nextMessage.protocol ?? null) &&
-  (existingMessage.protocol_version ?? null) === (nextMessage.protocol_version ?? null) &&
   (existingMessage.local_status ?? null) === (nextMessage.local_status ?? null) &&
   (existingMessage.local_client_id ?? null) === (nextMessage.local_client_id ?? null) &&
   getAttachmentSignature(existingMessage) === getAttachmentSignature(nextMessage) &&

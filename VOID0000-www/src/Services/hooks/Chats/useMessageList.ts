@@ -10,7 +10,6 @@ import { messageStore } from '../../Chat/chatStore';
 import {
   createHistoryAccessFence,
   filterMessagesByHistoryFence,
-  normalizeHistoryVersion,
 } from './MessageList/messageListHistory';
 import { mergeMessagesWithReconciliation } from './MessageList/messageListReconciliation';
 import { getConversationWindowSnapshot, setConversationWindowSnapshot,} from './MessageList/messageListWindowCache';
@@ -507,57 +506,26 @@ export const useMessageList = (
   conversation: Conversation,
   userId: string | undefined,
   currentMember: ConversationMember | null | undefined,
-  encryptionKey: CryptoKey | null,
-  currentKeyVersion = 1,
   messageEvents?: MessageStreamEvent[],
   messageUpdate?: MessageUpdate | null,
   messageDelete?: MessageDelete | null,
   onMessagesLoaded?: (messages: Message[]) => void,
-  waitForEncryptionBootstrap = false,
   messageWindowMetrics: MessageWindowMetrics = {},
 ) => {
   const conversationId = conversation.id;
-  const conversationKeyVersion = normalizeHistoryVersion(conversation.current_key_version) ?? 1;
-  const hasEncryptionKey = Boolean(encryptionKey);
 
   const historyAccessFence = useMemo(
     () => createHistoryAccessFence(conversation, currentMember),
-    [
-      conversation.type,
-      currentMember?.history_start_version,
-      currentMember?.joined_at,
-      currentMember?.joined_key_version,
-    ]
+    [conversation, currentMember]
   );
   const historyAccessFenceSignature = historyAccessFence
-    ? `${historyAccessFence.joinedAtMs ?? 'null'}:${historyAccessFence.keyVersionFloor ?? 'null'}`
+    ? String(historyAccessFence.joinedAtMs)
     : 'none';
-
-  const decryptionConversation = useMemo(
-    () => conversation,
-    [
-      conversation.id,
-      conversation.public_id,
-      conversation.type,
-      conversation.parent_conversation_id,
-      conversation.parent_public_id,
-      conversation.owner_id,
-      conversation.dm_user_id,
-    ]
-  );
 
   const [windowState, dispatchWindowState] = useReducer(messageWindowReducer, initialMessageWindowState);
 
   const messagesRef = useRef<Message[]>([]);
   const lastLoadedConversationIdRef = useRef<string | null>(null);
-  const encryptionKeyRef = useRef(encryptionKey);
-  const currentKeyVersionRef = useRef(currentKeyVersion);
-  const observedConversationKeyVersionRef = useRef(conversationKeyVersion);
-  const pendingConversationKeyRefreshRef = useRef<number | null>(null);
-  const keyVersionRefreshInFlightRef = useRef<number | null>(null);
-
-  encryptionKeyRef.current = encryptionKey;
-  currentKeyVersionRef.current = currentKeyVersion;
 
   const runtime = windowState.runtime;
   const messages = useMemo(() => getRenderedMessages(runtime), [runtime]);
@@ -731,21 +699,13 @@ export const useMessageList = (
   }, [getMessageHeight]);
 
   const loadMessageContext = useCallback(async (targetMessageId: string) => {
-    if (!encryptionKeyRef.current) {
-      return false;
-    }
-
     try {
       const context = await getMessageContext(
         conversationId,
         targetMessageId,
-        encryptionKeyRef.current,
         {
           before: MESSAGE_CONTEXT_RADIUS,
           after: MESSAGE_CONTEXT_RADIUS,
-          conversation: decryptionConversation,
-          userId,
-          currentKeyVersion: currentKeyVersionRef.current,
         },
       );
       const targetId = context.targetMessageId || targetMessageId;
@@ -789,20 +749,16 @@ export const useMessageList = (
     }
   }, [
     conversationId,
-    currentKeyVersionRef,
-    decryptionConversation,
-    encryptionKeyRef,
     historyAccessFence,
     messagesRef,
     onMessagesLoaded,
     onHistoryRateLimited,
     replaceWindow,
-    userId,
   ]);
 
   useEffect(() => {
     setInitialHydrationSettled(false);
-  }, [conversationId, hasEncryptionKey, historyAccessFenceSignature, waitForEncryptionBootstrap]);
+  }, [conversationId, historyAccessFenceSignature, setInitialHydrationSettled]);
 
   const {
     jumpToPresent,
@@ -810,12 +766,8 @@ export const useMessageList = (
     loadOlder,
   } = useMessageListPagination({
     conversationId,
-    decryptionConversation,
     historyAccessFence,
     userId,
-    encryptionKey,
-    encryptionKeyRef,
-    currentKeyVersionRef,
     getMessageHeight,
     messages,
     messagesRef,
@@ -847,11 +799,8 @@ export const useMessageList = (
 
   useMessageListLoading({
     conversationId,
-    conversationKeyVersion,
-    decryptionConversation,
     historyAccessFence,
     historyAccessFenceSignature,
-    hasEncryptionKey,
     userId,
     onMessagesLoaded,
     messageListBaseIndex: MESSAGE_LIST_BASE_INDEX,
@@ -862,13 +811,8 @@ export const useMessageList = (
     setSyncing,
     setHasOlder,
     setInitialHydrationSettled,
-    encryptionKeyRef,
-    currentKeyVersionRef,
     messagesRef,
     lastLoadedConversationIdRef,
-    observedConversationKeyVersionRef,
-    pendingConversationKeyRefreshRef,
-    keyVersionRefreshInFlightRef,
   });
 
   const { handleDelete } = useMessageListRealtime({
@@ -888,12 +832,7 @@ export const useMessageList = (
   const { getReplyParent, isReplyParentLoading } = useMessageListReplies({
     messages,
     conversationId,
-    decryptionConversation,
     historyAccessFence,
-    userId,
-    encryptionKey,
-    encryptionKeyRef,
-    currentKeyVersionRef,
   });
 
   useEffect(() => {

@@ -3,9 +3,8 @@ import { ImageOff, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
   getCachedAttachmentObjectUrl,
-  isEncryptedAttachment,
   resolveAttachmentObjectUrl,
-} from '../../../Services/Crypto/attachmentEncryption';
+} from '../../../Services/Chat/attachmentService';
 import BlurImage, { BlurhashPlaceholder } from '../../common/BlurImage';
 
 interface AttachmentImageProps {
@@ -26,11 +25,7 @@ export default function AttachmentImage({
   canLoad = true,
 }: AttachmentImageProps) {
   const [src, setSrc] = useState<string | null>(
-    canLoad
-      ? isEncryptedAttachment(attachment)
-        ? getCachedAttachmentObjectUrl(attachment)
-        : attachment.url
-      : null,
+    canLoad ? getCachedAttachmentObjectUrl(attachment) : null,
   );
   const [failed, setFailed] = useState(false);
 
@@ -40,13 +35,6 @@ export default function AttachmentImage({
 
     if (!canLoad) {
       setSrc(null);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    if (!isEncryptedAttachment(attachment)) {
-      setSrc(attachment.url);
       return () => {
         cancelled = true;
       };
@@ -69,7 +57,7 @@ export default function AttachmentImage({
         }
       })
       .catch((error) => {
-        console.error('Failed to decrypt attachment image:', error);
+        console.error('Failed to load attachment image:', error);
         if (!cancelled) {
           setFailed(true);
         }
@@ -81,9 +69,6 @@ export default function AttachmentImage({
   }, [
     attachment.url,
     attachment.blurhash,
-    attachment.encrypted,
-    attachment.iv,
-    attachment.key,
     attachment.mime,
     conversationId,
     canLoad,

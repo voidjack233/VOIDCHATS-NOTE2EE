@@ -3,14 +3,11 @@ import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { debugLog } from '../../../utils/debugLog.js';
 import {
   batchFetchReactions,
-  canAccessMessageForHistory,
   cassandra,
-  getConversationKeyState,
   getConversationMembers,
   mapStoredMessageRow,
   normalizeForwardedMetadata,
   normalizeMentionMetadata,
-  normalizeKeyVersion,
   serializeStoredMessageMetadata,
   resolveConversationContexts,
   scylla,
@@ -38,8 +35,6 @@ function compareMessagesByCreatedAtAsc(left, right) {
 async function fetchVisibleContextSide({
   storageConversationId,
   conversationPublic,
-  conversation,
-  keyState,
   cursor,
   direction,
   limit,
@@ -74,12 +69,7 @@ async function fetchVisibleContextSide({
       break;
     }
 
-    const mappedMessages = rows.map((row) => mapStoredMessageRow(row, conversationPublic));
-    const visibleMessages = conversation.type === 'dm'
-      ? mappedMessages
-      : mappedMessages.filter((message) => canAccessMessageForHistory(message, keyState));
-
-    collectedMessages.push(...visibleMessages);
+    collectedMessages.push(...rows.map((row) => mapStoredMessageRow(row, conversationPublic)));
 
     if (rows.length < fetchChunkSize) {
       exhausted = true;
@@ -120,18 +110,12 @@ router.get('/:messageId/context', async (req, res) => {
     if (!resolvedConversation) return res.status(404).json({ success: false, error: 'Conversation not found' });
 
     const {
-      conversation,
       conversationId,
       conversationPublic,
       storageConversationId,
     } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ success: false, error: 'Not a member of this conversation' });
-
-    const keyState = await getConversationKeyState(conversation, userId);
-    if (!keyState) {
-      return res.status(403).json({ success: false, error: 'Missing group key membership state' });
-    }
 
     const targetResult = await scylla.execute(
       `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
@@ -144,16 +128,11 @@ router.get('/:messageId/context', async (req, res) => {
     }
 
     const targetMessage = mapStoredMessageRow(targetResult.rows[0], conversationPublic);
-    if (conversation.type !== 'dm' && !canAccessMessageForHistory(targetMessage, keyState)) {
-      return res.status(404).json({ success: false, error: 'Message not found' });
-    }
 
     const [olderContext, newerContext] = await Promise.all([
       fetchVisibleContextSide({
         storageConversationId,
         conversationPublic,
-        conversation,
-        keyState,
         cursor: targetMessageId,
         direction: 'older',
         limit: beforeLimit,
@@ -161,8 +140,6 @@ router.get('/:messageId/context', async (req, res) => {
       fetchVisibleContextSide({
         storageConversationId,
         conversationPublic,
-        conversation,
-        keyState,
         cursor: targetMessageId,
         direction: 'newer',
         limit: afterLimit,
@@ -203,18 +180,12 @@ router.get('/:messageId', async (req, res) => {
     if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
     const {
-      conversation,
       conversationId,
       conversationPublic,
       storageConversationId,
     } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
-
-    const keyState = await getConversationKeyState(conversation, userId);
-    if (!keyState) {
-      return res.status(403).json({ error: 'Missing group key membership state' });
-    }
 
     const result = await scylla.execute(
       `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
@@ -226,10 +197,6 @@ router.get('/:messageId', async (req, res) => {
 
     const message = mapStoredMessageRow(result.rows[0], conversationPublic);
 
-    if (conversation.type !== 'dm' && !canAccessMessageForHistory(message, keyState)) {
-      return res.status(404).json({ success: false, error: 'Message not found' });
-    }
-
     res.json({ success: true, message });
   } catch (err) {
     console.error('Single message fetch error:', err);
@@ -240,15 +207,10 @@ router.get('/:messageId', async (req, res) => {
 router.patch('/:messageId/preview', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier, messageId } = req.params;
-  const { encrypted_link_preview, iv, key_version } = req.body || {};
+  const { link_preview } = req.body || {};
 
-  if (
-    typeof encrypted_link_preview !== 'string' ||
-    encrypted_link_preview.trim().length === 0 ||
-    typeof iv !== 'string' ||
-    iv.trim().length === 0
-  ) {
-    return res.status(400).json({ error: 'encrypted_link_preview and iv are required' });
+  if (!link_preview || typeof link_preview !== 'object') {
+    return res.status(400).json({ error: 'link_preview is required' });
   }
 
   try {
@@ -256,7 +218,6 @@ router.patch('/:messageId/preview', async (req, res) => {
     if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
     const {
-      conversation,
       conversationId,
       conversationPublic,
       storageConversationId,
@@ -264,13 +225,8 @@ router.patch('/:messageId/preview', async (req, res) => {
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member' });
 
-    const keyState = await getConversationKeyState(conversation, userId);
-    if (!keyState) {
-      return res.status(403).json({ error: 'Missing group key membership state' });
-    }
-
     const messageResult = await scylla.execute(
-      `SELECT sender_id, is_deleted, key_version FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      `SELECT sender_id, is_deleted FROM messages WHERE conversation_id = ? AND message_id = ?`,
       [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
@@ -283,23 +239,11 @@ router.patch('/:messageId/preview', async (req, res) => {
     }
     if (messageRow.is_deleted) return res.status(400).json({ error: 'Cannot update a deleted message' });
 
-    const messageKeyVersion = normalizeKeyVersion(messageRow.key_version, keyState.currentKeyVersion);
-    const requestedKeyVersion = normalizeKeyVersion(key_version, messageKeyVersion);
-    if (requestedKeyVersion !== messageKeyVersion) {
-      return res.status(409).json({
-        error: `Expected key_version ${messageKeyVersion}`,
-        code: 'STALE_KEY_VERSION',
-        current_key_version: messageKeyVersion,
-      });
-    }
-
     await scylla.execute(
-      `UPDATE messages SET encrypted_link_preview = ?, link_preview_iv = ?, link_preview_key_version = ?
+      `UPDATE messages SET link_preview = ?
        WHERE conversation_id = ? AND message_id = ?`,
       [
-        encrypted_link_preview,
-        iv,
-        requestedKeyVersion,
+        serializeStoredMessageMetadata(link_preview),
         cassandra.types.Uuid.fromString(storageConversationId),
         cassandra.types.TimeUuid.fromString(messageId),
       ],
@@ -310,9 +254,7 @@ router.patch('/:messageId/preview', async (req, res) => {
       conversation_id: conversationId,
       conversation_public_id: conversationPublic,
       message_id: messageId,
-      encrypted_link_preview,
-      link_preview_iv: iv,
-      link_preview_key_version: requestedKeyVersion,
+      link_preview,
     };
 
     const members = await getConversationMembers(conversationId);
@@ -336,10 +278,10 @@ router.patch('/:messageId/preview', async (req, res) => {
 router.put('/:messageId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier, messageId } = req.params;
-  const { encrypted_content, iv, key_version, message_type, forwarded, mentions } = req.body;
+  const { content, message_type, attachments, forwarded, mentions, link_preview } = req.body;
 
-  if (!encrypted_content || !iv) {
-    return res.status(400).json({ error: 'encrypted_content and iv are required' });
+  if (typeof content !== 'string' || (!content.trim() && (!Array.isArray(attachments) || attachments.length === 0))) {
+    return res.status(400).json({ error: 'Message content or attachments required' });
   }
 
   try {
@@ -355,11 +297,6 @@ router.put('/:messageId', async (req, res) => {
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member' });
 
-    const keyState = await getConversationKeyState(conversation, userId);
-    if (!keyState) {
-      return res.status(403).json({ error: 'Missing group key membership state' });
-    }
-
     let normalizedForwarded;
     let normalizedMentions;
     try {
@@ -367,18 +304,6 @@ router.put('/:messageId', async (req, res) => {
       normalizedMentions = await normalizeMentionMetadata(conversationId, conversation.type, mentions);
     } catch (metadataError) {
       return res.status(400).json({ error: metadataError.message || 'Invalid message metadata' });
-    }
-
-    const requestedKeyVersion = conversation.type === 'dm'
-      ? normalizeKeyVersion(key_version, keyState.currentKeyVersion)
-      : normalizeKeyVersion(key_version, 0);
-
-    if (requestedKeyVersion !== keyState.currentKeyVersion) {
-      return res.status(409).json({
-        error: `Expected key_version ${keyState.currentKeyVersion}`,
-        code: 'STALE_KEY_VERSION',
-        current_key_version: keyState.currentKeyVersion,
-      });
     }
 
     const messageResult = await scylla.execute(
@@ -399,37 +324,37 @@ router.put('/:messageId', async (req, res) => {
       : (messageRow.message_type || 'text');
     const storedForwarded = serializeStoredMessageMetadata(normalizedForwarded);
     const storedMentions = serializeStoredMessageMetadata(normalizedMentions);
+    const storedLinkPreview = serializeStoredMessageMetadata(link_preview);
+    const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
+    const normalizedContent = content.trim();
 
     const now = new Date();
     const editId = cassandra.types.TimeUuid.now();
 
     await scylla.execute(
-      `INSERT INTO message_edits (conversation_id, message_id, edit_id, encrypted_content, iv, key_version, edited_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO message_edits (conversation_id, message_id, edit_id, content, edited_at)
+       VALUES (?, ?, ?, ?, ?)`,
       [
         cassandra.types.Uuid.fromString(storageConversationId),
         cassandra.types.TimeUuid.fromString(messageId),
         editId,
-        encrypted_content,
-        iv,
-        requestedKeyVersion,
+        normalizedContent,
         now,
       ],
       { prepare: true }
     );
 
     await scylla.execute(
-      `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, message_type = ?, forwarded = ?, mentions = ?,
-         encrypted_link_preview = null, link_preview_iv = null, link_preview_key_version = null,
+      `UPDATE messages SET content = ?, message_type = ?, attachments = ?, forwarded = ?, mentions = ?, link_preview = ?,
          is_edited = true, edited_at = ?
        WHERE conversation_id = ? AND message_id = ?`,
       [
-        encrypted_content,
-        iv,
-        requestedKeyVersion,
+        normalizedContent,
         nextMessageType,
+        attachList,
         storedForwarded,
         storedMentions,
+        storedLinkPreview,
         now,
         cassandra.types.Uuid.fromString(storageConversationId),
         cassandra.types.TimeUuid.fromString(messageId),
@@ -441,12 +366,12 @@ router.put('/:messageId', async (req, res) => {
       conversation_id: conversationId,
       conversation_public_id: conversationPublic,
       message_id: messageId,
-      encrypted_content,
-      iv,
-      key_version: requestedKeyVersion,
+      content: normalizedContent,
       message_type: nextMessageType,
+      attachments: attachList || [],
       forwarded: normalizedForwarded || null,
       mentions: normalizedMentions,
+      link_preview: link_preview || null,
       is_edited: true,
       edited_at: now.toISOString(),
     };
@@ -498,8 +423,7 @@ router.delete('/:messageId', async (req, res) => {
     if (!canDelete) return res.status(403).json({ error: 'Cannot delete this message' });
 
     await scylla.execute(
-      `UPDATE messages SET is_deleted = true, encrypted_content = null, iv = null,
-         encrypted_link_preview = null, link_preview_iv = null, link_preview_key_version = null
+      `UPDATE messages SET is_deleted = true, content = null, link_preview = null
        WHERE conversation_id = ? AND message_id = ?`,
       [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }

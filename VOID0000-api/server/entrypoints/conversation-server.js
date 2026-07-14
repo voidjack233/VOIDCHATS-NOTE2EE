@@ -24,10 +24,7 @@ const { default: dmRouter } = await import('../routes/conversations/dm.js');
 const { default: dmSettingsRouter } = await import('../routes/conversations/dm-settings.js');
 const { default: inviteLinksRouter } = await import('../routes/conversations/inviteLinks.js');
 const { default: invitesRouter } = await import('../routes/conversations/invites.js');
-const { default: keysRouter } = await import('../routes/conversations/keys.js');
 const { default: membersRouter } = await import('../routes/conversations/members.js');
-const { default: mlsRouter } = await import('../routes/conversations/mls.js');
-const { default: pendingSelfLeavesRouter } = await import('../routes/conversations/pendingSelfLeaves.js');
 const { default: permissionsRouter } = await import('../routes/conversations/permissions.js');
 const { default: rootRouter } = await import('../routes/conversations/root/index.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
@@ -76,15 +73,12 @@ app.get('/ready', createReadinessHandler({
 
 const conversationRouter = Router();
 
-conversationRouter.use('/membership-rotations', authenticateUser, pendingSelfLeavesRouter);
 conversationRouter.use('/dm', authenticateUser, dmRouter);
 conversationRouter.use('/:conversationId/dm-settings', authenticateUser, dmSettingsRouter);
-conversationRouter.use('/mls', authenticateUser, mlsRouter);
 conversationRouter.use('/invite-links', inviteLinksRouter);
 conversationRouter.use('/:conversationId/invites', authenticateUser, invitesRouter);
 conversationRouter.use('/:conversationId/members', authenticateUser, membersRouter);
 conversationRouter.use('/:conversationId/permissions', authenticateUser, permissionsRouter);
-conversationRouter.use('/keys', authenticateUser, keysRouter);
 conversationRouter.use('/', authenticateUser, rootRouter);
 
 app.use(encryptedCSRFProtection);

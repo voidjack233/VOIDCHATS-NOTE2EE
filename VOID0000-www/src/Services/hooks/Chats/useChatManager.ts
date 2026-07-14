@@ -6,7 +6,7 @@ import { ConversationDetails } from '../../Chat/chatTypes';
 import { getConversationDetails, storeConversationDetails } from '../../Chat/conversationCache';
 import { matchesConversationIdentifier } from '../../Chat/utils/conversationUtils';
 import { useTypingIndicator } from './useTypingIndicator';
-import { useConversationHandshake } from './useConversationHandshake';
+import { useConversationMembers } from './useConversationMembers';
 import { useMessageStream } from './useMessageStream';
 import { useConversationSync } from './useConversationSync';
 
@@ -68,7 +68,6 @@ export const useChatManager = (user: any) => {
     }) as Conversation;
   };
 
-  // Defined before useConversationHandshake so it can be passed as onPatchConversation.
   const patchConversationInState = (updatedConversation: Conversation) => {
     const conversationIdentifier = updatedConversation.public_id || updatedConversation.id;
     const cachedConversation =
@@ -122,24 +121,10 @@ export const useChatManager = (user: any) => {
     });
   };
 
-  const {
-    members,
-    encryptionKey,
-    keyVersion,
-    encryptionError,
-    conversationSecurityState,
-    retryHandshake,
-    updateKey,
-    resetCryptoState,
-    getConversationKeyScopeId,
-    getConversationKeyScopePublicId,
-    getKeyLookupConversation,
-  } = useConversationHandshake({
+  const { members, resetMembers } = useConversationMembers({
     activeConversation,
     activeGroup,
-    user,
-    onHydrateDm: (updater) => setActiveConversation(updater),
-    onPatchConversation: patchConversationInState,
+    userId: user?.id,
   });
 
   const {
@@ -151,22 +136,12 @@ export const useChatManager = (user: any) => {
     resetMessageStream,
   } = useMessageStream({
     activeConversation,
-    activeGroup,
     user,
-    encryptionKey,
-    keyVersion,
-    conversationSecurityState,
-    members,
     clearUserTyping,
-    retryHandshake,
-    updateKey,
-    getConversationKeyScopeId,
-    getConversationKeyScopePublicId,
-    getKeyLookupConversation,
   });
 
   const resetLiveChatState = () => {
-    resetCryptoState();
+    resetMembers();
     setEditingMessage(null);
     setReplyTo(null);
     resetMessageStream();
@@ -281,7 +256,6 @@ export const useChatManager = (user: any) => {
     user,
     onPatchConversation: patchConversationInState,
     onBackToMe: handleBackToMe,
-    retryHandshake,
   });
 
   // Handlers
@@ -308,13 +282,11 @@ export const useChatManager = (user: any) => {
   };
 
   return {
-    members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError, conversationSecurityState,
+    members, activeConversation, activeGroup,
     typingUsers,
     messageEvents, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
     handleSelectConversation, refreshActiveGroup, patchConversationInState, handleMessageSent: pushMessageEvent,
     handleBackToMe, handleStartDM, openConversationByIdentifier, openGroupByIdentifier,
-    handleEncryptionKeyResolved: updateKey,
-    retryHandshake,
   };
 };

@@ -13,7 +13,7 @@ import {
   MESSAGE_WINDOW_TRIM_TRIGGER,
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
-import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
+import { getMessages, type Message } from '../../../Chat/chatService';
 import { getRetryAfterMsFromError, isRateLimitError } from '../../../Chat/chatUtils';
 import type { LocalMessage } from '../../../Chat/chatStore';
 import { gateway } from '../../../Gateway/gateway';
@@ -23,7 +23,6 @@ import {
   getNewestServerBackedMessage,
 } from './messageListReconciliation';
 import {
-  hasUndecryptableMessage,
   persistFetchedMessagesSafely,
   sortMessages,
   toUIMessage,
@@ -31,12 +30,8 @@ import {
 
 interface UseMessageListPaginationParams {
   conversationId: string;
-  decryptionConversation: Conversation;
   historyAccessFence: HistoryAccessFence | null;
   userId?: string;
-  encryptionKey: CryptoKey | null;
-  encryptionKeyRef: MutableRefObject<CryptoKey | null>;
-  currentKeyVersionRef: MutableRefObject<number>;
   getMessageHeight?: (message: Message) => number;
   messages: Message[];
   messagesRef: MutableRefObject<Message[]>;
@@ -177,12 +172,8 @@ const sumMessageHeights = (
 
 const useMessageListPagination = ({
   conversationId,
-  decryptionConversation,
   historyAccessFence,
   userId,
-  encryptionKey,
-  encryptionKeyRef,
-  currentKeyVersionRef,
   getMessageHeight,
   messages,
   messagesRef,
@@ -395,19 +386,15 @@ const useMessageListPagination = ({
     let result: { messages: LocalMessage[]; has_more: boolean };
     let localCount = 0;
     let localHasMore = false;
-    let localHadUndecryptable = false;
     let serverCount = 0;
     let serverHasMore: boolean | null = null;
     let usedLocalFallback = false;
     let localFallbackReason: string | null = null;
 
     try {
-      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+      const serverResult = await getMessages(conversationId, {
         before: oldestMessageId,
         limit: FETCH_SIZE,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
       });
       serverCount = serverResult.messages.length;
       serverHasMore = serverResult.has_more;
@@ -430,14 +417,12 @@ const useMessageListPagination = ({
       usedLocalFallback = true;
       localCount = localResult.messages.length;
       localHasMore = localResult.has_more;
-      localHadUndecryptable = hasUndecryptableMessage(localResult.messages);
       result = localResult;
       debugMessageList('older_fetch_local_fallback', {
         conversationId,
         oldestMessageId,
         localCount,
         localHasMore,
-        localHadUndecryptable,
         reason: localFallbackReason,
       });
     }
@@ -451,7 +436,6 @@ const useMessageListPagination = ({
         requestedOlderCount: FETCH_SIZE,
         localCount,
         localHasMore,
-        localHadUndecryptable,
         localHistoryExhausted: usedLocalFallback && (localCount < FETCH_SIZE || !localHasMore),
         serverRequested: true,
         serverCount,
@@ -463,11 +447,10 @@ const useMessageListPagination = ({
         localFallbackReason,
       },
     };
-  }, [conversationId, decryptionConversation, encryptionKeyRef, historyAccessFence, userId, currentKeyVersionRef]);
+  }, [conversationId, historyAccessFence]);
 
   const loadOlderPage = useCallback(async () => {
     if (
-      !encryptionKeyRef.current ||
       loadingOlder ||
       !hasOlder ||
       messagesRef.current.length === 0
@@ -533,7 +516,6 @@ const useMessageListPagination = ({
           localHistoryExhausted: debug.localHistoryExhausted,
           localCount: debug.localCount,
           localHasMore: debug.localHasMore,
-          localHadUndecryptable: debug.localHadUndecryptable,
           serverRequested: debug.serverRequested,
           serverCount: debug.serverCount,
           serverHasMore: debug.serverHasMore,
@@ -574,7 +556,7 @@ const useMessageListPagination = ({
   }, [loadOlderPage]);
 
   const loadNewer = useCallback(async () => {
-    if (!encryptionKeyRef.current || loadingNewer || !hasNewer || messages.length === 0) return false;
+    if (loadingNewer || !hasNewer || messages.length === 0) return false;
 
     setLoadingNewer(true);
     const requestGeneration = historyRequestGenerationRef.current;
@@ -588,12 +570,9 @@ const useMessageListPagination = ({
       let localFallbackReason: string | null = null;
 
       try {
-        const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+        const serverResult = await getMessages(conversationId, {
           after: newestMessage.message_id,
           limit: FETCH_SIZE,
-          conversation: decryptionConversation,
-          userId,
-          currentKeyVersion: currentKeyVersionRef.current,
         });
         const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
         result = {
@@ -619,7 +598,6 @@ const useMessageListPagination = ({
           newestMessageId: newestMessage.message_id,
           localCount: result.messages.length,
           localHasMore: result.has_more,
-          localHadUndecryptable: hasUndecryptableMessage(result.messages),
           reason: localFallbackReason,
         });
       }
@@ -677,9 +655,6 @@ const useMessageListPagination = ({
     applyNewerMessages,
     clearNewerHistoryRange,
     conversationId,
-    currentKeyVersionRef,
-    decryptionConversation,
-    encryptionKeyRef,
     hasNewer,
     historyAccessFence,
     initialHydrationSettled,
@@ -694,8 +669,6 @@ const useMessageListPagination = ({
   type RecentReconcileSource = 'gateway_ready' | 'gateway_resumed';
 
   const reconcileRecentMessages = useCallback(async (source: RecentReconcileSource) => {
-    if (!encryptionKeyRef.current) return;
-
     const newestMessage = getNewestServerBackedMessage(messagesRef.current);
     if (!newestMessage) return;
 
@@ -706,11 +679,8 @@ const useMessageListPagination = ({
     });
 
     try {
-      const latestServerResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+      const latestServerResult = await getMessages(conversationId, {
         limit: FETCH_SIZE,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
       });
       const latestLocalMessages = await persistFetchedMessagesSafely(latestServerResult.messages);
       const visibleLatestMessages = filterMessagesByHistoryFence(latestLocalMessages, historyAccessFence);
@@ -728,12 +698,9 @@ const useMessageListPagination = ({
         return;
       }
 
-      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+      const serverResult = await getMessages(conversationId, {
         after: newestMessage.message_id,
         limit: FETCH_SIZE,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
       });
 
       if (serverResult.messages.length === 0) {
@@ -773,9 +740,6 @@ const useMessageListPagination = ({
   }, [
     clearNewerHistoryRange,
     conversationId,
-    currentKeyVersionRef,
-    decryptionConversation,
-    encryptionKeyRef,
     historyAccessFence,
     initialHydrationSettled,
     mergeVisibleMessages,
@@ -797,7 +761,7 @@ const useMessageListPagination = ({
   }, [flushQueuedNewerMessages, hasQueuedNewer, initialHydrationSettled, isAtPresent, userId]);
 
   useEffect(() => {
-    if (!encryptionKey || loading || syncing || !initialHydrationSettled) return;
+    if (loading || syncing || !initialHydrationSettled) return;
 
     let lastResyncAt = 0;
 
@@ -830,7 +794,6 @@ const useMessageListPagination = ({
     };
   }, [
     conversationId,
-    encryptionKey,
     initialHydrationSettled,
     loading,
     reconcileRecentMessages,
@@ -838,19 +801,14 @@ const useMessageListPagination = ({
   ]);
 
   const jumpToPresent = useCallback(async () => {
-    if (!encryptionKey) return;
-
     historyRequestGenerationRef.current += 1;
     const requestGeneration = historyRequestGenerationRef.current;
     setLoadingNewer(true);
 
     try {
       const presentLimit = FETCH_SIZE;
-      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+      const serverResult = await getMessages(conversationId, {
         limit: presentLimit,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
       });
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
       const visibleFreshMessages = filterMessagesByHistoryFence(localMessages, historyAccessFence);
@@ -878,10 +836,6 @@ const useMessageListPagination = ({
     }
   }, [
     conversationId,
-    currentKeyVersionRef,
-    decryptionConversation,
-    encryptionKey,
-    encryptionKeyRef,
     historyAccessFence,
     messageListBaseIndex,
     notifyHistoryRateLimit,

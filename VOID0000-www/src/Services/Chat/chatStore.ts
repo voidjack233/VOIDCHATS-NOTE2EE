@@ -6,9 +6,9 @@
 // Schema:
 //   messages: { conversation_id, message_id, sender_id, content, message_type,
 //               reply_to, is_edited, edited_at, is_deleted, created_at, reactions,
-//               protocol, protocol_version }
+//               attachments, forwarded, mentions, link_preview }
 //   sync_cursors: { conversation_id, last_message_id, last_synced_at }
-//   conversations_meta: { conversation_id, encryption_key_hash, last_opened_at }
+//   conversations_meta: { conversation_id, last_opened_at }
 
 import { MESSAGE_PAGE_SIZE } from './chatConstants';
 
@@ -20,7 +20,6 @@ export interface LocalMessage {
   message_id: string;
   sender_id: string;
   content: string | null;
-  key_version?: number | null;
   message_type: string;
   reply_to: string | null;
   is_edited: boolean;
@@ -48,8 +47,6 @@ export interface LocalMessage {
     site_name?: string | null;
     favicon?: string | null;
   } | null;
-  protocol?: 'legacy_aes' | 'mls' | null;
-  protocol_version?: number | null;
 }
 
 export interface SyncCursor {

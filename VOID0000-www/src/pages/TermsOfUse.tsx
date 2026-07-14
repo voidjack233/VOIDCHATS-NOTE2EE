@@ -3,13 +3,13 @@ import LegalLayout, {
   LegalSection,
 } from '../components/common/LegalLayout';
 
-const LAST_UPDATED = 'April 1, 2026';
+const LAST_UPDATED = 'July 6, 2026';
 
 export default function TermsOfUse() {
   return (
     <LegalLayout
       title="Terms of Use"
-      subtitle="These are the simple rules for using VOID. VOID is a small private messaging app for direct messages, group chats, media sharing, invites, and supported encrypted conversations."
+      subtitle="These are the simple rules for using VOID, a small messaging app for direct messages, group chats, media sharing, and invites."
       lastUpdated={LAST_UPDATED}
       active="terms"
     >
@@ -58,14 +58,13 @@ export default function TermsOfUse() {
         </p>
       </LegalSection>
 
-      <LegalSection title="5. Encryption And Limits">
+      <LegalSection title="5. Privacy And Limits">
         <p>
-          VOID supports encryption for supported conversations and encrypted attachment flows, but
-          not every part of the service is end-to-end encrypted.
+          VOID stores and processes messages and attachments as needed to operate the service.
         </p>
         <p>
-          Account data, security logs, metadata, session data, avatars, group icons, and some
-          invite-related information may be stored or processed outside end-to-end encryption.
+          Account data, security logs, metadata, session data, avatars, group icons, and
+          invite-related information may also be stored or processed by the service.
         </p>
         <p>
           VOID is provided as is. We do not promise perfect uptime, perfect delivery, or perfect

@@ -5,72 +5,16 @@ import {
   emitConversationUpdate,
   getChildChannelIds,
   getGroupMembership,
-  normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../utils/groupMembership.js';
-import { meetsAdminToggle, meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
+import { meetsAdminToggle, resolvePermissions } from '../../utils/groupPermissions.js';
 import { generateInviteCode } from './inviteLinks.js';
-import {
-  parseMembershipFinalizeArtifacts,
-} from './mls/finalizeArtifacts.js';
-import {
-  finalizeMlsAddedMembers,
-  getMembershipOperationId,
-  lockMembershipRotation,
-  markMembershipRotationRolledBack,
-  reserveMembershipRotation,
-} from './members/membershipRotations.js';
 
 const router = Router({ mergeParams: true });
 
 function buildInviteUrl(code) {
   const frontUrl = process.env.FRONT_URL || 'https://void0000.online';
   return `${frontUrl.replace(/\/$/, '')}/invite/${code}`;
-}
-
-async function ensureOwnerConversation(db, conversationId, userId) {
-  const conversation = await resolveMembershipConversation(db, conversationId);
-  if (!conversation) {
-    return { error: { status: 404, body: { error: 'Conversation not found' } } };
-  }
-
-  if (conversation.type !== 'group') {
-    return { error: { status: 400, body: { error: 'Invites are only supported for groups' } } };
-  }
-
-  const isConversationOwner =
-    conversation.owner_id != null &&
-    String(conversation.owner_id) === String(userId);
-
-  let membership = await getGroupMembership(db, conversation.id, userId);
-
-  if (!membership) {
-    if (!isConversationOwner) {
-      return { error: { status: 403, body: { error: 'Not a member' } } };
-    }
-
-    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
-    await db.query(
-      `INSERT INTO conversation_members (conversation_id, user_id, role, joined_key_version, history_start_version) VALUES ($1, $2, 'owner', $3, 1) ON CONFLICT (conversation_id, user_id) DO UPDATE SET role = 'owner'`,
-      [conversation.id, userId, currentKeyVersion]
-    );
-
-    membership = { role: 'owner' };
-  }
-
-  if (membership.role !== 'owner') {
-    if (!isConversationOwner) {
-      return { conversation, membership };
-    }
-
-    await db.query(
-      `UPDATE conversation_members SET role = 'owner' WHERE conversation_id = $1 AND user_id = $2`,
-      [conversation.id, userId]
-    );
-    membership = { role: 'owner' };
-  }
-
-  return { conversation, membership };
 }
 
 async function ensureConversationMember(db, conversationId, userId) {
@@ -94,10 +38,12 @@ async function ensureConversationMember(db, conversationId, userId) {
       return { error: { status: 403, body: { error: 'Not a member' } } };
     }
 
-    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
     await db.query(
-      `INSERT INTO conversation_members (conversation_id, user_id, role, joined_key_version, history_start_version) VALUES ($1, $2, 'owner', $3, 1) ON CONFLICT (conversation_id, user_id) DO UPDATE SET role = 'owner'`,
-      [conversation.id, userId, currentKeyVersion]
+      `INSERT INTO conversation_members (conversation_id, user_id, role)
+       VALUES ($1, $2, 'owner')
+       ON CONFLICT (conversation_id, user_id)
+       DO UPDATE SET role = 'owner'`,
+      [conversation.id, userId],
     );
     membership = { role: 'owner' };
   }
@@ -105,12 +51,24 @@ async function ensureConversationMember(db, conversationId, userId) {
   if (isConversationOwner && membership.role !== 'owner') {
     await db.query(
       `UPDATE conversation_members SET role = 'owner' WHERE conversation_id = $1 AND user_id = $2`,
-      [conversation.id, userId]
+      [conversation.id, userId],
     );
     membership = { role: 'owner' };
   }
 
   return { conversation, membership };
+}
+
+async function emitGroupMembershipUpdate(conversation) {
+  const memberRows = await pool.query(
+    `SELECT user_id::text AS user_id, role
+     FROM conversation_members
+     WHERE conversation_id = $1`,
+    [conversation.id],
+  );
+  const memberIds = memberRows.rows.map((row) => row.user_id);
+  const memberRolesById = Object.fromEntries(memberRows.rows.map((row) => [row.user_id, row.role]));
+  await emitConversationUpdate(conversation, memberIds, memberIds.length, memberRolesById);
 }
 
 router.get('/', async (req, res) => {
@@ -134,7 +92,7 @@ router.get('/', async (req, res) => {
          WHERE conversation_id = $1
          ORDER BY created_at DESC
          LIMIT 20`,
-        [conversation.id]
+        [conversation.id],
       ),
       pool.query(
         `SELECT
@@ -153,11 +111,11 @@ router.get('/', async (req, res) => {
          WHERE cjr.conversation_id = $1
            AND cjr.status = 'pending'
          ORDER BY cjr.created_at ASC`,
-        [conversation.id]
+        [conversation.id],
       ),
     ]);
 
-    res.json({
+    return res.json({
       success: true,
       invites: linksResult.rows.map((row) => ({
         id: row.id,
@@ -186,7 +144,7 @@ router.get('/', async (req, res) => {
     });
   } catch (err) {
     console.error('Conversation invites GET error:', err);
-    res.status(500).json({ error: 'Failed to fetch invites' });
+    return res.status(500).json({ error: 'Failed to fetch invites' });
   }
 });
 
@@ -198,7 +156,6 @@ router.post('/', async (req, res) => {
   if (maxUses != null && maxUses <= 0) {
     return res.status(400).json({ error: 'max_uses must be greater than zero' });
   }
-
   if (expiresInDays <= 0 || expiresInDays > 365) {
     return res.status(400).json({ error: 'expires_in_days must be between 1 and 365' });
   }
@@ -238,7 +195,7 @@ router.post('/', async (req, res) => {
            )
            VALUES ($1, $2, $3, $4, $5)
            RETURNING id, code, max_uses, use_count, expires_at, is_revoked, created_at`,
-          [conversation.id, userId, code, maxUses, expiresAt]
+          [conversation.id, userId, code, maxUses, expiresAt],
         );
         createdInvite = result.rows[0];
         break;
@@ -256,7 +213,7 @@ router.post('/', async (req, res) => {
 
     await client.query('COMMIT');
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       invite: {
         id: createdInvite.id,
@@ -272,7 +229,7 @@ router.post('/', async (req, res) => {
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Conversation invites POST error:', err);
-    res.status(500).json({ error: 'Failed to create invite link' });
+    return res.status(500).json({ error: 'Failed to create invite link' });
   } finally {
     client?.release();
   }
@@ -281,17 +238,13 @@ router.post('/', async (req, res) => {
 router.post('/requests/:requestId/approve', async (req, res) => {
   const actorUserId = req.user.id;
   const requestId = parseInt(req.params.requestId, 10);
-  const newKeyVersion = normalizeKeyVersion(req.body?.new_key_version, 0);
 
   if (!Number.isInteger(requestId) || requestId <= 0) {
     return res.status(400).json({ error: 'Valid requestId required' });
   }
 
-  if (newKeyVersion <= 0) {
-    return res.status(400).json({ error: 'new_key_version required' });
-  }
-
   let client;
+  let conversationForEmit = null;
 
   try {
     client = await pool.connect();
@@ -302,6 +255,7 @@ router.post('/requests/:requestId/approve', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(error.status).json(error.body);
     }
+    conversationForEmit = conversation;
 
     const perms = resolvePermissions(conversation.permissions);
     if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
@@ -313,8 +267,9 @@ router.post('/requests/:requestId/approve', async (req, res) => {
       `SELECT id, requester_user_id, invite_link_id, status
        FROM conversation_join_requests
        WHERE id = $1 AND conversation_id = $2
-       LIMIT 1`,
-      [requestId, conversation.id]
+       LIMIT 1
+       FOR UPDATE`,
+      [requestId, conversation.id],
     );
 
     if (requestResult.rows.length === 0) {
@@ -328,209 +283,32 @@ router.post('/requests/:requestId/approve', async (req, res) => {
       return res.status(409).json({ error: 'Join request is no longer pending' });
     }
 
-    const { operation, currentKeyVersion } = await reserveMembershipRotation(client, {
-      conversationId: conversation.id,
-      actorUserId,
-      kind: 'invite_approval',
-      targetUserIds: [joinRequest.requester_user_id],
-      requestedKeyVersion: newKeyVersion,
-      joinRequestId: joinRequest.id,
-    });
-
-    const currentMembersResult = await client.query(
-      `SELECT user_id
-       FROM conversation_members
-       WHERE conversation_id = $1`,
-      [conversation.id]
-    );
-
-    const currentMemberIds = currentMembersResult.rows.map((row) => row.user_id);
-    if (currentMemberIds.includes(joinRequest.requester_user_id)) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'User is already a member',
-        code: 'ALREADY_MEMBER',
-      });
-    }
-
-    await client.query('COMMIT');
-
-    res.json({
-      success: true,
-      phase: 'prepared',
-      requester_user_id: joinRequest.requester_user_id,
-      operation_id: operation.operationId,
-      pending_key_version: operation.reservedKeyVersion,
-      current_key_version: currentKeyVersion,
-    });
-  } catch (err) {
-    if (client) await client.query('ROLLBACK').catch(() => {});
-    console.error('Approve join request prepare error:', err);
-    const status = Number(err?.status) || 500;
-    res.status(status).json({
-      error: status === 500 ? 'Failed to prepare join approval' : err.message,
-      ...(err?.code ? { code: err.code } : {}),
-      ...(err?.data || {}),
-    });
-  } finally {
-    client?.release();
-  }
-});
-
-// POST /api/conversations/:conversationId/invites/requests/:requestId/approve/finalize
-//
-// Phase 2 of invite approval. Publishes the generated MLS artifacts in the
-// same transaction that commits membership and advances the key version.
-router.post('/requests/:requestId/approve/finalize', async (req, res) => {
-  const actorUserId = req.user.id;
-  const requestId = parseInt(req.params.requestId, 10);
-
-  if (!Number.isInteger(requestId) || requestId <= 0) {
-    return res.status(400).json({ error: 'Valid requestId required' });
-  }
-
-  let client;
-
-  try {
-    client = await pool.connect();
-    await client.query('BEGIN');
-
-    const { conversation, membership, error } = await ensureConversationMember(client, req.params.conversationId, actorUserId);
-    if (error) {
-      await client.query('ROLLBACK');
-      return res.status(error.status).json(error.body);
-    }
-
-    const perms = resolvePermissions(conversation.permissions);
-    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
-      await client.query('ROLLBACK');
-      return res.status(403).json({ error: 'You do not have permission to approve join requests' });
-    }
-
-    const requestResult = await client.query(
-      `SELECT id, requester_user_id, invite_link_id, status
-       FROM conversation_join_requests
-       WHERE id = $1 AND conversation_id = $2
-       LIMIT 1`,
-      [requestId, conversation.id]
-    );
-
-    if (requestResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Join request not found' });
-    }
-
-    const joinRequest = requestResult.rows[0];
-
-    const operationId = getMembershipOperationId(req.body);
-    const { operation, currentKeyVersion } = await lockMembershipRotation(client, {
-      conversationId: conversation.id,
-      operationId,
-      actorUserId,
-      kind: 'invite_approval',
-      joinRequestId: joinRequest.id,
-    });
-    const pendingKeyVersion = operation.reservedKeyVersion;
-
-    if (operation.targetUserIds.length !== 1 || operation.targetUserIds[0] !== String(joinRequest.requester_user_id)) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Membership rotation does not match this join request',
-        code: 'MEMBERSHIP_OPERATION_MISMATCH',
-      });
-    }
-
-    if (operation.status === 'finalized' && joinRequest.status === 'approved') {
-      await client.query('ROLLBACK');
-      return res.json({
-        success: true,
-        phase: 'finalized',
-        approved_user_id: joinRequest.requester_user_id,
-        key_version: pendingKeyVersion,
-      });
-    }
-
-    if (operation.status !== 'pending') {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Join approval operation is no longer pending',
-        code: 'MEMBERSHIP_OPERATION_ROLLED_BACK',
-      });
-    }
-
-    if (pendingKeyVersion !== currentKeyVersion + 1) {
-      await markMembershipRotationRolledBack(client, operation.operationId);
-      await client.query('COMMIT');
-      return res.status(409).json({
-        error: 'Pending approval is stale — version has moved',
-        code: 'PENDING_APPROVAL_STALE',
-        current_key_version: currentKeyVersion,
-      });
-    }
-
-    if (joinRequest.status !== 'pending') {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Join request is no longer pending',
-        code: 'REQUEST_STATUS_INVALID',
-        request_status: joinRequest.status,
-      });
-    }
-
     const existingMember = await client.query(
       `SELECT 1
        FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2
        LIMIT 1`,
-      [conversation.id, joinRequest.requester_user_id]
+      [conversation.id, joinRequest.requester_user_id],
     );
 
-    if (existingMember.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'User is already a member',
-        code: 'ALREADY_MEMBER',
-      });
+    if (existingMember.rows.length === 0) {
+      const childChannelIds = await getChildChannelIds(client, conversation.id);
+      const affectedConversationIds = [conversation.id, ...childChannelIds];
+      for (const affectedConversationId of affectedConversationIds) {
+        await client.query(
+          `INSERT INTO conversation_members (conversation_id, user_id, role)
+           VALUES ($1, $2, 'member')
+           ON CONFLICT DO NOTHING`,
+          [affectedConversationId, joinRequest.requester_user_id],
+        );
+      }
+      await client.query(
+        `UPDATE conversations
+         SET updated_at = NOW()
+         WHERE id = ANY($1::uuid[])`,
+        [affectedConversationIds],
+      );
     }
-
-    const currentMembersResult = await client.query(
-      `SELECT user_id::text AS user_id
-       FROM conversation_members
-       WHERE conversation_id = $1`,
-      [conversation.id]
-    );
-    const currentMemberIds = currentMembersResult.rows.map((row) => row.user_id);
-    const existingPeerIds = currentMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
-
-    const parsedArtifacts = parseMembershipFinalizeArtifacts(
-      req.body?.mls_artifacts ?? req.body?.mlsArtifacts,
-      {
-        expectedWelcomeUserIds: [joinRequest.requester_user_id],
-        pendingKeyVersion,
-        requireCommit: existingPeerIds.length > 0,
-      },
-    );
-
-    if (parsedArtifacts.error) {
-      await client.query('ROLLBACK');
-      return res.status(422).json({
-        success: false,
-        error: parsedArtifacts.error,
-        code: parsedArtifacts.code,
-      });
-    }
-
-    const childChannelIds = await getChildChannelIds(client, conversation.id);
-
-    await finalizeMlsAddedMembers(client, {
-      conversationId: conversation.id,
-      actorUserId,
-      currentKeyVersion,
-      operation,
-      artifacts: parsedArtifacts.artifacts,
-      childChannelIds,
-      reason: 'invite_accept',
-    });
 
     await client.query(
       `UPDATE conversation_join_requests
@@ -538,7 +316,7 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
            resolved_at = NOW(),
            resolved_by_user_id = $2
        WHERE id = $1`,
-      [joinRequest.id, actorUserId]
+      [joinRequest.id, actorUserId],
     );
 
     if (joinRequest.invite_link_id) {
@@ -546,141 +324,24 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
         `UPDATE conversation_invite_links
          SET use_count = use_count + 1
          WHERE id = $1`,
-        [joinRequest.invite_link_id]
+        [joinRequest.invite_link_id],
       );
     }
 
     await client.query('COMMIT');
 
-    const updatedMemberIds = [...new Set([...currentMemberIds, String(joinRequest.requester_user_id)])];
-    if (updatedMemberIds.length > 0) {
-      try {
-        await emitConversationUpdate(
-          conversation,
-          updatedMemberIds,
-          pendingKeyVersion,
-          updatedMemberIds.length,
-        );
-      } catch (emitErr) {
-        console.warn('Finalize join approval member update emit failed:', emitErr);
-      }
-    }
+    await emitGroupMembershipUpdate(conversationForEmit).catch((emitErr) => {
+      console.warn('Join approval member update emit failed:', emitErr);
+    });
 
-    res.json({
+    return res.json({
       success: true,
-      phase: 'finalized',
       approved_user_id: joinRequest.requester_user_id,
-      key_version: pendingKeyVersion,
     });
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
-    console.error('Finalize join approval error:', err);
-    const status = Number(err?.status) || 500;
-    res.status(status).json({
-      error: status === 500 ? 'Failed to finalize join approval' : err.message,
-      ...(err?.code ? { code: err.code } : {}),
-    });
-  } finally {
-    client?.release();
-  }
-});
-
-// POST /api/conversations/:conversationId/invites/requests/:requestId/rollback-approval
-// Revert an approval when MLS add/welcome failed before secure membership completed.
-router.post('/requests/:requestId/rollback-approval', async (req, res) => {
-  const actorUserId = req.user.id;
-  const requestId = parseInt(req.params.requestId, 10);
-  const failedKeyVersion = normalizeKeyVersion(req.body?.failed_key_version, 0);
-
-  if (!Number.isInteger(requestId) || requestId <= 0) {
-    return res.status(400).json({ error: 'Valid requestId required' });
-  }
-
-  if (failedKeyVersion <= 0) {
-    return res.status(400).json({ error: 'failed_key_version required' });
-  }
-
-  let client;
-
-  try {
-    client = await pool.connect();
-    await client.query('BEGIN');
-
-    const { conversation, membership, error } = await ensureConversationMember(client, req.params.conversationId, actorUserId);
-    if (error) {
-      await client.query('ROLLBACK');
-      return res.status(error.status).json(error.body);
-    }
-
-    const perms = resolvePermissions(conversation.permissions);
-    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
-      await client.query('ROLLBACK');
-      return res.status(403).json({ error: 'You do not have permission to manage join requests' });
-    }
-
-    const requestResult = await client.query(
-      `SELECT id, requester_user_id, invite_link_id, status
-       FROM conversation_join_requests
-       WHERE id = $1 AND conversation_id = $2
-       LIMIT 1`,
-      [requestId, conversation.id]
-    );
-
-    if (requestResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Join request not found' });
-    }
-
-    const joinRequest = requestResult.rows[0];
-    const operationId = getMembershipOperationId(req.body);
-    const { operation, currentKeyVersion } = await lockMembershipRotation(client, {
-      conversationId: conversation.id,
-      operationId,
-      actorUserId,
-      kind: 'invite_approval',
-      joinRequestId: joinRequest.id,
-    });
-
-    if (
-      operation.reservedKeyVersion !== failedKeyVersion ||
-      operation.targetUserIds.length !== 1 ||
-      operation.targetUserIds[0] !== String(joinRequest.requester_user_id)
-    ) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Join request does not match the pending membership operation',
-        code: 'MEMBERSHIP_OPERATION_MISMATCH',
-      });
-    }
-
-    if (operation.status === 'finalized') {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'A finalized membership rotation cannot be rolled back automatically',
-        code: 'ROLLBACK_NOT_POSSIBLE',
-        current_key_version: currentKeyVersion,
-      });
-    }
-
-    await markMembershipRotationRolledBack(client, operation.operationId);
-
-    await client.query('COMMIT');
-
-    res.json({
-      success: true,
-      requester_user_id: joinRequest.requester_user_id,
-      key_version: currentKeyVersion,
-      request_status: joinRequest.status,
-      phase: 'pending_cleared',
-    });
-  } catch (err) {
-    if (client) await client.query('ROLLBACK').catch(() => {});
-    console.error('Rollback approval error:', err);
-    const status = Number(err?.status) || 500;
-    res.status(status).json({
-      error: status === 500 ? 'Failed to roll back join approval' : err.message,
-      ...(err?.code ? { code: err.code } : {}),
-    });
+    console.error('Approve join request error:', err);
+    return res.status(500).json({ error: 'Failed to approve join request' });
   } finally {
     client?.release();
   }
@@ -714,17 +375,17 @@ router.post('/requests/:requestId/decline', async (req, res) => {
          AND conversation_id = $3
          AND status = 'pending'
        RETURNING id`,
-      [requestId, actorUserId, conversation.id]
+      [requestId, actorUserId, conversation.id],
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Pending join request not found' });
     }
 
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (err) {
     console.error('Decline join request error:', err);
-    res.status(500).json({ error: 'Failed to decline join request' });
+    return res.status(500).json({ error: 'Failed to decline join request' });
   }
 });
 
@@ -753,17 +414,17 @@ router.post('/:inviteId/revoke', async (req, res) => {
        WHERE id = $1
          AND conversation_id = $2
        RETURNING id`,
-      [inviteId, conversation.id]
+      [inviteId, conversation.id],
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Invite link not found' });
     }
 
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (err) {
     console.error('Revoke invite error:', err);
-    res.status(500).json({ error: 'Failed to revoke invite link' });
+    return res.status(500).json({ error: 'Failed to revoke invite link' });
   }
 });
 

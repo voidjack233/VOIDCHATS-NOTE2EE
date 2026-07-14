@@ -153,7 +153,6 @@ export default function MessageOverlays({
 
   const contextMenuIsCopyable = Boolean(
     contextMenu?.msg.content &&
-    contextMenu.msg.content !== '[encrypted]' &&
     contextMenu.msg.content !== '[deleted]',
   );
   const isFailedLocalMessage = contextMenu?.msg.local_status === 'failed';
@@ -165,7 +164,6 @@ export default function MessageOverlays({
     (
       (
         contextMenu.msg.content &&
-        contextMenu.msg.content !== '[encrypted]' &&
         contextMenu.msg.content !== '[deleted]'
       ) ||
       (contextMenu.msg.attachments?.length ?? 0) > 0

@@ -10,12 +10,12 @@ disk failure, or tired-human moment goes sideways.
 Critical:
 
 - PostgreSQL
-  - users, auth/session metadata, conversations, memberships, MLS metadata,
-    key backups, attachment object mapping
+  - users, auth/session metadata, conversations, memberships, friendship data,
+    preferences, notifications, and attachment object mapping
 - ScyllaDB
   - message history, edits, reactions, reaction counts
 - MinIO
-  - profile pictures, group pictures, encrypted chat attachment blobs
+  - profile pictures, group pictures, and private chat attachment objects
 
 Useful but less critical:
 
@@ -30,9 +30,8 @@ Not enough by itself:
   - saves code, not your database or media
 - PM2 dump
   - saves process list, not app data
-- MinIO encrypted blobs alone
-  - useless without the database rows and encrypted message payloads that point
-    at them
+- MinIO attachment objects alone
+  - incomplete without the database rows and message records that point at them
 
 ## Run A Backup
 

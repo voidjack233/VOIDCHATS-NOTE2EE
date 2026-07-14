@@ -11,8 +11,8 @@ import {
   declineConversationJoinRequest,
   getConversationInvites,
   leaveConversation,
+  removeMember,
   removeConversationIcon,
-  rotateRemoveMember,
   revokeConversationInviteLink,
   sendSystemEvent,
   transferConversationOwnership,
@@ -30,10 +30,6 @@ import {
 
 const VALID_ICON_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_ICON_FILE_SIZE = 7 * 1024 * 1024;
-const JOIN_APPROVALS_PAUSED = false;
-const MEMBER_REMOVAL_PAUSED = false;
-const JOIN_APPROVALS_PAUSED_MESSAGE =
-  'Join approvals are temporarily paused while we stabilize encrypted key delivery.';
 
 function validateIconFile(file: File): string | null {
   if (!VALID_ICON_TYPES.includes(file.type)) {
@@ -86,9 +82,6 @@ export function useGroupSettings({
 }: UseGroupSettingsInput) {
   // ── member list ──────────────────────────────────────────────────────────
   const [memberList, setMemberList] = useState<ConversationMember[]>(members);
-  const [currentKeyVersion, setCurrentKeyVersion] = useState<number>(
-    conversation.current_key_version || 1
-  );
 
   // ── invites ───────────────────────────────────────────────────────────────
   const [inviteLinks, setInviteLinks] = useState<ConversationInviteLink[]>([]);
@@ -174,8 +167,6 @@ export function useGroupSettings({
             member.display_name || '',
             member.avatar_url || '',
             member.joined_at,
-            member.joined_key_version ?? '',
-            member.history_start_version ?? '',
           ].join(':')
         )
         .join('|'),
@@ -205,10 +196,6 @@ export function useGroupSettings({
   useEffect(() => {
     setMemberList(members);
   }, [conversation.id, membersSignature]);
-
-  useEffect(() => {
-    setCurrentKeyVersion(conversation.current_key_version || 1);
-  }, [conversation.id, conversation.current_key_version]);
 
   useEffect(() => {
     setProfileName(conversation.name || '');
@@ -274,9 +261,9 @@ export function useGroupSettings({
     return actor?.display_name || actor?.username || 'A moderator';
   };
 
-  const postMembershipSystemMessage = async (text: string, keyVersion: number) => {
+  const postMembershipSystemMessage = async (text: string) => {
     try {
-      const message = await sendSystemEvent(conversation.id, text, keyVersion);
+      const message = await sendSystemEvent(conversation.id, text);
       onMessageCreated?.(message);
     } catch (error) {
       console.warn('Failed to post membership system message:', error);
@@ -393,24 +380,12 @@ export function useGroupSettings({
   };
 
   const handleApproveRequest = async (request: ConversationJoinRequest) => {
-    if (JOIN_APPROVALS_PAUSED) {
-      setInviteActionError(JOIN_APPROVALS_PAUSED_MESSAGE);
-      return;
-    }
-
     try {
       setBusyRequestId(request.id);
       setInviteActionError('');
 
-      const result = await approveConversationJoinRequest(
-        { ...conversation, current_key_version: currentKeyVersion },
-        currentUserId,
-        memberList.map((member) => member.user_id),
-        request.id,
-        request.requester_user_id
-      );
+      await approveConversationJoinRequest(conversation.id, request.id);
 
-      setCurrentKeyVersion(result.key_version);
       setPendingRequests((current) => current.filter((entry) => entry.id !== request.id));
       setMemberList((current) => {
         if (current.some((member) => member.user_id === request.requester_user_id)) {
@@ -424,8 +399,6 @@ export function useGroupSettings({
             role: 'member',
             nickname: null,
             joined_at: new Date().toISOString(),
-            joined_key_version: result.key_version,
-            history_start_version: result.key_version,
             username: request.username,
             display_name: request.display_name,
             avatar_url: request.avatar_url || null,
@@ -436,10 +409,7 @@ export function useGroupSettings({
 
       const approvedLabel = getRequestLabel(request);
       const actorLabel = getActorLabel();
-      void postMembershipSystemMessage(
-        `${actorLabel} approved ${approvedLabel}'s join request.`,
-        result.key_version
-      );
+      void postMembershipSystemMessage(`${actorLabel} approved ${approvedLabel}'s join request.`);
 
       void onMembershipChanged?.();
     } catch (error) {
@@ -619,10 +589,7 @@ export function useGroupSettings({
       );
       setExpandedRoleEditorUserId(null);
       setMemberMenuUserId(null);
-      void postMembershipSystemMessage(
-        buildRoleSystemMessage(targetMember, nextRole),
-        currentKeyVersion
-      );
+      void postMembershipSystemMessage(buildRoleSystemMessage(targetMember, nextRole));
       void onMembershipChanged?.();
     } catch (error) {
       console.error('Failed to update member role:', error);
@@ -660,10 +627,7 @@ export function useGroupSettings({
             : member
         )
       );
-      void postMembershipSystemMessage(
-        buildNicknameSystemMessage(targetMember, result.nickname),
-        currentKeyVersion
-      );
+      void postMembershipSystemMessage(buildNicknameSystemMessage(targetMember, result.nickname));
       void onMembershipChanged?.();
       return true;
     } catch (error) {
@@ -678,29 +642,12 @@ export function useGroupSettings({
   };
 
   const handleKickMember = async (targetMember: ConversationMember) => {
-    if (MEMBER_REMOVAL_PAUSED) {
-      setMemberActionError(
-        'Member removal is temporarily paused while we stabilize encrypted key delivery.'
-      );
-      return;
-    }
-
     try {
       setBusyMemberAction({ userId: targetMember.user_id, action: 'kick' });
       setMemberActionError('');
 
-      const remainingMemberIds = memberList
-        .filter((member) => member.user_id !== targetMember.user_id)
-        .map((member) => member.user_id);
+      await removeMember(conversation.id, targetMember.user_id);
 
-      const result = await rotateRemoveMember(
-        { ...conversation, current_key_version: currentKeyVersion },
-        currentUserId,
-        remainingMemberIds,
-        targetMember.user_id
-      );
-
-      setCurrentKeyVersion(result.key_version);
       setMemberList((current) =>
         current.filter((member) => member.user_id !== targetMember.user_id)
       );
@@ -712,10 +659,7 @@ export function useGroupSettings({
 
       const actorLabel = getActorLabel();
       const targetLabel = getMemberLabel(targetMember);
-      void postMembershipSystemMessage(
-        `${actorLabel} removed ${targetLabel} from the group.`,
-        result.key_version
-      );
+      void postMembershipSystemMessage(`${actorLabel} removed ${targetLabel} from the group.`);
 
       void onMembershipChanged?.();
     } catch (error) {
@@ -764,10 +708,7 @@ export function useGroupSettings({
       setTransferConfirmMember(null);
 
       await onConversationUpdated?.(updatedConversation);
-      void postMembershipSystemMessage(
-        buildTransferOwnershipSystemMessage(targetMember),
-        currentKeyVersion
-      );
+      void postMembershipSystemMessage(buildTransferOwnershipSystemMessage(targetMember));
       void onMembershipChanged?.();
     } catch (error) {
       console.error('Failed to transfer ownership:', error);
@@ -890,8 +831,8 @@ export function useGroupSettings({
       busyInviteId,
       busyRequestId,
       copiedInviteId,
-      joinApprovalsPaused: JOIN_APPROVALS_PAUSED,
-      joinApprovalsPausedMessage: JOIN_APPROVALS_PAUSED_MESSAGE,
+      joinApprovalsPaused: false,
+      joinApprovalsPausedMessage: '',
       onRefreshInvites: refreshInvites,
       onCreateInvite: handleCreateInvite,
       onCopyInvite: handleCopyInvite,
@@ -909,7 +850,7 @@ export function useGroupSettings({
       transferConfirmMember,
       leaveConfirmMode,
       busyMemberAction,
-      memberRemovalPaused: MEMBER_REMOVAL_PAUSED,
+      memberRemovalPaused: false,
       onToggleMemberMenu: (userId: string) =>
         setMemberMenuUserId((current) => (current === userId ? null : userId)),
       onToggleRoleEditor: (userId: string) => {

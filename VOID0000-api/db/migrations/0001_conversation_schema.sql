@@ -14,15 +14,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   topic TEXT,
   slowmode_seconds INTEGER NOT NULL DEFAULT 0,
   is_age_restricted BOOLEAN NOT NULL DEFAULT FALSE,
-  current_key_version INTEGER,
   last_message_at TIMESTAMPTZ,
-  pending_remove_target UUID,
-  pending_remove_key_version INTEGER,
-  pending_add_user_ids UUID[],
-  pending_add_key_version INTEGER,
-  pending_approve_request_id INTEGER,
-  pending_approve_user_id UUID,
-  pending_approve_key_version INTEGER,
   first_message_at TIMESTAMPTZ,
   permissions JSONB
 );
@@ -37,15 +29,7 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS category_id UUID;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS topic TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS slowmode_seconds INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_age_restricted BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS current_key_version INTEGER;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_message_at TIMESTAMPTZ;
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_remove_target UUID;
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_remove_key_version INTEGER;
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_add_user_ids UUID[];
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_add_key_version INTEGER;
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_approve_request_id INTEGER;
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_approve_user_id UUID;
-ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_approve_key_version INTEGER;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS first_message_at TIMESTAMPTZ;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS permissions JSONB;
 
@@ -160,8 +144,6 @@ CREATE TABLE IF NOT EXISTS conversation_members (
   joined_at TIMESTAMPTZ DEFAULT NOW(),
   last_read_message_id TEXT,
   last_message_sent_at TIMESTAMPTZ,
-  joined_key_version INTEGER,
-  history_start_version INTEGER,
   unread_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (conversation_id, user_id)
 );
@@ -171,8 +153,6 @@ ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS nickname VARCHAR(32);
 ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ DEFAULT NOW();
 ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS last_read_message_id TEXT;
 ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS last_message_sent_at TIMESTAMPTZ;
-ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS joined_key_version INTEGER;
-ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS history_start_version INTEGER;
 ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS unread_count INTEGER NOT NULL DEFAULT 0;
 
 DO $$
@@ -244,53 +224,6 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_dm_pairs_conv
   ON dm_pairs (conversation_id);
-
-CREATE TABLE IF NOT EXISTS conversation_key_rotations (
-  id BIGSERIAL PRIMARY KEY,
-  conversation_id UUID NOT NULL,
-  previous_key_version INTEGER,
-  new_key_version INTEGER NOT NULL,
-  rotated_by_user_id UUID,
-  reason TEXT NOT NULL,
-  affected_user_id UUID,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'conversation_key_rotations_conversation_id_fkey'
-  ) THEN
-    ALTER TABLE conversation_key_rotations
-      ADD CONSTRAINT conversation_key_rotations_conversation_id_fkey
-      FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE;
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'conversation_key_rotations_rotated_by_user_id_fkey'
-  ) THEN
-    ALTER TABLE conversation_key_rotations
-      ADD CONSTRAINT conversation_key_rotations_rotated_by_user_id_fkey
-      FOREIGN KEY (rotated_by_user_id) REFERENCES users(id);
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'conversation_key_rotations_affected_user_id_fkey'
-  ) THEN
-    ALTER TABLE conversation_key_rotations
-      ADD CONSTRAINT conversation_key_rotations_affected_user_id_fkey
-      FOREIGN KEY (affected_user_id) REFERENCES users(id);
-  END IF;
-END $$;
-
-CREATE INDEX IF NOT EXISTS idx_conversation_key_rotations_conversation_created
-  ON conversation_key_rotations (conversation_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS conversation_invite_links (
   id BIGSERIAL PRIMARY KEY,

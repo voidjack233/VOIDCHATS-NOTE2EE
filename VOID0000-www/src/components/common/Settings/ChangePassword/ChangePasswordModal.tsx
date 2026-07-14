@@ -2,14 +2,12 @@ import { useEffect, useState } from 'react';
 import { X, Eye, EyeOff } from 'lucide-react';
 import { useChangePassword } from '../../../../Services/hooks/Auth/useChangePassword';
 import { authService } from '../../../../Services/Auth/authServiceApi';
-import { useUser } from '../../../../Services/Auth/UserContext';
 
 interface ChangePasswordModalProps {
   onClose: () => void;
 }
 
 export default function ChangePasswordModal({ onClose }: ChangePasswordModalProps) {
-  const { recoveryBackupStatus } = useUser();
   const [step, setStep] = useState<'confirm' | 'form'>('confirm');
   const [requires2FA, setRequires2FA] = useState<boolean | null>(null);
   const [twoFactorMethods, setTwoFactorMethods] = useState<string[]>([]);
@@ -186,19 +184,10 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
               <div className="rounded-xl border border-orange-500/25 bg-orange-500/10 p-4">
                 <p className="text-sm font-medium text-orange-100">You are about to change your password.</p>
                 <p className="mt-2 text-xs text-orange-100/85">
-                  This updates your account login and can affect secure backup recovery on your devices.
+                  This updates the password used to sign in to your account.
                   {requires2FA ? ' Your account also requires a 2FA code before the change is accepted.' : ''}
                 </p>
               </div>
-
-              {recoveryBackupStatus === 'PASSWORD_ONLY' ? (
-                <div className="rounded-xl border border-void-accent/25 bg-void-accent/10 p-4">
-                  <p className="text-sm font-medium text-void-text">Legacy secure-chat recovery is still active.</p>
-                  <p className="mt-2 text-xs text-void-text-muted">
-                    Changing your password will re-wrap the older password-based backup. After this change, it is still better to create a recovery key in Account settings so future device restore does not depend on your login password.
-                  </p>
-                </div>
-              ) : null}
 
               <div className="flex gap-3">
                 <button

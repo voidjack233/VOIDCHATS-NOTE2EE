@@ -18,6 +18,7 @@
     "lint": "eslint .",
     "migrate": "node scripts/migrate.js",
     "migrate:status": "node scripts/migrate.js --status",
+    "import:accounts": "node scripts/import-account-data.js",
     "backfill:conversation-public-ids": "node server/scripts/backfillConversationPublicIds.js",
     "migrate:legacy-group-to-general": "node server/scripts/migrateLegacyGroupToGeneral.js"
   },

@@ -8,11 +8,6 @@ import { totp } from '../../middleware/2fa/totp.js';
 import { decrypt } from './2fa/setup-totp.js';
 import valkey from '../../valkey.js';
 import crypto from 'crypto';
-import { debugLog } from '../../utils/debugLog.js';
-import {
-  activateBackedUpMlsKeyPackages,
-  normalizeBackedUpMlsKeyPackageRefs,
-} from '../../utils/mlsKeyPackageBackupActivation.js';
 import { getTwoFactorCodeSecret } from '../../utils/authSecrets.js';
 import { validateAccountPassword } from '../../utils/passwordPolicy.js';
 
@@ -38,7 +33,7 @@ function safeEqualHex(left, right) {
 }
 
 router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => {
-  const { currentPassword, newPassword, keyBackup, twoFactorMethod, twoFactorCode } = req.body;
+  const { currentPassword, newPassword, twoFactorMethod, twoFactorCode } = req.body;
   const userId = req.user.id;
 
   if (!currentPassword || !newPassword) {
@@ -61,52 +56,6 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       success: false,
       message: 'New password must be different from current password'
     });
-  }
-
-  if (keyBackup) {
-    const hasAllBackupFields =
-      typeof keyBackup.encrypted_private_key === 'string' &&
-      typeof keyBackup.iv === 'string' &&
-      typeof keyBackup.salt === 'string' &&
-      typeof keyBackup.key_id === 'string';
-
-    const hasAnyMlsField =
-      keyBackup.mls_state_encrypted != null ||
-      keyBackup.mls_state_iv != null ||
-      keyBackup.mls_state_salt != null;
-    const hasCompleteMlsFields =
-      typeof keyBackup.mls_state_encrypted === 'string' &&
-      typeof keyBackup.mls_state_iv === 'string' &&
-      typeof keyBackup.mls_state_salt === 'string';
-    const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(keyBackup.mls_key_package_refs);
-
-    if (!hasAllBackupFields) {
-      return res.status(400).json({
-        success: false,
-        message: 'keyBackup must include encrypted_private_key, iv, salt, and key_id'
-      });
-    }
-
-    if (hasAnyMlsField && !hasCompleteMlsFields) {
-      return res.status(400).json({
-        success: false,
-        message: 'mls_state_encrypted, mls_state_iv, and mls_state_salt must all be provided together'
-      });
-    }
-
-    if (!backedUpMlsKeyPackageRefs) {
-      return res.status(400).json({
-        success: false,
-        message: 'mls_key_package_refs must be an array of valid package refs'
-      });
-    }
-
-    if (backedUpMlsKeyPackageRefs.length > 0 && !hasCompleteMlsFields) {
-      return res.status(400).json({
-        success: false,
-        message: 'An encrypted MLS state backup is required before key packages can be activated'
-      });
-    }
   }
 
   let client;
@@ -254,41 +203,6 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       });
     }
 
-    const existingBackupResult = await client.query(
-      'SELECT key_id FROM user_key_backups WHERE user_id = $1 FOR UPDATE',
-      [userId]
-    );
-
-    if (existingBackupResult.rows.length > 0 && !keyBackup) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        success: false,
-        code: 'KEY_BACKUP_REQUIRED',
-        message: 'Your account must re-encrypt its secure chat backup before changing password.'
-      });
-    }
-
-    if (keyBackup) {
-      const activeKeyResult = await client.query(
-        `SELECT key_id
-         FROM user_keys
-         WHERE user_id = $1 AND is_active = TRUE
-         ORDER BY created_at DESC
-         LIMIT 1`,
-        [userId]
-      );
-
-      const activeKeyId = activeKeyResult.rows[0]?.key_id || null;
-      if (activeKeyId && activeKeyId !== keyBackup.key_id) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          success: false,
-          code: 'KEY_ID_MISMATCH',
-          message: 'Your local chat key does not match the active account key. Restore your account secure state and try again.'
-        });
-      }
-    }
-
     const newHash = await argon2.hash(newPassword, {
       type: argon2.argon2id,
       memoryCost: 2 ** 16,
@@ -300,57 +214,6 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
       [newHash, userId]
     );
-
-    if (keyBackup) {
-      const hasMlsState =
-        typeof keyBackup.mls_state_encrypted === 'string' &&
-        typeof keyBackup.mls_state_iv === 'string' &&
-        typeof keyBackup.mls_state_salt === 'string';
-
-      await client.query(
-        `INSERT INTO user_key_backups (
-           user_id,
-           encrypted_private_key,
-           iv,
-           salt,
-           key_id,
-           mls_state_encrypted,
-           mls_state_iv,
-           mls_state_salt
-         )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (user_id)
-         DO UPDATE SET
-           encrypted_private_key = $2,
-           iv = $3,
-           salt = $4,
-           key_id = $5,
-           mls_state_encrypted = COALESCE($6, user_key_backups.mls_state_encrypted),
-           mls_state_iv = COALESCE($7, user_key_backups.mls_state_iv),
-           mls_state_salt = COALESCE($8, user_key_backups.mls_state_salt),
-           updated_at = NOW()`,
-        [
-          userId,
-          keyBackup.encrypted_private_key,
-          keyBackup.iv,
-          keyBackup.salt,
-          keyBackup.key_id,
-          hasMlsState ? keyBackup.mls_state_encrypted : null,
-          hasMlsState ? keyBackup.mls_state_iv : null,
-          hasMlsState ? keyBackup.mls_state_salt : null,
-        ]
-      );
-
-      if (hasMlsState) {
-        const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(keyBackup.mls_key_package_refs) || [];
-        const activatedKeyPackageRefs = await activateBackedUpMlsKeyPackages(client, userId, backedUpMlsKeyPackageRefs);
-        debugLog('[MLS_ACCOUNT_KEYS] password change activation complete', {
-          user_id: userId,
-          backed_up_key_package_refs_count: backedUpMlsKeyPackageRefs.length,
-          activated_key_package_refs_count: activatedKeyPackageRefs.length,
-        });
-      }
-    }
 
     await client.query('COMMIT');
     await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGE_SUCCESS', userId);

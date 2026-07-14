@@ -2,7 +2,6 @@
 /**
  * nuke-conversations.js
  * Wipes all conversation-related data from PostgreSQL, ScyllaDB, and Valkey.
- * Preserves account-scoped user key identity/backup tables.
  * Run with: node scripts/nuke-conversations.js
  * Add --confirm to skip the prompt.
  */
@@ -21,15 +20,8 @@ import Redis from 'ioredis';
 
 const POSTGRES_TABLES = [
   // Order matters — child tables first to avoid FK violations
-  'mls_commit_receipts',
-  'mls_commit_messages',
-  'mls_welcome_messages',
-  'mls_group_states',
-  'mls_group_key_archive',
-  'mls_key_packages',
   'conversation_join_requests',
   'conversation_invite_links',
-  'conversation_key_rotations',
   'conversation_members',
   'conversation_categories',
   'dm_pairs',

@@ -9,7 +9,7 @@ Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. 
 - `server/entrypoints/account-server.js` - account/control API on port `3001`.
 - `server/entrypoints/message-server.js` - messages, reactions, and attachment uploads on port `3002`.
 - `server/entrypoints/social-server.js` - profiles, friends, and user search on port `3004`.
-- `server/entrypoints/conversation-server.js` - conversations, groups, members, invites, and MLS metadata on port `3005`.
+- `server/entrypoints/conversation-server.js` - conversations, groups, members, invites, and permissions on port `3005`.
 - `server/entrypoints/worker-server.js` - background workers, cleanup, and presence fanout.
 - `void_gateway` - Phoenix websocket gateway.
 - `ecosystem.config.cjs` - PM2 process definitions.
@@ -88,7 +88,7 @@ Expected PM2 apps:
 | --- | --- |
 | `npm run dev` | Start the account/control service with `nodemon`. |
 | `npm run dev:messages` | Start the message/reaction/attachment service with `nodemon`. |
-| `npm run dev:conversations` | Start the conversation/group/MLS service with `nodemon`. |
+| `npm run dev:conversations` | Start the conversation/group service with `nodemon`. |
 | `npm run dev:social` | Start the friends/profile/search service with `nodemon`. |
 | `npm run dev:workers` | Start the background worker service with `nodemon`. |
 | `npm start` | Start the account/control service with Node. |
@@ -124,10 +124,10 @@ Important groups:
 
 | Store | Used For |
 | --- | --- |
-| Postgres | Users, auth, sessions, profiles, friends, conversation metadata, MLS metadata. |
+| Postgres | Users, auth, sessions, profiles, friends, and conversation metadata. |
 | ScyllaDB | High-volume message storage, edits, reactions, and reaction counts. |
 | Valkey | Realtime pub/sub, captcha challenges, trust/rate-limit state, presence fanout, gateway coordination, session resume buffers. |
-| MinIO | Avatars, group avatars, and encrypted chat attachments. |
+| MinIO | Avatars, group avatars, and private chat attachments. |
 
 Run `npm run migrate` before starting a fresh environment. Migrations create schema only; they do not copy existing users, conversations, messages, or media.
 
@@ -140,7 +140,7 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 - `/api/me` - authenticated user lookup.
 - `/api/users` - profile reads, profile updates, avatar upload, preferences, sessions, account data, and search.
 - `/api/friends` - friend requests, lists, presence, actions, and removal.
-- `/api/conversations` - DMs, conversation metadata, group members, ownership transfer, self-leave, permissions, keys, MLS, invites, messages, reactions, and attachments.
+- `/api/conversations` - DMs, conversation metadata, group members, ownership transfer, leave-group flows, permissions, invites, messages, reactions, and attachments.
 
 Self-service account deletion is not exposed as a public flow. This setup is tiny, roughly 1 to 3 users with limited usage, so account removal is handled manually by the operator when needed.
 

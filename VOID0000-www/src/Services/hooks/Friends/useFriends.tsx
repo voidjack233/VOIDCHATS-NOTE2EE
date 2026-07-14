@@ -3,7 +3,6 @@ import { API_URL } from '../../config';
 import { ensureCSRFToken, fetchWithAuth } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
-import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { fetchAppBootstrap } from '../../bootstrap';
 
 const FRIENDS_RESYNC_MIN_GAP_MS = 60_000;
@@ -185,7 +184,6 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
 
       if (user?.id && typeof data?.friend?.id === 'string' && data.friend.id.length > 0) {
         // Best-effort warmup for both accepter and requester clients.
-        void chatCryptoProtocolService.preWarmForDm(user.id, data.friend.id);
       }
     };
 

@@ -234,7 +234,7 @@ Vite proxies local requests:
 - account/auth/general `/api` routes to `http://localhost:3001`
 - message routes to `http://localhost:3002`
 - social/profile/friends routes to `http://localhost:3004`
-- conversation/group/MLS routes to `http://localhost:3005`
+- conversation/group routes to `http://localhost:3005`
 - `/gateway` to `ws://localhost:4001`
 
 So local dev does not need the public domain.
@@ -375,7 +375,7 @@ Very important:
   Nginx routes to message service on `127.0.0.1:3002`
 - `api.your-domain.example` friends/profile/search paths
   Nginx routes to social/profile service on `127.0.0.1:3004`
-- `api.your-domain.example` conversation/group/MLS paths
+- `api.your-domain.example` conversation/group paths
   Nginx routes to conversation service on `127.0.0.1:3005`
 - `api.your-domain.example/gateway`
   Nginx routes to Phoenix websocket gateway on `127.0.0.1:4001`
@@ -474,7 +474,7 @@ The path split roughly follows the Vite dev proxy:
 
 - `/api/conversations/:id/messages`, `/api/conversations/:id/reactions`, `/api/conversations/:id/attachments` -> message service `3002`
 - `/api/friends`, `/api/users/search`, `/api/users/profile`, profile reads -> social/profile service `3004`
-- `/api/bootstrap`, `/api/conversations`, conversation members, invites, MLS, keys -> conversation service `3005`
+- `/api/bootstrap`, `/api/conversations`, conversation members, invites, and permissions -> conversation service `3005`
 - `/api/auth`, `/api/me`, `/api/csrf`, `/api/captcha`, account/session/preference routes -> account/control service `3001`
 - `/gateway` -> Phoenix gateway `4001`
 
@@ -593,8 +593,8 @@ So the honest answer is:
 
 ## Known Setup Notes
 
-- The MLS / encrypted-chat path depends on `ts-mls`, which upstream says is not formally audited.
-- Recovery keys are available, but users still need to save the key. Forgot-password recovery without an existing recovery key can still be painful on a fresh device.
+- Message and attachment data is service-managed, so test privacy-sensitive flows with that expectation.
+- Forgot-password recovery restores account access, not deleted local browser state.
 - Presence and full friend-list traffic use separate endpoints and separate rate-limit buckets.
 
 If you want the higher-level explanation of how the project fits together, read:

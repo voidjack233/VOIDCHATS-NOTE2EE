@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import {
   batchFetchReactions,
-  canAccessMessageForHistory,
   cassandra,
-  getConversationKeyState,
   mapStoredMessageRow,
   resolveConversationContexts,
   scylla,
@@ -33,11 +31,6 @@ router.get('/', async (req, res) => {
     } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
-
-    const keyState = await getConversationKeyState(conversation, userId);
-    if (!keyState) {
-      return res.status(403).json({ error: 'Missing group key membership state' });
-    }
 
     let afterCursor = null;
     let beforeCursor = null;
@@ -91,22 +84,13 @@ router.get('/', async (req, res) => {
         break;
       }
 
-      const mappedMessages = rows.map((row) => mapStoredMessageRow(row, conversationPublic));
-
-      const visibleChunk = conversation.type === 'dm'
-        ? mappedMessages
-        : mappedMessages.filter((message) => canAccessMessageForHistory(message, keyState));
+      const visibleChunk = rows.map((row) => mapStoredMessageRow(row, conversationPublic));
 
       for (const message of visibleChunk) {
         if (seenMessageIds.has(message.message_id)) continue;
         seenMessageIds.add(message.message_id);
         collectedVisibleMessages.push(message);
         if (collectedVisibleMessages.length >= visibleTargetSize) break;
-      }
-
-      if (!afterCursor && conversation.type !== 'dm' && visibleChunk.length === 0) {
-        exhausted = true;
-        break;
       }
 
       if (rows.length < fetchChunkSize) {

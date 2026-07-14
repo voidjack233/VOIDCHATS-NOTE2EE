@@ -13,7 +13,6 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
-import type { ConversationSecurityState } from '../../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation, ConversationMember } from '../../../Services/Chat/chatService';
 import AttachmentLimitModal from '../Attachments/AttachmentLimitModal';
@@ -24,14 +23,10 @@ import UserAvatar from '../../common/UserAvatar';
 interface MessageInputProps {
   currentUserId?: string;
   conversation: Conversation;
-  encryptionKey: CryptoKey | null;
-  keyVersion: number;
-  conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
   shouldJumpToPresentAfterOwnSend?: () => boolean;
   onOwnMessageSentFromHistory?: (message: Message) => Promise<void> | void;
   onSendError?: (message: string | null) => void;
-  onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
   replyTo?: Message | null;
@@ -127,16 +122,11 @@ const MessageInput = (props: MessageInputProps) => {
     dismissAttachmentAlert,
   } = useMessageInput(props);
 
-  const { editingMessage, replyTo, encryptionKey } = props;
+  const { editingMessage, replyTo } = props;
   const hasAttachments = attachments.length > 0;
   const hasBanner = !!(editingMessage || replyTo);
   const isGroupConversation = props.conversation.type === 'group';
-  const inputDisabled =
-    props.conversationSecurityState?.canSend === false ||
-    !encryptionKey;
-  const isSecureChatPreparing =
-    !encryptionKey &&
-    props.conversationSecurityState?.status !== 'blocked';
+  const inputDisabled = false;
 
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [activeMentionQuery, setActiveMentionQuery] = useState<MentionQueryState | null>(null);
@@ -345,7 +335,7 @@ const MessageInput = (props: MessageInputProps) => {
                     <MessagePreviewText
                       content={replyTo?.content}
                       maxLength={60}
-                      fallback="[encrypted]"
+                      fallback="Message unavailable"
                     />
                   )}
               </span>
@@ -630,7 +620,7 @@ const MessageInput = (props: MessageInputProps) => {
           disabled={!canSend}
           className="text-void-text-muted hover:text-void-accent ml-3 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          {sending || isSecureChatPreparing ? (
+          {sending ? (
             <Loader2 className="w-5 h-5 animate-spin" />
           ) : (
             <Send className="w-5 h-5" />
@@ -638,11 +628,6 @@ const MessageInput = (props: MessageInputProps) => {
         </button>
       </div>
 
-      <div className="mt-1.5 flex min-h-[16px] items-center justify-center">
-        <span className="text-[10px] text-void-text-muted">
-          Messages are end-to-end encrypted
-        </span>
-      </div>
       </div>
     </>
   );
