@@ -329,20 +329,6 @@ router.put('/:messageId', async (req, res) => {
     const normalizedContent = content.trim();
 
     const now = new Date();
-    const editId = cassandra.types.TimeUuid.now();
-
-    await scylla.execute(
-      `INSERT INTO message_edits (conversation_id, message_id, edit_id, content, edited_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        cassandra.types.Uuid.fromString(storageConversationId),
-        cassandra.types.TimeUuid.fromString(messageId),
-        editId,
-        normalizedContent,
-        now,
-      ],
-      { prepare: true }
-    );
 
     await scylla.execute(
       `UPDATE messages SET content = ?, message_type = ?, attachments = ?, forwarded = ?, mentions = ?, link_preview = ?,

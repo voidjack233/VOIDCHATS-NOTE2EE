@@ -16,15 +16,6 @@ CREATE TABLE IF NOT EXISTS {{KEYSPACE}}.messages (
   PRIMARY KEY ((conversation_id), message_id)
 ) WITH CLUSTERING ORDER BY (message_id DESC);
 
-CREATE TABLE IF NOT EXISTS {{KEYSPACE}}.message_edits (
-  conversation_id uuid,
-  message_id timeuuid,
-  edit_id timeuuid,
-  content text,
-  edited_at timestamp,
-  PRIMARY KEY ((conversation_id, message_id), edit_id)
-) WITH CLUSTERING ORDER BY (edit_id DESC);
-
 CREATE TABLE IF NOT EXISTS {{KEYSPACE}}.message_reactions (
   conversation_id uuid,
   message_id timeuuid,

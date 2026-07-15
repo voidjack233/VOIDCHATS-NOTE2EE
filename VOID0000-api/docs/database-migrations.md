@@ -34,8 +34,8 @@ PostgreSQL migrations run in this order:
 
 ScyllaDB uses one fresh baseline:
 
-- `0000_message_storage.cql` stores message `content`, edit history, message
-  metadata, link previews, and reactions.
+- `0000_message_storage.cql` creates message content, metadata, link previews,
+  and reaction storage.
 
 The migration runner also creates its migration bookkeeping tables. It does
 not clone any existing data.

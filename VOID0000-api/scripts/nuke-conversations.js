@@ -36,7 +36,6 @@ const SCYLLA_TABLES = [
   'message_reactions',
   'reaction_counts',
   'user_reactions',
-  'message_edits',
   'messages',
 ];
 
