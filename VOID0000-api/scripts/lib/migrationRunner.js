@@ -5,6 +5,10 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import cassandra from 'cassandra-driver';
 import pg from 'pg';
+import {
+  resolvePostgresConfig,
+  resolveScyllaConfig,
+} from '../../server/config/databaseConfig.js';
 
 const { Pool } = pg;
 
@@ -13,45 +17,16 @@ export const projectRoot = path.resolve(__dirname, '..', '..');
 const postgresMigrationsDir = path.join(projectRoot, 'db', 'migrations');
 const scyllaMigrationsDir = path.join(projectRoot, 'db', 'scylla-migrations');
 const MIGRATION_LOCK_KEYS = [1448030532, 1296641874];
+const SCYLLA_MIGRATION_READ_TIMEOUT_MS = 120_000;
 
 dotenv.config({ path: path.join(projectRoot, '.env'), quiet: true });
 
 function createPool() {
-  return new Pool({
-    host: process.env.PGHOST,
-    user: process.env.PGUSER,
-    database: process.env.PGDATABASE,
-    password: process.env.PGPASSWORD,
-    port: parseInt(process.env.PGPORT || '5432', 10),
-  });
+  return new Pool(resolvePostgresConfig());
 }
 
 function checksumOf(contents) {
   return createHash('sha256').update(contents).digest('hex');
-}
-
-function validateIdentifier(value, label) {
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(value)) {
-    throw new Error(`Invalid ${label} "${value}". Use only letters, numbers, and underscores.`);
-  }
-  return value;
-}
-
-function resolveScyllaConfig() {
-  const keyspace = validateIdentifier(process.env.SCYLLA_KEYSPACE || 'voidapp', 'Scylla keyspace');
-  const localDataCenter = process.env.SCYLLA_LOCAL_DATACENTER || 'datacenter1';
-  const replicationFactor = Math.max(parseInt(process.env.SCYLLA_REPLICATION_FACTOR || '1', 10) || 1, 1);
-  const contactPoints = String(process.env.SCYLLA_HOST || '127.0.0.1')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-
-  return {
-    keyspace,
-    localDataCenter,
-    replicationFactor,
-    contactPoints: contactPoints.length > 0 ? contactPoints : ['127.0.0.1'],
-  };
 }
 
 async function ensurePostgresMigrationsTable(client) {
@@ -64,10 +39,52 @@ async function ensurePostgresMigrationsTable(client) {
   `);
 }
 
+async function readPostgresAppliedMigrations(client) {
+  const tableResult = await client.query(
+    `SELECT to_regclass('schema_migrations') IS NOT NULL AS exists`
+  );
+  if (!tableResult.rows[0]?.exists) {
+    return [];
+  }
+
+  const appliedResult = await client.query(
+    `SELECT filename, checksum, applied_at
+     FROM schema_migrations
+     ORDER BY filename`
+  );
+  return appliedResult.rows;
+}
+
+async function assertFreshPostgresBaseline(client, appliedRows) {
+  if (appliedRows.length > 0) {
+    return;
+  }
+
+  const tablesResult = await client.query(
+    `SELECT table_name
+     FROM information_schema.tables
+     WHERE table_schema = current_schema()
+       AND table_type = 'BASE TABLE'
+       AND table_name <> 'schema_migrations'
+     ORDER BY table_name`
+  );
+
+  if (tablesResult.rows.length > 0) {
+    const tables = tablesResult.rows.map((row) => row.table_name).join(', ');
+    throw new Error(
+      `Fresh NOTE2EE migrations require an empty PostgreSQL target. Found: ${tables}`
+    );
+  }
+}
+
 async function ensureScyllaKeyspace(client, config) {
   await client.execute(
     `CREATE KEYSPACE IF NOT EXISTS ${config.keyspace}
-     WITH replication = {'class': 'SimpleStrategy', 'replication_factor': ${config.replicationFactor}}`
+     WITH replication = {
+       'class': 'NetworkTopologyStrategy',
+       '${config.localDataCenter}': ${config.replicationFactor}
+     }
+     AND tablets = { 'enabled': false }`
   );
 }
 
@@ -81,6 +98,68 @@ async function ensureScyllaMigrationsTable(client, keyspace) {
       PRIMARY KEY ((scope), filename)
     )`
   );
+}
+
+async function scyllaKeyspaceExists(client, keyspace) {
+  const result = await client.execute(
+    `SELECT keyspace_name
+     FROM system_schema.keyspaces
+     WHERE keyspace_name = ?`,
+    [keyspace],
+    { prepare: true }
+  );
+  return result.rows.length > 0;
+}
+
+async function scyllaTableExists(client, keyspace, tableName) {
+  const result = await client.execute(
+    `SELECT table_name
+     FROM system_schema.tables
+     WHERE keyspace_name = ? AND table_name = ?`,
+    [keyspace, tableName],
+    { prepare: true }
+  );
+  return result.rows.length > 0;
+}
+
+async function readScyllaAppliedMigrations(client, keyspace) {
+  if (!(await scyllaKeyspaceExists(client, keyspace))) {
+    return [];
+  }
+  if (!(await scyllaTableExists(client, keyspace, 'schema_migrations'))) {
+    return [];
+  }
+
+  const result = await client.execute(
+    `SELECT filename, checksum, applied_at
+     FROM ${keyspace}.schema_migrations
+     WHERE scope = ?`,
+    ['scylla'],
+    { prepare: true }
+  );
+  return result.rows || [];
+}
+
+async function assertFreshScyllaBaseline(client, config, appliedRows) {
+  if (appliedRows.length > 0 || !(await scyllaKeyspaceExists(client, config.keyspace))) {
+    return;
+  }
+
+  const tablesResult = await client.execute(
+    `SELECT table_name
+     FROM system_schema.tables
+     WHERE keyspace_name = ?`,
+    [config.keyspace],
+    { prepare: true }
+  );
+  const existingTables = tablesResult.rows
+    .map((row) => row.table_name)
+    .filter((tableName) => tableName !== 'schema_migrations');
+  if (existingTables.length > 0) {
+    throw new Error(
+      `Fresh NOTE2EE migrations require an empty Scylla keyspace. Found: ${existingTables.join(', ')}`
+    );
+  }
 }
 
 async function loadSqlMigrations() {
@@ -222,20 +301,14 @@ export async function runPostgresMigrations({ logger = console, statusOnly = fal
   const client = await pool.connect();
 
   try {
-    await ensurePostgresMigrationsTable(client);
-
     const migrations = await loadSqlMigrations();
-    const appliedResult = await client.query(
-      `SELECT filename, checksum, applied_at
-       FROM schema_migrations
-       ORDER BY filename`
-    );
-
+    const appliedRows = await readPostgresAppliedMigrations(client);
+    await assertFreshPostgresBaseline(client, appliedRows);
     const appliedByFilename = new Map(
-      appliedResult.rows.map((row) => [row.filename, row])
+      appliedRows.map((row) => [row.filename, row])
     );
     validateUnexpectedAppliedMigrations({
-      appliedRows: appliedResult.rows,
+      appliedRows,
       migrations,
       errorPrefix: 'Unexpected applied PostgreSQL migrations:',
     });
@@ -248,17 +321,19 @@ export async function runPostgresMigrations({ logger = console, statusOnly = fal
     if (statusOnly) {
       reportMigrationStatus({
         logger,
-        appliedRows: appliedResult.rows,
+        appliedRows,
         pending,
         appliedLabel: 'Applied migrations',
         pendingLabel: 'Pending migrations',
       });
 
       return {
-        appliedCount: appliedResult.rows.length,
+        appliedCount: appliedRows.length,
         pendingCount: pending.length,
       };
     }
+
+    await ensurePostgresMigrationsTable(client);
 
     for (const migration of pending) {
       logger.log(`Applying migration ${migration.filename}...`);
@@ -285,7 +360,7 @@ export async function runPostgresMigrations({ logger = console, statusOnly = fal
     );
 
     return {
-      appliedCount: appliedResult.rows.length + pending.length,
+      appliedCount: appliedRows.length + pending.length,
       pendingCount: 0,
     };
   } finally {
@@ -299,23 +374,17 @@ export async function runScyllaMigrations({ logger = console, statusOnly = false
   const client = new cassandra.Client({
     contactPoints: config.contactPoints,
     localDataCenter: config.localDataCenter,
+    socketOptions: {
+      readTimeout: SCYLLA_MIGRATION_READ_TIMEOUT_MS,
+    },
   });
 
   await client.connect();
 
   try {
-    await ensureScyllaKeyspace(client, config);
-    await ensureScyllaMigrationsTable(client, config.keyspace);
-
     const migrations = await loadScyllaMigrations();
-    const appliedResult = await client.execute(
-      `SELECT filename, checksum, applied_at
-       FROM ${config.keyspace}.schema_migrations
-       WHERE scope = ?`,
-      ['scylla'],
-      { prepare: true }
-    );
-    const appliedRows = appliedResult.rows || [];
+    const appliedRows = await readScyllaAppliedMigrations(client, config.keyspace);
+    await assertFreshScyllaBaseline(client, config, appliedRows);
     const appliedByFilename = new Map(
       appliedRows.map((row) => [row.filename, row])
     );
@@ -344,6 +413,9 @@ export async function runScyllaMigrations({ logger = console, statusOnly = false
         pendingCount: pending.length,
       };
     }
+
+    await ensureScyllaKeyspace(client, config);
+    await ensureScyllaMigrationsTable(client, config.keyspace);
 
     for (const migration of pending) {
       logger.log(`Applying Scylla migration ${migration.filename}...`);
@@ -379,6 +451,10 @@ export async function runScyllaMigrations({ logger = console, statusOnly = false
 }
 
 export async function runMigrations({ logger = console, statusOnly = false } = {}) {
+  // Validate every target before either datastore can be changed.
+  resolvePostgresConfig();
+  resolveScyllaConfig();
+
   const runAll = async () => {
     logger.log('== PostgreSQL ==');
     const postgres = await runPostgresMigrations({ logger, statusOnly });

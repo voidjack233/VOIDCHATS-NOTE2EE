@@ -42,25 +42,27 @@ At runtime it is split into:
   - image jobs, cleanup, and presence fanout
   - runs from `server/entrypoints/worker-server.js`
 
-PM2 manages those app processes.
+PM2 manages the current NOTE2EE app processes.
 
-PM2 does **not** start the databases or object storage for you.
+PM2 does **not** start PostgreSQL, Valkey, ScyllaDB, or MinIO for you.
 
 For the normal PM2 deployment, the app services bind to `127.0.0.1` through
 `ecosystem.config.cjs`. Public traffic should reach them through Nginx,
 Cloudflared, or another trusted local reverse proxy, not by exposing raw Node or
 Phoenix ports directly.
 
-Those services must already exist and be reachable:
+These services must already exist and be reachable:
 
 - Postgres
-- Valkey
 - ScyllaDB
 - MinIO
 
 Before starting the app processes, run:
 
 - `npm run migrate`
+
+For NOTE2EE, `PGDATABASE` and `SCYLLA_KEYSPACE` must identify fresh targets,
+not the old deployment.
 
 That migration command now covers:
 
@@ -183,6 +185,7 @@ Important env used there:
 - `ACCESS_SECRET`
 - `VALKEY_HOST`
 - `VALKEY_PORT`
+- `VALKEY_DB`
 - `GATEWAY_PORT`
 - `GATEWAY_HOST` or `BIND_HOST`
 - `FRONT_URL`
@@ -241,6 +244,7 @@ Important env:
 
 - `VALKEY_HOST`
 - `VALKEY_PORT`
+- `VALKEY_DB`
 
 Expected default port:
 
@@ -267,6 +271,9 @@ Connection file:
 Important env:
 
 - `SCYLLA_HOST`
+- `SCYLLA_KEYSPACE`
+- `SCYLLA_LOCAL_DATACENTER`
+- `SCYLLA_REPLICATION_FACTOR`
 
 Expected default port:
 
@@ -354,10 +361,13 @@ Attachment privacy split:
 When bringing up a fresh machine, the safest order is:
 
 1. Postgres
-2. Valkey
-3. ScyllaDB
-4. MinIO
+2. ScyllaDB
+3. MinIO
+4. Valkey
 5. `pm2 start ecosystem.config.cjs --update-env`
+
+The application uses the system Valkey service on `6379`. `VALKEY_DB` selects
+the logical database used by NOTE2EE.
 
 That avoids noisy boot errors from missing dependencies.
 
@@ -366,7 +376,7 @@ That avoids noisy boot errors from missing dependencies.
 From the backend repo:
 
 ```bash
-cd ~/Desktop/VOIDAPP/VOID0000-api
+cd ~/Desktop/VOIDAPP-NOTE2EE/VOID0000-api
 pm2 start ecosystem.config.cjs --update-env
 ```
 

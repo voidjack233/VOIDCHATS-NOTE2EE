@@ -13,6 +13,7 @@ gateway_ip =
 
 valkey_host = System.get_env("VALKEY_HOST", "127.0.0.1")
 valkey_port = System.get_env("VALKEY_PORT", "6379") |> String.to_integer()
+valkey_database = System.get_env("VALKEY_DB", "0") |> String.to_integer()
 
 config :void_gateway, VoidGatewayWeb.Endpoint,
   http: [ip: gateway_ip, port: gateway_port],
@@ -28,6 +29,7 @@ config :void_gateway,
   access_secret: System.fetch_env!("ACCESS_SECRET"),
   valkey_host: valkey_host,
   valkey_port: valkey_port,
+  valkey_database: valkey_database,
   # Origins are checked on WebSocket upgrade.
   # FRONT_URL is optional (adds dev/staging URLs dynamically).
   allowed_origins:

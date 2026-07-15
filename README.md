@@ -50,6 +50,9 @@ You can use Docker. it work on my machine :)
 
 Commands:
 
+Run npm commands inside `VOID0000-api`, `VOID0000-www`, or `VOIDADMIN`. The
+repository root intentionally has no Node package.
+
 ```bash
 cd VOID0000-api
 npm install

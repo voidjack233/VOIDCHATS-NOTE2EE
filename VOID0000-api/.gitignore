@@ -1,6 +1,7 @@
 # Node
 node_modules/
 .env
+.runtime/
 
 # Elixir / Phoenix (void_gateway)
 void_gateway/_build/

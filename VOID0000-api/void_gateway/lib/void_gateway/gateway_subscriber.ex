@@ -22,11 +22,15 @@ defmodule VoidGateway.GatewaySubscriber do
   def init(_) do
     host = Application.get_env(:void_gateway, :valkey_host, "127.0.0.1")
     port = Application.get_env(:void_gateway, :valkey_port, 6379)
+    database = Application.get_env(:void_gateway, :valkey_database, 0)
 
-    {:ok, pubsub} = Redix.PubSub.start_link(host: host, port: port)
+    {:ok, pubsub} = Redix.PubSub.start_link(host: host, port: port, database: database)
     {:ok, _ref} = Redix.PubSub.subscribe(pubsub, @channel, self())
 
-    Logger.info("[GatewaySubscriber] Connecting to #{host}:#{port}, subscribing to #{@channel}")
+    Logger.info(
+      "[GatewaySubscriber] Connecting to #{host}:#{port}/#{database}, subscribing to #{@channel}"
+    )
+
     {:ok, %{pubsub: pubsub}}
   end
 

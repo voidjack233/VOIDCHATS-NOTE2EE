@@ -1,10 +1,16 @@
-// server/scylla.js
+import path from 'path';
+import dotenv from 'dotenv';
 import cassandra from 'cassandra-driver';
+import { resolveScyllaConfig } from './config/databaseConfig.js';
+
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+
+const config = resolveScyllaConfig();
 
 const client = new cassandra.Client({
-  contactPoints: [process.env.SCYLLA_HOST || '127.0.0.1'],
-  localDataCenter: 'datacenter1',
-  keyspace: 'voidapp',
+  contactPoints: config.contactPoints,
+  localDataCenter: config.localDataCenter,
+  keyspace: config.keyspace,
   pooling: {
     coreConnectionsPerHost: {
       [cassandra.types.distance.local]: 2,

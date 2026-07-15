@@ -7,6 +7,7 @@ defmodule VoidGateway.Application do
   def start(_type, _args) do
     valkey_host = Application.get_env(:void_gateway, :valkey_host, "127.0.0.1")
     valkey_port = Application.get_env(:void_gateway, :valkey_port, 6379)
+    valkey_database = Application.get_env(:void_gateway, :valkey_database, 0)
 
     # Reset drain flag in case of in-VM restart (e.g. Application.stop + start
     # in the same BEAM). persistent_term survives process restarts.
@@ -19,7 +20,7 @@ defmodule VoidGateway.Application do
       # Named Redix connection used for synchronous Valkey commands (EXISTS, etc.)
       # Separate from the pub/sub connection — a subscribed Redix connection cannot
       # issue regular commands.
-      {Redix, host: valkey_host, port: valkey_port, name: :redix},
+      {Redix, host: valkey_host, port: valkey_port, database: valkey_database, name: :redix},
 
       # ETS-backed registry: {userId, deviceId} -> socket pid.
       # GenServer owns the table; socket processes write directly via public ETS API.

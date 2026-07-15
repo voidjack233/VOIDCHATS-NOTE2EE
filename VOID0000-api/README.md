@@ -12,13 +12,13 @@ Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. 
 - `server/entrypoints/conversation-server.js` - conversations, groups, members, invites, and permissions on port `3005`.
 - `server/entrypoints/worker-server.js` - background workers, cleanup, and presence fanout.
 - `void_gateway` - Phoenix websocket gateway.
-- `ecosystem.config.cjs` - PM2 process definitions.
+- `ecosystem.config.cjs` - PM2 definitions for the current NOTE2EE backend.
 - `db/migrations` - canonical Postgres schema migrations.
 - `db/scylla-migrations` - canonical ScyllaDB message storage migrations.
 - `docs/backend-startup.md` - detailed startup notes.
 - `docs/database-migrations.md` - migration behavior and limitations.
 
-The app processes are separate from the infrastructure services. PM2 starts the split Node services, worker, and Phoenix gateway, but Postgres, Valkey, ScyllaDB, and MinIO must already be running. If one of those is down, the backend may start grumbling in ways that look unrelated at first.
+The app processes are separate from infrastructure services. PM2 starts the split Node services, worker, and Phoenix gateway. Postgres, Valkey, ScyllaDB, and MinIO must already be running.
 
 ## Requirements
 
@@ -37,6 +37,7 @@ The Dockerfile uses `node:24-bookworm-slim`.
 cd VOID0000-api
 cp .env.example .env
 npm install
+# Create the fresh PostgreSQL database named by PGDATABASE first.
 npm run migrate
 npm run dev
 ```
@@ -111,8 +112,8 @@ Do not leave placeholder auth secrets in `.env`. The account service validates t
 Important groups:
 
 - Postgres: `PGHOST`, `PGUSER`, `PGDATABASE`, `PGPASSWORD`, `PGPORT`
-- ScyllaDB: `SCYLLA_HOST`
-- Valkey: `VALKEY_HOST`, `VALKEY_PORT`
+- ScyllaDB: `SCYLLA_HOST`, `SCYLLA_KEYSPACE`, `SCYLLA_LOCAL_DATACENTER`, `SCYLLA_REPLICATION_FACTOR`
+- Valkey: `VALKEY_HOST`, `VALKEY_PORT`, `VALKEY_DB`
 - MinIO: `MINIO_ENDPOINT`, `MINIO_PORT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, bucket names
 - Auth: `ACCESS_SECRET`, `REFRESH_SECRET`
 - CSRF and 2FA: `CSRF_ENCRYPTION_KEY`, `TOTP_ENCRYPTION_KEY`, `TWO_FACTOR_CODE_SECRET`
@@ -129,7 +130,7 @@ Important groups:
 | Valkey | Realtime pub/sub, captcha challenges, trust/rate-limit state, presence fanout, gateway coordination, session resume buffers. |
 | MinIO | Avatars, group avatars, and private chat attachments. |
 
-Run `npm run migrate` before starting a fresh environment. Migrations create schema only; they do not copy existing users, conversations, messages, or media.
+Run `npm run migrate` only against fresh, separately named PostgreSQL and ScyllaDB targets. Migrations create schema only and never copy data from another deployment.
 
 ## API Areas
 
@@ -155,7 +156,7 @@ Self-service account deletion is not exposed as a public flow. This setup is tin
 - Captcha challenges, trust scoring, device tracking, and rate limits are backed by Valkey for auth/profile protection across service processes.
 - TOTP secrets and email-2FA verification codes use separate server-side secrets. The TOTP encryption key protects stored authenticator secrets; `TWO_FACTOR_CODE_SECRET` protects temporary email-code verification state.
 - Image uploads are processed through Sharp to remove metadata.
-- DOMPurify, JSDOM, CSP, and security headers are used for XSS hardening.
+- CSP and security headers provide browser-side XSS hardening.
 
 ## Dependency Map
 
@@ -169,7 +170,6 @@ Self-service account deletion is not exposed as a public flow. This setup is tin
 | `cassandra-driver` | CQL client for ScyllaDB. |
 | `cookie-parser` | Cookie parsing for auth and CSRF flows. |
 | `cors` | Cross-origin API access for the frontend. |
-| `dompurify` and `jsdom` | Server-side sanitization support. |
 | `dotenv` | Loads `.env` during startup. |
 | `express` | HTTP API framework. |
 | `ioredis` | Valkey/Redis client for pub/sub, coordination, sessions/cache, and custom rate-limit storage. |
@@ -179,7 +179,6 @@ Self-service account deletion is not exposed as a public flow. This setup is tin
 | `pg` | Postgres client. |
 | `qrcode` | QR code generation for authenticator-app 2FA setup. |
 | `sharp` | Image processing and metadata stripping. |
-| `socket.io` | Currently listed, but websocket serving has moved to the Phoenix gateway. |
 | `uuid` | Token IDs and unique identifiers. |
 
 ## Health Checks

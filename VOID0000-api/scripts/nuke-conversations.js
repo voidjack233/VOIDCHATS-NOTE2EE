@@ -17,6 +17,10 @@ const { Pool } = pkg;
 
 import cassandra from 'cassandra-driver';
 import Redis from 'ioredis';
+import {
+  resolvePostgresConfig,
+  resolveScyllaConfig,
+} from '../server/config/databaseConfig.js';
 
 const POSTGRES_TABLES = [
   // Order matters — child tables first to avoid FK violations
@@ -55,13 +59,7 @@ async function confirm() {
 }
 
 async function nukePostgres() {
-  const pool = new Pool({
-    host: process.env.PGHOST,
-    user: process.env.PGUSER,
-    database: process.env.PGDATABASE,
-    password: process.env.PGPASSWORD,
-    port: parseInt(process.env.PGPORT || '5432', 10),
-  });
+  const pool = new Pool(resolvePostgresConfig());
 
   const client = await pool.connect();
   try {
@@ -96,17 +94,18 @@ async function nukePostgres() {
 }
 
 async function nukeScylla() {
+  const config = resolveScyllaConfig();
   const scylla = new cassandra.Client({
-    contactPoints: [process.env.SCYLLA_HOST || '127.0.0.1'],
-    localDataCenter: 'datacenter1',
-    keyspace: 'voidapp',
+    contactPoints: config.contactPoints,
+    localDataCenter: config.localDataCenter,
+    keyspace: config.keyspace,
   });
 
   await scylla.connect();
   console.log('\n[ScyllaDB] Truncating tables...');
   try {
     for (const t of SCYLLA_TABLES) {
-      await scylla.execute(`TRUNCATE voidapp.${t}`);
+      await scylla.execute(`TRUNCATE ${config.keyspace}.${t}`);
       console.log(`  ✓ ${t}`);
     }
   } finally {

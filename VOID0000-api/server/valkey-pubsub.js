@@ -18,6 +18,7 @@ export function initPublisher() {
   publisher = new Redis({
     host: process.env.VALKEY_HOST || '127.0.0.1',
     port: parseInt(process.env.VALKEY_PORT || '6379', 10),
+    db: parseInt(process.env.VALKEY_DB || '0', 10),
     maxRetriesPerRequest: 3,
   });
 
@@ -38,6 +39,7 @@ export function initSubscriber(handler) {
   subscriber = new Redis({
     host: process.env.VALKEY_HOST || '127.0.0.1',
     port: parseInt(process.env.VALKEY_PORT || '6379', 10),
+    db: parseInt(process.env.VALKEY_DB || '0', 10),
     maxRetriesPerRequest: 3,
   });
 
