@@ -1,53 +1,72 @@
 import { useEffect, useRef } from 'react';
 import { gateway } from '../Gateway/gateway';
 
-const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-const OP_STATUS_UPDATE = 4;
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const ACTIVITY_EVENTS = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'] as const;
 
 export function useIdleDetector() {
   const isIdleRef = useRef(false);
+  const lastActivityAtRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const setOnline = () => {
-      if (isIdleRef.current) {
-        isIdleRef.current = false;
-        gateway.sendRaw({ op: OP_STATUS_UPDATE, d: { status: 'online' } });
-      }
-      resetTimer();
+    lastActivityAtRef.current = Date.now();
+
+    const publishStatus = (status: 'online' | 'idle') => {
+      const isIdle = status === 'idle';
+      if (isIdleRef.current === isIdle) return;
+
+      isIdleRef.current = isIdle;
+      gateway.setPresenceStatus(status);
     };
 
-    const setIdle = () => {
-      if (!isIdleRef.current) {
-        isIdleRef.current = true;
-        gateway.sendRaw({ op: OP_STATUS_UPDATE, d: { status: 'idle' } });
-      }
-    };
-
-    const resetTimer = () => {
+    const scheduleIdleCheck = () => {
       if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(setIdle, IDLE_TIMEOUT);
+
+      const inactiveForMs = Date.now() - lastActivityAtRef.current;
+      const remainingMs = Math.max(0, IDLE_TIMEOUT_MS - inactiveForMs);
+
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+
+        if (Date.now() - lastActivityAtRef.current >= IDLE_TIMEOUT_MS) {
+          publishStatus('idle');
+          return;
+        }
+
+        scheduleIdleCheck();
+      }, remainingMs);
     };
 
-    // Activity events
-    const events = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
-    events.forEach(e => window.addEventListener(e, setOnline, { passive: true }));
+    const recordActivity = () => {
+      lastActivityAtRef.current = Date.now();
+      publishStatus('online');
+      scheduleIdleCheck();
+    };
 
-    // Visibility change — idle when hidden, online when visible
+    ACTIVITY_EVENTS.forEach((eventName) => {
+      window.addEventListener(eventName, recordActivity, { passive: true });
+    });
+
+    // Hiding a tab is not the same as becoming idle. Keep the inactivity
+    // deadline running, and treat returning to the tab as fresh activity.
     const handleVisibility = () => {
-      if (document.visibilityState === 'hidden') {
-        setIdle();
-      } else {
-        setOnline();
+      if (document.visibilityState === 'visible') {
+        recordActivity();
+        return;
       }
+
+      scheduleIdleCheck();
     };
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // Start the timer
-    resetTimer();
+    gateway.setPresenceStatus('online');
+    scheduleIdleCheck();
 
     return () => {
-      events.forEach(e => window.removeEventListener(e, setOnline));
+      ACTIVITY_EVENTS.forEach((eventName) => {
+        window.removeEventListener(eventName, recordActivity);
+      });
       document.removeEventListener('visibilitychange', handleVisibility);
       if (timerRef.current) clearTimeout(timerRef.current);
     };

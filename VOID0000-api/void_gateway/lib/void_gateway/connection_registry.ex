@@ -1,6 +1,6 @@
 defmodule VoidGateway.ConnectionRegistry do
   @moduledoc """
-  ETS-backed registry mapping {userId, deviceId, pid} -> clientInstanceId.
+  ETS-backed registry mapping {userId, deviceId, pid} to socket metadata.
 
   Key design decisions vs the first version ({userId, deviceId} -> pid):
 
@@ -19,17 +19,22 @@ defmodule VoidGateway.ConnectionRegistry do
       {:DOWN} message cleans up the stale ETS entry. WebSock's terminate/2
       should always run, but the monitor closes the gap for free.
 
-    - Same-tab dedupe: register/4 is a synchronous GenServer.call so the
+    - Same-tab dedupe: register/5 is a synchronous GenServer.call so the
       find-displaced + insert + monitor sequence is atomic. Two simultaneous
       IDENTIFY/RESUME calls for the same {userId, deviceId, clientInstanceId}
       are serialized — the second one always sees the first's entry and
       returns it as displaced. This is only on IDENTIFY/RESUME, not on the
       event-push hot path, so the serialization cost is negligible.
+
+    - Presence is tracked per socket. A user is online when any registered
+      socket is online, idle when every registered socket is idle, and offline
+      only when no sockets remain.
   """
 
   use GenServer
 
   @table :gateway_connections
+  @active_presence_statuses ["online", "idle"]
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -47,10 +52,14 @@ defmodule VoidGateway.ConnectionRegistry do
   clientInstanceId matches the new one. When clientInstanceId is nil,
   no dedupe occurs (client didn't provide one, so identity is unknown).
   """
-  @spec register(String.t(), String.t(), String.t() | nil, pid()) :: [pid()]
-  def register(user_id, device_id, client_instance_id, pid)
-      when is_binary(user_id) and is_binary(device_id) and is_pid(pid) do
-    GenServer.call(__MODULE__, {:register, user_id, device_id, client_instance_id, pid})
+  @spec register(String.t(), String.t(), String.t() | nil, pid(), String.t()) :: [pid()]
+  def register(user_id, device_id, client_instance_id, pid, presence_status \\ "online")
+      when is_binary(user_id) and is_binary(device_id) and is_pid(pid) and
+             presence_status in @active_presence_statuses do
+    GenServer.call(
+      __MODULE__,
+      {:register, user_id, device_id, client_instance_id, pid, presence_status}
+    )
   end
 
   # Removes exactly the row for this {userId, deviceId, pid}.
@@ -62,6 +71,44 @@ defmodule VoidGateway.ConnectionRegistry do
       when is_binary(user_id) and is_binary(device_id) and is_pid(pid) do
     :ets.delete(@table, {user_id, device_id, pid})
     :ok
+  end
+
+  @doc "Update the activity status reported by one registered socket."
+  @spec update_presence_status(String.t(), String.t(), pid(), String.t()) ::
+          :ok | {:error, :not_found}
+  def update_presence_status(user_id, device_id, pid, presence_status)
+      when is_binary(user_id) and is_binary(device_id) and is_pid(pid) and
+             presence_status in @active_presence_statuses do
+    key = {user_id, device_id, pid}
+
+    case :ets.lookup(@table, key) do
+      [{^key, metadata}] ->
+        :ets.insert(@table, {key, %{metadata | presence_status: presence_status}})
+        :ok
+
+      [] ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc "Return the aggregate availability and active socket count for a user."
+  @spec presence_summary(String.t()) :: %{
+          status: String.t(),
+          active_count: non_neg_integer()
+        }
+  def presence_summary(user_id) do
+    statuses =
+      :ets.match_object(@table, {{user_id, :_, :_}, :_})
+      |> Enum.map(fn {_key, metadata} -> metadata.presence_status end)
+
+    status =
+      cond do
+        statuses == [] -> "offline"
+        "online" in statuses -> "online"
+        true -> "idle"
+      end
+
+    %{status: status, active_count: length(statuses)}
   end
 
   # All pids currently registered for a specific {userId, deviceId} pair.
@@ -116,13 +163,24 @@ defmodule VoidGateway.ConnectionRegistry do
   # monitor) happen inside the GenServer so concurrent callers are serialized.
   @impl true
   def handle_call(
-        {:register, user_id, device_id, client_instance_id, pid},
+        {:register, user_id, device_id, client_instance_id, pid, presence_status},
         _from,
         %{monitors: monitors} = state
       ) do
     displaced = find_displaced(user_id, device_id, client_instance_id, pid)
 
-    :ets.insert(@table, {{user_id, device_id, pid}, client_instance_id})
+    # Remove replaced same-tab sockets immediately so aggregate counts and
+    # presence do not briefly include both the old and new connection.
+    Enum.each(displaced, fn displaced_pid ->
+      :ets.delete(@table, {user_id, device_id, displaced_pid})
+    end)
+
+    metadata = %{
+      client_instance_id: client_instance_id,
+      presence_status: presence_status
+    }
+
+    :ets.insert(@table, {{user_id, device_id, pid}, metadata})
 
     ref = Process.monitor(pid)
     new_monitors = Map.put(monitors, ref, {user_id, device_id, pid})
@@ -158,8 +216,8 @@ defmodule VoidGateway.ConnectionRegistry do
 
   defp find_displaced(user_id, device_id, client_instance_id, new_pid) do
     :ets.match_object(@table, {{user_id, device_id, :_}, :_})
-    |> Enum.filter(fn {{_uid, _did, pid}, cid} ->
-      pid != new_pid and cid == client_instance_id
+    |> Enum.filter(fn {{_uid, _did, pid}, metadata} ->
+      pid != new_pid and metadata.client_instance_id == client_instance_id
     end)
     |> Enum.map(fn {{_uid, _did, pid}, _} -> pid end)
   end

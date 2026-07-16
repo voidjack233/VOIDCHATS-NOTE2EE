@@ -40,6 +40,10 @@ interface FriendContextType {
 
 const FriendContext = createContext<FriendContextType | null>(null);
 
+const getErrorMessage = (error: unknown, fallback: string) => (
+  error instanceof Error && error.message ? error.message : fallback
+);
+
 export function FriendProvider({ children }: { children: ReactNode }) {
   const { user } = useUser();
   const [incoming, setIncoming] = useState<FriendRequest[]>([]);
@@ -112,7 +116,7 @@ export function FriendProvider({ children }: { children: ReactNode }) {
         return { success: true };
       }
       return { success: false };
-    } catch (err) { return { success: false }; }
+    } catch { return { success: false }; }
   };
 
   const rejectRequest = async (friendshipId: number) => {
@@ -128,7 +132,7 @@ export function FriendProvider({ children }: { children: ReactNode }) {
         return { success: true };
       }
       return { success: false };
-    } catch (err) { return { success: false }; }
+    } catch { return { success: false }; }
   };
 
   const sendRequest = async (profileId: string) => {
@@ -142,11 +146,29 @@ export function FriendProvider({ children }: { children: ReactNode }) {
         },
         credentials: 'include'
       });
-      const data = await res.json();
+      const data = await res.json() as {
+        error?: string;
+        request?: OutgoingRequest;
+      };
       if (!res.ok) throw new Error(data.error || 'Failed to send request');
+
+      const outgoingRequest = data.request;
+      if (outgoingRequest) {
+        setOutgoing((current) => {
+          if (current.some((request) => request.friendship_id === outgoingRequest.friendship_id)) {
+            return current;
+          }
+          return [outgoingRequest, ...current];
+        });
+      } else {
+        // Support a short mixed-deployment window with an older backend.
+        hasFetched.current = true;
+        await fetchRequests();
+      }
+
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (error: unknown) {
+      return { success: false, error: getErrorMessage(error, 'Failed to send request') };
     }
   };
 
@@ -161,8 +183,8 @@ export function FriendProvider({ children }: { children: ReactNode }) {
       if (!res.ok) throw new Error('Failed to cancel request');
       setOutgoing(prev => prev.filter(r => r.friendship_id !== friendshipId));
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (error: unknown) {
+      return { success: false, error: getErrorMessage(error, 'Failed to cancel request') };
     }
   };
 

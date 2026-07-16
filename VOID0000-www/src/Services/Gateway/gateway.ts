@@ -7,6 +7,7 @@ const OP = {
   HEARTBEAT: 1,
   IDENTIFY: 2,
   HEARTBEAT_ACK: 3,
+  STATUS_UPDATE: 4,
   RESUME: 6,
   RESUMED: 7,
   HELLO: 10,
@@ -14,6 +15,7 @@ const OP = {
 
 type EventHandler = (data: any) => void;
 type ConnectionState = 'connected' | 'reconnecting' | 'disconnected';
+export type ActivePresenceStatus = 'online' | 'idle';
 
 class Gateway {
   private static readonly CLIENT_INSTANCE_STORAGE_KEY = 'void_gateway_client_instance_id';
@@ -31,6 +33,7 @@ class Gateway {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private waitingForAck = false;
   private missedHeartbeatAcks = 0;
+  private desiredPresenceStatus: ActivePresenceStatus = 'online';
   private readonly clientInstanceId = Gateway.getOrCreateClientInstanceId();
 
   // Session resume state
@@ -211,6 +214,7 @@ class Gateway {
         debugLog(`Session resumed, ${d.replayed} events replayed`);
         this.canResume = false;
         this.setConnectionState('connected');
+        this.flushPresenceStatus();
         this.emit('RESUMED', d);
         break;
 
@@ -222,6 +226,7 @@ class Gateway {
             this.canResume = false;
           }
           this.setConnectionState('connected');
+          this.flushPresenceStatus();
           this.emit(t, d);
         } else if (t === 'TOKEN_EXPIRING') {
           this.handleTokenExpiring(d);
@@ -344,6 +349,7 @@ class Gateway {
       d: {
         user_id: this.userId,
         client_instance_id: this.clientInstanceId,
+        presence_status: this.desiredPresenceStatus,
       },
     });
   }
@@ -358,6 +364,7 @@ class Gateway {
       d: {
         session_id: this.sessionId,
         last_sequence: this.lastSequence,
+        presence_status: this.desiredPresenceStatus,
       },
     });
   }
@@ -388,8 +395,15 @@ class Gateway {
       }
 
       this.waitingForAck = true;
-      this.send({ op: OP.HEARTBEAT });
+      this.sendHeartbeat();
     }, this.heartbeatInterval || 30000);
+  }
+
+  private sendHeartbeat() {
+    this.send({
+      op: OP.HEARTBEAT,
+      d: { status: this.desiredPresenceStatus },
+    });
   }
 
   private send(data: any) {
@@ -398,15 +412,18 @@ class Gateway {
     }
   }
 
-  sendRaw(data: any) {
-    this.send(data);
+  setPresenceStatus(status: ActivePresenceStatus) {
+    this.desiredPresenceStatus = status;
+
+    if (this._connectionState === 'connected') {
+      this.flushPresenceStatus();
+    }
   }
 
-  sendEvent(event: string, data: any) {
+  private flushPresenceStatus() {
     this.send({
-      op: OP.EVENT,
-      t: event,
-      d: data,
+      op: OP.STATUS_UPDATE,
+      d: { status: this.desiredPresenceStatus },
     });
   }
 
@@ -460,7 +477,7 @@ class Gateway {
       const probedSocket = this.ws;
       debugLog('[GATEWAY] app active, probing open websocket');
       this.waitingForAck = true;
-      this.send({ op: OP.HEARTBEAT });
+      this.sendHeartbeat();
       this.heartbeatProbeTimer = setTimeout(() => {
         this.heartbeatProbeTimer = null;
         if (
@@ -568,6 +585,7 @@ class Gateway {
 
     this.ws = null;
     this.userId = null;
+    this.desiredPresenceStatus = 'online';
   }
 }
 

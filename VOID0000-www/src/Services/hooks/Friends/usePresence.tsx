@@ -44,6 +44,8 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    lastSyncAtRef.current = 0;
+
     const applyPresenceSnapshot = (friends: FriendPresenceSnapshot[]) => {
       setPresences(prev => {
         const next = new Map(prev);
@@ -53,7 +55,7 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
 
           next.set(friend.id, {
             status: friend.status || 'offline',
-            lastActive: friend.last_active || null,
+            lastActive: friend.last_active ?? null,
           });
         });
 
@@ -93,23 +95,25 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       return task;
     };
 
-    // READY event includes initial friend presences
+    // Phoenix currently sends an empty READY presence list because it does not
+    // query Postgres. Always reconcile through the authenticated REST snapshot.
     const handleReady = (data: {
       presences?: Array<{ user_id: string; status: PresenceStatus; last_active?: number }>;
     }) => {
-      if (Array.isArray(data.presences)) {
+      if (Array.isArray(data.presences) && data.presences.length > 0) {
         applyPresenceSnapshot(data.presences.map((presence) => ({
           id: presence.user_id,
           status: presence.status,
           last_active: presence.last_active,
         })));
-        lastSyncAtRef.current = Date.now();
-
-        if (startupFallbackTimer !== null) {
-          window.clearTimeout(startupFallbackTimer);
-          startupFallbackTimer = null;
-        }
       }
+
+      if (startupFallbackTimer !== null) {
+        window.clearTimeout(startupFallbackTimer);
+        startupFallbackTimer = null;
+      }
+
+      void syncPresenceFromFriends(true);
     };
 
     // Real-time presence updates
@@ -122,7 +126,7 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
         const next = new Map(prev);
         next.set(data.user_id, {
           status: data.status,
-          lastActive: data.last_active || null,
+          lastActive: data.last_active ?? null,
         });
         return next;
       });
@@ -137,7 +141,7 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
           const next = new Map(prev);
           next.set(data.friend.id, {
             status: (data.friend.status as PresenceStatus) || 'offline',
-            lastActive: data.friend.last_active || Date.now(),
+            lastActive: data.friend.last_active ?? Date.now(),
           });
           return next;
         });
@@ -145,6 +149,20 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
     };
 
     const handleResumed = () => {
+      void syncPresenceFromFriends(true);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void syncPresenceFromFriends();
+      }
+    };
+
+    const handleWindowFocus = () => {
+      void syncPresenceFromFriends();
+    };
+
+    const handleOnline = () => {
       void syncPresenceFromFriends(true);
     };
 
@@ -159,6 +177,9 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
     gateway.on('RESUMED', handleResumed);
     gateway.on('PRESENCE_UPDATE', handlePresenceUpdate);
     gateway.on('FRIEND_ACCEPT', handleFriendAccept);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+    window.addEventListener('online', handleOnline);
 
     return () => {
       cancelled = true;
@@ -169,6 +190,9 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       gateway.off('RESUMED', handleResumed);
       gateway.off('PRESENCE_UPDATE', handlePresenceUpdate);
       gateway.off('FRIEND_ACCEPT', handleFriendAccept);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('online', handleOnline);
     };
   }, [user]);
 

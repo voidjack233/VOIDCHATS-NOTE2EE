@@ -14,7 +14,7 @@ interface SearchResult {
   avatar_url: string | null;
 }
 
-type FriendStatus = 'none' | 'friends' | 'incoming';
+type FriendStatus = 'none' | 'friends' | 'incoming' | 'outgoing';
 
 export default function AddFriend() {
   const [query, setQuery] = useState('');
@@ -24,12 +24,13 @@ export default function AddFriend() {
   const [sendingTo, setSendingTo] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string[]>([]);
 
-  const { sendRequest, incoming } = useFriendRequests();
+  const { sendRequest, incoming, outgoing } = useFriendRequests();
   const { friends } = useFriends();
 
   const getFriendStatus = (profileId: string): FriendStatus => {
     if (friends.some((f) => f.profile_id === profileId)) return 'friends';
     if (incoming.some((r: FriendRequest) => r.profile_id === profileId)) return 'incoming';
+    if (outgoing.some((r) => r.profile_id === profileId)) return 'outgoing';
     return 'none';
   };
 
@@ -53,8 +54,8 @@ export default function AddFriend() {
       if (data.users?.length === 0) {
         setError('No users found');
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : 'Search failed');
       setResults([]);
     } finally {
       setLoading(false);
@@ -104,6 +105,13 @@ export default function AddFriend() {
           <span className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-purple-400 bg-purple-900/20 rounded-lg">
             <UserPlus className="w-3.5 h-3.5" />
             Accept?
+          </span>
+        );
+      case 'outgoing':
+        return (
+          <span className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-green-400 bg-green-900/20 rounded-lg">
+            <Check className="w-3.5 h-3.5" />
+            Pending
           </span>
         );
       default:

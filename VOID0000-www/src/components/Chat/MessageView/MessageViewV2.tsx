@@ -942,14 +942,15 @@ const MessageViewV2 = memo(function MessageViewV2({
     if (
       initialLatestRestoreDoneRef.current ||
       !initialHydrationSettled ||
-      visualMessages.length === 0 ||
       !scroller ||
       scroller.clientHeight <= 0
     ) {
       return false;
     }
 
-    scrollToBottom('auto');
+    if (visualMessages.length > 0) {
+      scrollToBottom('auto');
+    }
     syncScrollState();
     initialLatestRestoreDoneRef.current = true;
     if (scroller) scroller.style.opacity = '1';
@@ -1034,7 +1035,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   // ── Initial scroll to bottom ──
   useLayoutEffect(() => {
-    if (!initialHydrationSettled || visualMessages.length === 0 || initialLatestRestoreDoneRef.current) {
+    if (!initialHydrationSettled || initialLatestRestoreDoneRef.current) {
       return;
     }
 

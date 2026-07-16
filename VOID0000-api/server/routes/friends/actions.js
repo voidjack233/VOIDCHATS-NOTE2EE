@@ -17,7 +17,10 @@ router.post('/request/:profileId', async (req, res) => {
 
   try {
     const userResult = await db.query(
-      'SELECT id FROM users WHERE profile_id = $1',
+      `SELECT u.id, u.username, u.profile_id, up.display_name, up.avatar_filename
+       FROM users u
+       LEFT JOIN user_profiles up ON u.profile_id = up.id
+       WHERE u.profile_id = $1`,
       [profileId]
     );
 
@@ -25,7 +28,8 @@ router.post('/request/:profileId', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const addresseeId = userResult.rows[0].id;
+    const addressee = userResult.rows[0];
+    const addresseeId = addressee.id;
 
     if (requesterId === addresseeId) {
       return res.status(400).json({ error: 'Cannot send friend request to yourself' });
@@ -67,9 +71,11 @@ router.post('/request/:profileId', async (req, res) => {
       [requesterId]
     );
 
+    const friendship = result.rows[0];
+
     sendLiveEventToUser(addresseeId, EVENTS.FRIEND_REQUEST, {
-      event_id: friendshipEventId('request', result.rows[0].id),
-      friendship_id: result.rows[0].id,
+      event_id: friendshipEventId('request', friendship.id),
+      friendship_id: friendship.id,
       from: {
         id: requesterId,
         username: requesterInfo.rows[0].username,
@@ -86,7 +92,19 @@ router.post('/request/:profileId', async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Friend request sent',
-      friendship: result.rows[0]
+      friendship,
+      request: {
+        friendship_id: friendship.id,
+        created_at: friendship.created_at,
+        id: addressee.id,
+        username: addressee.username,
+        profile_id: addressee.profile_id,
+        display_name: addressee.display_name,
+        avatar_url: resolveUserAvatarUrl(addressee.avatar_filename, {
+          displayName: addressee.display_name,
+          username: addressee.username,
+        }),
+      },
     });
 
   } catch (err) {

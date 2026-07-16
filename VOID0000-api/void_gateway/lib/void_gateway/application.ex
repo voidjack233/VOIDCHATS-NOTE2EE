@@ -22,7 +22,7 @@ defmodule VoidGateway.Application do
       # issue regular commands.
       {Redix, host: valkey_host, port: valkey_port, database: valkey_database, name: :redix},
 
-      # ETS-backed registry: {userId, deviceId} -> socket pid.
+      # ETS-backed registry of live sockets and their per-session activity.
       # GenServer owns the table; socket processes write directly via public ETS API.
       VoidGateway.ConnectionRegistry,
 
