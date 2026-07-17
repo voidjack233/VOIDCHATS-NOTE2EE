@@ -13,6 +13,7 @@ const router = Router({ mergeParams: true });
 
 const MAX_FILES = 5;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function getConversationDownloadIdentifier(conversation) {
@@ -41,14 +42,24 @@ async function resolveConversationForMember(conversationIdentifier, userId) {
 }
 
 async function streamAttachmentObject(res, objectKey) {
+  let objectStat;
   let objectStream;
   try {
+    objectStat = await minioClient.statObject(ATTACH_BUCKET, objectKey);
     objectStream = await minioClient.getObject(ATTACH_BUCKET, objectKey);
   } catch (err) {
     return res.status(404).json({ error: 'Attachment not found' });
   }
 
-  res.setHeader('Content-Type', 'application/octet-stream');
+  const storedContentType = objectStat.metaData?.['content-type'];
+  const contentType = typeof storedContentType === 'string' && MIME_TYPE_PATTERN.test(storedContentType)
+    ? storedContentType
+    : 'application/octet-stream';
+
+  res.setHeader('Content-Type', contentType);
+  if (Number.isFinite(objectStat.size) && objectStat.size >= 0) {
+    res.setHeader('Content-Length', String(objectStat.size));
+  }
   res.setHeader('Cache-Control', 'private, max-age=300');
   res.setHeader('X-Content-Type-Options', 'nosniff');
 

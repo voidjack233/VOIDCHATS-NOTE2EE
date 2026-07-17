@@ -10,6 +10,7 @@ interface BlurImageProps {
   alt?: string;
   className?: string;
   onLoad?: (image: HTMLImageElement) => void;
+  onError?: (image: HTMLImageElement) => void;
   loading?: 'eager' | 'lazy';
 }
 
@@ -60,9 +61,14 @@ const BlurImage = ({
   alt = '',
   className = '',
   onLoad,
+  onError,
   loading = 'lazy',
 }: BlurImageProps) => {
   const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    setLoaded(false);
+  }, [src]);
 
   return (
     <div className="relative w-full h-full">
@@ -80,6 +86,10 @@ const BlurImage = ({
         onLoad={(event) => {
           setLoaded(true);
           onLoad?.(event.currentTarget);
+        }}
+        onError={(event) => {
+          setLoaded(false);
+          onError?.(event.currentTarget);
         }}
         className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
       />

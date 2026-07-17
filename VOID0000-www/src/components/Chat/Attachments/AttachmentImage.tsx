@@ -84,6 +84,10 @@ export default function AttachmentImage({
         onLoad={() => {
           onLoad?.();
         }}
+        onError={() => {
+          setFailed(true);
+          setSrc(null);
+        }}
         loading="eager"
       />
     );

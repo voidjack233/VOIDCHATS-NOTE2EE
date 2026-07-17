@@ -1,12 +1,24 @@
 // server/minio.js
 import * as Minio from 'minio';
 
+const isProduction = process.env.NODE_ENV === 'production';
+const accessKey = process.env.MINIO_ACCESS_KEY || (isProduction ? '' : 'minioadmin');
+const secretKey = process.env.MINIO_SECRET_KEY || (isProduction ? '' : 'minioadmin');
+
+if (!accessKey || !secretKey) {
+  throw new Error('MINIO_ACCESS_KEY and MINIO_SECRET_KEY are required');
+}
+
+if (isProduction && (accessKey === 'minioadmin' || secretKey === 'minioadmin')) {
+  throw new Error('Default MinIO credentials are not allowed in production');
+}
+
 const minioClient = new Minio.Client({
   endPoint: process.env.MINIO_ENDPOINT || '127.0.0.1',
   port: parseInt(process.env.MINIO_PORT || '9000', 10),
-  useSSL: false,
-  accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
-  secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin',
+  useSSL: process.env.MINIO_USE_SSL === 'true',
+  accessKey,
+  secretKey,
 });
 
 const BUCKET = process.env.MINIO_BUCKET || 'avatars';
