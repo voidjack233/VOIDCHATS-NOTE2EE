@@ -10,7 +10,14 @@ import captchaRouter from '../routes/captcha/index.js';
 import { pool } from '../db.js';
 import valkey from '../valkey.js';
 import { createReadinessHandler } from '../health/readiness.js';
-import { validateAuthSecrets } from '../utils/authSecrets.js';
+import {
+  authRouter,
+  authenticateUser,
+  meRouter,
+  sessionsRouter,
+  twoFactorRouter,
+  validateAuthSecrets,
+} from '../auth/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,13 +69,9 @@ app.use(
 
 // ================== ROUTES ==================
 
-import authRouter from '../routes/auth/index.js';
-import twoFARouter from '../routes/auth/2fa/index.js';
-import meRouter, { authenticateUser } from '../middleware/jwt.js';
 import { encryptedCSRFProtection } from '../middleware/encryptedCSRF.js';
 import csrfRouter from '../routes/csrf/index.js';
 import accountReadRouter from '../routes/user/accountRead.js';
-import sessionsRouter from '../routes/user/sessions.js';
 import preferencesRouter from '../routes/user/preferences.js';
 import notificationsRouter from '../routes/notifications/index.js';
 import linkPreviewRouter from '../routes/linkPreview/index.js';
@@ -148,7 +151,7 @@ app.use(encryptedCSRFProtection);
 
 // Auth routes
 app.use('/api/auth', authRouter);
-app.use('/api/auth/2fa', twoFARouter);
+app.use('/api/auth/2fa', twoFactorRouter);
 
 // Me
 app.use('/api/me', noCache, meRouter);

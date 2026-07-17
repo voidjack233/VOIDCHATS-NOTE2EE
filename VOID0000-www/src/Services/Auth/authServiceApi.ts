@@ -57,8 +57,14 @@ const DEFINITIVE_REFRESH_FAILURE_CODES = new Set([
 ]);
 
 let refreshPromise: Promise<RefreshResult> | null = null;
+const REFRESH_ROTATION_MAX_RETRIES = 4;
+const REFRESH_ROTATION_RETRY_MAX_MS = 2_000;
 const SAFE_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CSRF_ERROR_PATTERN = /\b(csrf|xsrf|forgery)\b|token validation failed/i;
+
+const wait = (milliseconds: number) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, milliseconds);
+});
 
 export class AuthSessionUnavailableError extends Error {
   readonly code = 'AUTH_SESSION_UNAVAILABLE';
@@ -192,26 +198,44 @@ async function doRefresh(): Promise<RefreshResult> {
     const refreshUrl = `${API_URL}/api/auth/refresh`;
 
     try {
-      const response = await fetch(refreshUrl, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      reportApiResponse(refreshUrl, response.status);
+      for (let attempt = 0; attempt <= REFRESH_ROTATION_MAX_RETRIES; attempt += 1) {
+        const response = await fetch(refreshUrl, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        reportApiResponse(refreshUrl, response.status);
 
-      if (response.ok) {
-        return { success: true, status: response.status };
+        if (response.ok) {
+          return { success: true, status: response.status };
+        }
+
+        const payload = await readJsonSafely(response);
+        const code = typeof payload.code === 'string' ? payload.code : undefined;
+
+        if (code === 'REFRESH_TOKEN_ROTATED' && attempt < REFRESH_ROTATION_MAX_RETRIES) {
+          const retryAfterMs = getRetryAfterMs(response, payload) ?? 250;
+          await wait(Math.min(
+            retryAfterMs * (2 ** attempt),
+            REFRESH_ROTATION_RETRY_MAX_MS,
+          ));
+          continue;
+        }
+
+        return {
+          success: false,
+          failureKind: code && DEFINITIVE_REFRESH_FAILURE_CODES.has(code)
+            ? 'invalid'
+            : 'unavailable',
+          code,
+          status: response.status,
+        };
       }
 
-      const payload = await readJsonSafely(response);
-      const code = typeof payload.code === 'string' ? payload.code : undefined;
       return {
         success: false,
-        failureKind: code && DEFINITIVE_REFRESH_FAILURE_CODES.has(code)
-          ? 'invalid'
-          : 'unavailable',
-        code,
-        status: response.status,
+        failureKind: 'unavailable',
+        code: 'REFRESH_TOKEN_ROTATED',
       };
     } catch {
       reportApiNetworkFailure(refreshUrl);
