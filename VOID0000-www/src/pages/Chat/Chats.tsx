@@ -21,7 +21,6 @@ import { matchesConversationIdentifier } from '../../Services/Chat/utils/convers
 import { useUser } from '../../Services/Auth/UserContext';
 import { ConversationPaneSkeleton } from '../../components/common/Skeleton';
 import { useConnectionStatus } from '../../Services/hooks/common/useConnectionStatus';
-import { useServiceHealth } from '../../Services/hooks/common/useServiceHealth';
 import ChatSidebar from './ChatSidebar';
 import ConversationHeader from './ConversationHeader';
 import ChatStatusBanners from './ChatStatusBanners';
@@ -46,8 +45,6 @@ const ChatDashboard = () => {
 
   const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const { isOnline, showReconnectBanner } = useConnectionStatus();
-  const serviceHealth = useServiceHealth();
-  const serviceIssue = serviceHealth.issues[0] || null;
   const showFullscreenPreparing = isLoggingOut || loading;
 
   // Independently detect bootstrap stalls (API down before the gateway ever
@@ -495,8 +492,6 @@ const ChatDashboard = () => {
       }}
     >
       <ChatStatusBanners
-        serviceIssue={serviceIssue}
-        serviceIssueCount={serviceHealth.issues.length}
         notice={sendNotice}
         onDismissNotice={() => setSendNotice(null)}
       />

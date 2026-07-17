@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnectionStatus } from '../common/useConnectionStatus';
-import { useServiceHealth } from '../common/useServiceHealth';
 import {
   editMessage,
   sendImageOnlyMessage,
@@ -142,7 +141,6 @@ export const useMessageInput = ({
   onEditComplete,
 }: UseMessageInputProps) => {
   const { isOnline } = useConnectionStatus();
-  const serviceHealth = useServiceHealth();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -162,10 +160,6 @@ export const useMessageInput = ({
   const attachmentsRestrictionLabel = attachmentAccess.required === 'everyone'
     ? null
     : attachmentAccess.required === 'admins' ? 'Admins' : 'Owner';
-  const messageServiceDegraded = serviceHealth.issues.some((issue) => (
-    issue.service === 'Message service' && (issue.status === undefined || issue.status >= 500)
-  ));
-
   const resolveDraftMentions = useCallback((draftText: string): MessageMentionMetadata[] => (
     conversation.type === 'group' ? resolveMessageMentions(draftText, members || []) : []
   ), [conversation.type, members]);
@@ -352,7 +346,7 @@ export const useMessageInput = ({
   }, [slowmodeRemaining]);
 
   useEffect(() => {
-    if (!isOnline || messageServiceDegraded) return;
+    if (!isOnline) return;
     let cancelled = false;
     void queuedSendStore.getByConversation(conversation.id).then(async (queuedSends) => {
       for (const queued of queuedSends) {
@@ -381,7 +375,7 @@ export const useMessageInput = ({
       }
     });
     return () => { cancelled = true; };
-  }, [conversation.id, isOnline, messageServiceDegraded, onMessageSent, onSendError]);
+  }, [conversation.id, isOnline, onMessageSent, onSendError]);
 
   useEffect(() => {
     const typingEligible = !sending && text.trim().length > 0 && !editingMessage;
