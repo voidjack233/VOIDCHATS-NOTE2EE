@@ -397,9 +397,12 @@ export const useMessageInput = ({
       local_client_id: localClientId,
     } : null;
     const shouldJumpAfterOwnSend = Boolean(optimisticMessage && shouldJumpToPresentAfterOwnSend?.());
+    const ownSendJumpPromise = shouldJumpAfterOwnSend && onOwnMessageSentFromHistory && optimisticMessage
+      ? Promise.resolve(onOwnMessageSentFromHistory(optimisticMessage))
+      : null;
     const applyOwnSendResult = async (message: Message) => {
-      if (shouldJumpAfterOwnSend && onOwnMessageSentFromHistory) {
-        await onOwnMessageSentFromHistory(message);
+      if (ownSendJumpPromise) {
+        await ownSendJumpPromise;
       }
       onMessageSent(message);
     };

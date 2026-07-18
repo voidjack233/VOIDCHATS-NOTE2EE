@@ -103,15 +103,18 @@ export function useMessageRowMeasurements({
         }
       });
 
-      if (
-        rowHeightChanged &&
-        (
+      if (rowHeightChanged) {
+        if (atBottomRef.current && !historyScrollTransactionActiveRef.current) {
+          // Reactions and late content can grow the final row without adding a
+          // message. Keep a reader who was at present pinned to the new bottom.
+          scroller.scrollTop = scroller.scrollHeight;
+        } else if (
           historyScrollTransactionActiveRef.current ||
           !atBottomRef.current ||
           showJumpToPresentRef.current
-        )
-      ) {
-        restoreViewportAnchorLock();
+        ) {
+          restoreViewportAnchorLock();
+        }
       }
     });
 

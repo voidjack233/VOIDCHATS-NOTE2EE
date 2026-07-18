@@ -126,6 +126,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const forceFollowOutputRef = useRef(false);
   const initialLatestRestoreDoneRef = useRef(false);
   const previousListCountRef = useRef(0);
+  const previousLastVisualMessageIdRef = useRef<string | undefined>(undefined);
   const lastFollowedMessageEventSequenceRef = useRef(0);
   const lastOwnSendJumpRequestRef = useRef(ownSendJumpRequest);
   const pendingOlderLoadScrollSnapshotRef = useRef<HistoryLoadScrollSnapshot | null>(null);
@@ -424,6 +425,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     forceFollowOutputRef.current = false;
     initialLatestRestoreDoneRef.current = false;
     previousListCountRef.current = 0;
+    previousLastVisualMessageIdRef.current = undefined;
     lastFollowedMessageEventSequenceRef.current = 0;
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
@@ -1070,9 +1072,13 @@ const MessageViewV2 = memo(function MessageViewV2({
     const nextCount = listItems.length;
     const previousCount = previousListCountRef.current;
     const countIncreased = nextCount > previousCount;
+    const lastMessageChanged = Boolean(
+      lastVisualMessageId &&
+      lastVisualMessageId !== previousLastVisualMessageIdRef.current
+    );
 
     if (
-      countIncreased &&
+      (countIncreased || lastMessageChanged) &&
       !loadingNewer &&
       !pendingNewerLoadScrollSnapshotRef.current &&
       !pendingMessageJumpTargetRef.current &&
@@ -1086,7 +1092,8 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
 
     previousListCountRef.current = nextCount;
-  }, [listItems.length, loadingNewer, scrollToBottom, syncScrollState]);
+    previousLastVisualMessageIdRef.current = lastVisualMessageId;
+  }, [lastVisualMessageId, listItems.length, loadingNewer, scrollToBottom, syncScrollState]);
 
   // ── Sync after layout changes ──
   useEffect(() => {
