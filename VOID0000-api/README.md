@@ -17,6 +17,7 @@ Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. 
 - `db/scylla-migrations` - canonical ScyllaDB message storage migrations.
 - `docs/backend-startup.md` - detailed startup notes.
 - `docs/database-migrations.md` - migration behavior and limitations.
+- `docs/sentinel.md` - read coalescing behavior, integrations, and operational limits.
 
 The app processes are separate from infrastructure services. PM2 starts the split Node services, worker, and Phoenix gateway. Postgres, Valkey, ScyllaDB, and MinIO must already be running.
 
@@ -115,6 +116,7 @@ Important groups:
 - ScyllaDB: `SCYLLA_HOST`, `SCYLLA_KEYSPACE`, `SCYLLA_LOCAL_DATACENTER`, `SCYLLA_REPLICATION_FACTOR`
 - Valkey: `VALKEY_HOST`, `VALKEY_PORT`, `VALKEY_DB`
 - MinIO: `MINIO_ENDPOINT`, `MINIO_PORT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, bucket names
+- Sentinel: `SENTINEL_MAX_ACTIVE_FLIGHTS`, `SENTINEL_MAX_BUFFERED_ATTACHMENT_BYTES`, `SENTINEL_MAX_TOTAL_BUFFERED_ATTACHMENT_BYTES`
 - Auth: `ACCESS_SECRET`, `REFRESH_SECRET`
 - CSRF and 2FA: `CSRF_ENCRYPTION_KEY`, `TOTP_ENCRYPTION_KEY`, `TWO_FACTOR_CODE_SECRET`
 - Email: `EMAIL_USER`, `EMAIL_PASS`

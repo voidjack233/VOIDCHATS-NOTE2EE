@@ -8,13 +8,41 @@ import { pool } from '../../db.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
+import sentinel, { createSentinelKey } from '../../sentinel/index.js';
 
 const router = Router({ mergeParams: true });
 
 const MAX_FILES = 5;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_COALESCED_ATTACHMENT_BYTES = 1024 * 1024;
+const DEFAULT_MAX_TOTAL_COALESCED_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function resolveByteLimit(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
+  const normalized = value == null ? '' : String(value).trim();
+  if (normalized === '') {
+    return fallback;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed >= 0
+    ? Math.min(parsed, maximum)
+    : fallback;
+}
+
+const MAX_COALESCED_ATTACHMENT_BYTES = resolveByteLimit(
+  process.env.SENTINEL_MAX_BUFFERED_ATTACHMENT_BYTES,
+  DEFAULT_MAX_COALESCED_ATTACHMENT_BYTES,
+  MAX_FILE_BYTES,
+);
+const MAX_TOTAL_COALESCED_ATTACHMENT_BYTES = resolveByteLimit(
+  process.env.SENTINEL_MAX_TOTAL_BUFFERED_ATTACHMENT_BYTES,
+  DEFAULT_MAX_TOTAL_COALESCED_ATTACHMENT_BYTES,
+);
+let reservedCoalescedAttachmentBytes = 0;
+
+class AttachmentBufferLimitError extends Error {}
 
 function getConversationDownloadIdentifier(conversation) {
   return conversation.public_id ? String(conversation.public_id) : String(conversation.id);
@@ -41,16 +69,7 @@ async function resolveConversationForMember(conversationIdentifier, userId) {
   return { conversation, member: member.rows[0] };
 }
 
-async function streamAttachmentObject(res, objectKey) {
-  let objectStat;
-  let objectStream;
-  try {
-    objectStat = await minioClient.statObject(ATTACH_BUCKET, objectKey);
-    objectStream = await minioClient.getObject(ATTACH_BUCKET, objectKey);
-  } catch (err) {
-    return res.status(404).json({ error: 'Attachment not found' });
-  }
-
+function setAttachmentResponseHeaders(res, objectStat) {
   const storedContentType = objectStat.metaData?.['content-type'];
   const contentType = typeof storedContentType === 'string' && MIME_TYPE_PATTERN.test(storedContentType)
     ? storedContentType
@@ -62,6 +81,95 @@ async function streamAttachmentObject(res, objectKey) {
   }
   res.setHeader('Cache-Control', 'private, max-age=300');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+}
+
+async function readAttachmentObject(objectKey) {
+  const objectStream = await minioClient.getObject(ATTACH_BUCKET, objectKey);
+  const chunks = [];
+  let totalBytes = 0;
+
+  for await (const chunk of objectStream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_COALESCED_ATTACHMENT_BYTES) {
+      objectStream.destroy();
+      throw new AttachmentBufferLimitError('Attachment exceeded the Sentinel buffering limit');
+    }
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks, totalBytes);
+}
+
+async function readAttachmentObjectWithinBudget(objectKey, objectSize) {
+  if (
+    MAX_TOTAL_COALESCED_ATTACHMENT_BYTES === 0 ||
+    reservedCoalescedAttachmentBytes + objectSize > MAX_TOTAL_COALESCED_ATTACHMENT_BYTES
+  ) {
+    return null;
+  }
+
+  reservedCoalescedAttachmentBytes += objectSize;
+  try {
+    return await readAttachmentObject(objectKey);
+  } finally {
+    reservedCoalescedAttachmentBytes -= objectSize;
+  }
+}
+
+async function streamAttachmentObject(res, objectKey) {
+  const statFlightKey = createSentinelKey('minio.attachments.stat', ATTACH_BUCKET, objectKey);
+  let objectStat;
+  try {
+    objectStat = await sentinel.guard(
+      statFlightKey,
+      () => minioClient.statObject(ATTACH_BUCKET, objectKey),
+    );
+  } catch {
+    return res.status(404).json({ error: 'Attachment not found' });
+  }
+
+  if (
+    sentinel.isEnabled &&
+    MAX_COALESCED_ATTACHMENT_BYTES > 0 &&
+    Number.isFinite(objectStat.size) &&
+    objectStat.size >= 0 &&
+    objectStat.size <= MAX_COALESCED_ATTACHMENT_BYTES
+  ) {
+    try {
+      const objectFlightKey = createSentinelKey('minio.attachments.object', ATTACH_BUCKET, objectKey);
+      const objectBuffer = await sentinel.guard(
+        objectFlightKey,
+        () => readAttachmentObjectWithinBudget(objectKey, objectStat.size),
+      );
+      if (objectBuffer) {
+        setAttachmentResponseHeaders(res, objectStat);
+        return res.end(objectBuffer);
+      }
+    } catch (err) {
+      if (err instanceof AttachmentBufferLimitError) {
+        try {
+          objectStat = await sentinel.guard(
+            statFlightKey,
+            () => minioClient.statObject(ATTACH_BUCKET, objectKey),
+          );
+        } catch {
+          return res.status(404).json({ error: 'Attachment not found' });
+        }
+      } else {
+        return res.status(404).json({ error: 'Attachment not found' });
+      }
+    }
+  }
+
+  let objectStream;
+  try {
+    objectStream = await minioClient.getObject(ATTACH_BUCKET, objectKey);
+  } catch {
+    return res.status(404).json({ error: 'Attachment not found' });
+  }
+
+  setAttachmentResponseHeaders(res, objectStat);
 
   objectStream.on('error', (err) => {
     console.error('Attachment download stream error:', err);
@@ -117,7 +225,7 @@ router.post('/', async (req, res) => {
         return res.status(403).json({ error: 'You do not have permission to send attachments' });
       }
     }
-  } catch (err) {
+  } catch {
     return res.status(500).json({ error: 'Membership check failed' });
   }
 
@@ -198,14 +306,23 @@ router.get('/:attachmentId', async (req, res) => {
       return res.status(resolved.status).json(resolved.body);
     }
 
-    const attachmentResult = await pool.query(
-      `SELECT object_key
-       FROM attachment_objects
-       WHERE id = $1
-         AND conversation_id = $2
-         AND bucket = $3
-       LIMIT 1`,
-      [attachmentId, resolved.conversation.id, ATTACH_BUCKET]
+    const attachmentFlightKey = createSentinelKey(
+      'postgres.attachment-objects.by-id',
+      resolved.conversation.id,
+      attachmentId,
+      ATTACH_BUCKET,
+    );
+    const attachmentResult = await sentinel.guard(
+      attachmentFlightKey,
+      () => pool.query(
+        `SELECT object_key
+         FROM attachment_objects
+         WHERE id = $1
+           AND conversation_id = $2
+           AND bucket = $3
+         LIMIT 1`,
+        [attachmentId, resolved.conversation.id, ATTACH_BUCKET],
+      ),
     );
 
     if (attachmentResult.rows.length === 0) {

@@ -7,6 +7,7 @@ import {
   scylla,
   verifyMembership,
 } from './shared.js';
+import sentinel, { createSentinelKey } from '../../../sentinel/index.js';
 
 const router = Router({ mergeParams: true });
 
@@ -24,7 +25,6 @@ router.get('/', async (req, res) => {
     if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
     const {
-      conversation,
       conversationId,
       conversationPublic,
       storageConversationId,
@@ -56,8 +56,12 @@ router.get('/', async (req, res) => {
 
       let query;
       let params;
+      let queryMode;
+      let queryCursor;
 
       if (afterCursor) {
+        queryMode = 'after';
+        queryCursor = afterCursor.toString();
         query = 'SELECT * FROM messages WHERE conversation_id = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?';
         params = [
           cassandra.types.Uuid.fromString(storageConversationId),
@@ -65,6 +69,8 @@ router.get('/', async (req, res) => {
           fetchChunkSize,
         ];
       } else if (beforeCursor) {
+        queryMode = 'before';
+        queryCursor = beforeCursor.toString();
         query = 'SELECT * FROM messages WHERE conversation_id = ? AND message_id < ? ORDER BY message_id DESC LIMIT ?';
         params = [
           cassandra.types.Uuid.fromString(storageConversationId),
@@ -72,11 +78,23 @@ router.get('/', async (req, res) => {
           fetchChunkSize,
         ];
       } else {
+        queryMode = 'latest';
+        queryCursor = null;
         query = 'SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_id DESC LIMIT ?';
         params = [cassandra.types.Uuid.fromString(storageConversationId), fetchChunkSize];
       }
 
-      const result = await scylla.execute(query, params, { prepare: true });
+      const flightKey = createSentinelKey(
+        'scylla.messages.history',
+        storageConversationId,
+        queryMode,
+        queryCursor,
+        fetchChunkSize,
+      );
+      const result = await sentinel.guard(
+        flightKey,
+        () => scylla.execute(query, params, { prepare: true }),
+      );
       const rows = result.rows || [];
 
       if (rows.length === 0) {
