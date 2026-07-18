@@ -11,17 +11,14 @@ import { disconnectLiveSession } from '../../gateway/control.js';
 
 const router = Router();
 
-// Clear cookies on both domains to kill stale duplicates
 function clearAllCookies(req, res) {
   const cookieNames = ['accessToken', 'refreshToken', '_csrf'];
 
-  // Clear with domain (.void0000.online)
-  cookieNames.forEach(name => {
+  cookieNames.forEach((name) => {
     res.clearCookie(name, clearCookieOptions(req));
   });
 
-  // Clear without domain (kills stale api.void0000.online cookies)
-  cookieNames.forEach(name => {
+  cookieNames.forEach((name) => {
     res.clearCookie(name, { path: '/', httpOnly: true });
   });
 }
@@ -38,18 +35,22 @@ router.post('/', async (req, res) => {
         userId = decoded.id;
         deviceId = decoded.device_id || null;
 
-        await pool.query(
-          'UPDATE refresh_tokens SET is_revoked = TRUE, revoked_at = NOW() WHERE jti = $1',
-          [decoded.jti]
-        );
-      } catch (err) {
+        if (userId && deviceId) {
+          await pool.query(
+            `UPDATE refresh_tokens
+             SET is_revoked = TRUE, revoked_at = NOW()
+             WHERE user_id = $1 AND device_id = $2`,
+            [userId, deviceId],
+          );
+        }
+      } catch {
         const tokenHash = hashToken(refreshToken);
         const revoked = await pool.query(
           `UPDATE refresh_tokens
            SET is_revoked = TRUE, revoked_at = NOW()
            WHERE token_hash = $1
            RETURNING user_id, device_id`,
-          [tokenHash]
+          [tokenHash],
         );
 
         if (revoked.rows.length > 0) {
@@ -65,19 +66,16 @@ router.post('/', async (req, res) => {
     }
 
     clearAllCookies(req, res);
-
     await IPSecurity.logIPActivity(req, 'LOGOUT_SUCCESS', userId);
 
     res.json({
       success: true,
-      message: 'Logged out successfully'
+      message: 'Logged out successfully',
     });
-
-  } catch (err) {
-    console.error('Logout error:', err);
+  } catch (error) {
+    console.error('Logout error:', error);
 
     clearAllCookies(req, res);
-
     await IPSecurity.logIPActivity(req, 'LOGOUT_FAILED', userId);
 
     res.json({ success: true });

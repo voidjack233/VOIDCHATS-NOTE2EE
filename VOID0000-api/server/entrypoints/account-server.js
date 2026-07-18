@@ -9,6 +9,7 @@ import { securityMiddleware } from '../middleware/xss/index.js';
 import captchaRouter from '../routes/captcha/index.js';
 import { pool } from '../db.js';
 import valkey from '../valkey.js';
+import { initPublisher } from '../valkey-pubsub.js';
 import { createReadinessHandler } from '../health/readiness.js';
 import {
   authRouter,
@@ -56,6 +57,8 @@ securityMiddleware(allowedOrigins).forEach(mw => app.use(mw));
 // Some upload-style JSON payloads include base64 data, so keep this above the raw file cap.
 app.use(express.json({ limit: '25mb' }));
 app.use(cookieParser());
+
+initPublisher();
 
 // ================== STATIC (CDN) ==================
 

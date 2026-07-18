@@ -16,14 +16,54 @@ const DEFINITIVE_REFRESH_FAILURE_CODES = new Set([
   'DEVICE_MISMATCH',
   'USER_NOT_VERIFIED',
 ]);
-const REFRESH_ROTATION_MAX_RETRIES = 4;
-const REFRESH_ROTATION_RETRY_MAX_MS = 2_000;
+const REFRESH_MAX_RETRIES = 4;
+const REFRESH_RETRY_MAX_MS = 2_000;
+const REFRESH_REQUEST_TIMEOUT_MS = 8_000;
+const TRANSIENT_REFRESH_STATUSES = new Set([500, 502, 503, 504]);
 const SAFE_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CSRF_ERROR_PATTERN = /\b(csrf|xsrf|forgery)\b|token validation failed/i;
 
 const wait = (milliseconds: number) => new Promise<void>((resolve) => {
   window.setTimeout(resolve, milliseconds);
 });
+
+async function waitBeforeRefreshRetry(milliseconds: number): Promise<void> {
+  if (navigator.onLine) {
+    await wait(milliseconds);
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('online', finish);
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    const timeoutId = window.setTimeout(finish, Math.max(milliseconds, 2_000));
+    window.addEventListener('online', finish, { once: true });
+  });
+}
+
+async function requestRefresh(refreshUrl: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, REFRESH_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(refreshUrl, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
 
 export class AuthSessionUnavailableError extends Error {
   readonly code = 'AUTH_SESSION_UNAVAILABLE';
@@ -180,12 +220,25 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
     const refreshUrl = `${API_URL}/api/auth/refresh`;
 
     try {
-      for (let attempt = 0; attempt <= REFRESH_ROTATION_MAX_RETRIES; attempt += 1) {
-        const response = await fetch(refreshUrl, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-        });
+      for (let attempt = 0; attempt <= REFRESH_MAX_RETRIES; attempt += 1) {
+        let response: Response;
+
+        try {
+          response = await requestRefresh(refreshUrl);
+        } catch {
+          if (attempt < REFRESH_MAX_RETRIES) {
+            await waitBeforeRefreshRetry(Math.min(
+              250 * (2 ** attempt),
+              REFRESH_RETRY_MAX_MS,
+            ));
+            continue;
+          }
+
+          return {
+            success: false,
+            failureKind: 'unavailable',
+          };
+        }
 
         if (response.ok) {
           markAuthSessionEstablished();
@@ -194,12 +247,13 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
 
         const payload = await readJsonSafely(response);
         const code = typeof payload.code === 'string' ? payload.code : undefined;
+        const shouldRetry = TRANSIENT_REFRESH_STATUSES.has(response.status);
 
-        if (code === 'REFRESH_TOKEN_ROTATED' && attempt < REFRESH_ROTATION_MAX_RETRIES) {
+        if (shouldRetry && attempt < REFRESH_MAX_RETRIES) {
           const retryAfterMs = getRetryAfterMs(response, payload) ?? 250;
-          await wait(Math.min(
+          await waitBeforeRefreshRetry(Math.min(
             retryAfterMs * (2 ** attempt),
-            REFRESH_ROTATION_RETRY_MAX_MS,
+            REFRESH_RETRY_MAX_MS,
           ));
           continue;
         }
@@ -221,7 +275,6 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
       return {
         success: false,
         failureKind: 'unavailable',
-        code: 'REFRESH_TOKEN_ROTATED',
       };
     } catch {
       return {
