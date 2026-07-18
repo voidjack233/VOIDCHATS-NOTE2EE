@@ -9,6 +9,7 @@ import { FriendsProvider } from './Services/hooks/Friends';
 import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTheme';
 import { useVersionCheck } from './Services/hooks/common/useVersionCheck';
 import AppBootScreen from './components/common/AppBootScreen';
+import QueuedSendRecoveryAgent from './components/Chat/QueuedSendRecoveryAgent';
 
 // Lazy-loaded pages
 const Auth = lazy(() => import('./pages/Auth'));
@@ -57,6 +58,7 @@ export default function Router() {
     <ErrorBoundary>
       <ThemeWrapper>
         <UserProvider>
+          <QueuedSendRecoveryAgent />
           <FriendsProvider>
             <FriendProvider>
               <PresenceProvider>

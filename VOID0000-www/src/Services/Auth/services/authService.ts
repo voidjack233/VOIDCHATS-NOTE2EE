@@ -110,8 +110,11 @@ export const authService = {
       throw data;
     }
 
-    markAuthSessionEstablished();
-    await requestCSRFToken();
+    const requiresTwoFactor = Boolean(data?.requires2FA || data?.twoFactorToken);
+    if (!requiresTwoFactor) {
+      markAuthSessionEstablished();
+      await requestCSRFToken();
+    }
     return data;
   },
 

@@ -28,11 +28,17 @@ export function useMessageViewportResizeObserver({
     }
 
     const observer = new ResizeObserver(() => {
+      const wasAtBottom = atBottomRef.current;
       void attemptInitialBottomRestore();
       void maybeAutofillOlder();
-      if (
+
+      if (wasAtBottom && !historyScrollTransactionActiveRef.current) {
+        // Composer banners and the mobile keyboard resize the viewport. Keep a
+        // reader who was already at present pinned there before state is synced.
+        scroller.scrollTop = scroller.scrollHeight;
+      } else if (
         historyScrollTransactionActiveRef.current ||
-        !atBottomRef.current ||
+        !wasAtBottom ||
         showJumpToPresentRef.current
       ) {
         restoreViewportAnchorLock();

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useConnectionStatus } from '../common/useConnectionStatus';
 import {
   editMessage,
   sendImageOnlyMessage,
@@ -13,7 +12,11 @@ import {
   type Message,
   type MessageMentionMetadata,
 } from '../../Chat/chatService';
-import { queuedSendStore } from '../../Chat/queuedSendStore';
+import {
+  enqueueQueuedSend,
+  isTransientMessageSendFailure,
+  subscribeQueuedSendOutcomes,
+} from '../../Chat/queuedSendRecovery';
 import { resolveMessageMentions } from '../../Chat/messageMentions';
 import { fetchLinkPreview, getFirstPreviewableUrl } from '../../Chat/linkPreviewService';
 import { parseAttachment, serializeAttachment } from '../../Chat/messageAttachments';
@@ -80,19 +83,6 @@ function getSendErrorNotice(error: any): string {
   return message || 'Message was not sent. Try again.';
 }
 
-function isTransientSendFailure(error: any): boolean {
-  const status = Number(error?.status ?? error?.statusCode);
-  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
-  return (
-    error?.code === 'REQUEST_TIMEOUT' ||
-    error?.name === 'AbortError' ||
-    status >= 500 ||
-    message.includes('timed out') ||
-    message.includes('failed to fetch') ||
-    message.includes('network')
-  );
-}
-
 function getQueuedSendNotice(error: any): string {
   const status = Number(error?.status ?? error?.statusCode);
   if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError') {
@@ -140,7 +130,6 @@ export const useMessageInput = ({
   onCancelReply,
   onEditComplete,
 }: UseMessageInputProps) => {
-  const { isOnline } = useConnectionStatus();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -150,7 +139,6 @@ export const useMessageInput = ({
   const [attachmentAlert, setAttachmentAlert] = useState<AttachmentAlertState | null>(null);
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
-  const flushingQueuedSendIdsRef = useRef<Set<string>>(new Set());
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -345,37 +333,14 @@ export const useMessageInput = ({
     return () => window.clearTimeout(timer);
   }, [slowmodeRemaining]);
 
-  useEffect(() => {
-    if (!isOnline) return;
-    let cancelled = false;
-    void queuedSendStore.getByConversation(conversation.id).then(async (queuedSends) => {
-      for (const queued of queuedSends) {
-        if (cancelled || flushingQueuedSendIdsRef.current.has(queued.local_client_id)) continue;
-        flushingQueuedSendIdsRef.current.add(queued.local_client_id);
-        try {
-          const options = {
-            client_message_id: queued.local_client_id,
-            reply_to: queued.reply_to_id || undefined,
-            linkPreview: queued.link_preview || null,
-            mentions: queued.mentions || [],
-          };
-          const message = queued.text.trim()
-            ? await sendMessage(conversation.id, queued.text, { ...options, attachments: queued.uploaded_urls })
-            : await sendImageOnlyMessage(conversation.id, queued.uploaded_urls, options);
-          await queuedSendStore.remove(conversation.id, queued.local_client_id);
-          onMessageSent({ ...message, local_status: 'sent', local_client_id: queued.local_client_id });
-        } catch (error) {
-          if (!isTransientSendFailure(error)) {
-            await queuedSendStore.remove(conversation.id, queued.local_client_id).catch(() => {});
-            onSendError?.(getSendErrorNotice(error));
-          }
-        } finally {
-          flushingQueuedSendIdsRef.current.delete(queued.local_client_id);
-        }
-      }
-    });
-    return () => { cancelled = true; };
-  }, [conversation.id, isOnline, onMessageSent, onSendError]);
+  useEffect(() => subscribeQueuedSendOutcomes((outcome) => {
+    if (
+      outcome.status === 'failed' &&
+      String(outcome.record.conversation_id) === String(conversation.id)
+    ) {
+      onSendError?.(outcome.notice);
+    }
+  }), [conversation.id, onSendError]);
 
   useEffect(() => {
     const typingEligible = !sending && text.trim().length > 0 && !editingMessage;
@@ -498,20 +463,26 @@ export const useMessageInput = ({
       }
     } catch (error: any) {
       console.error('Send failed:', error);
-      if (isTransientSendFailure(error) && optimisticMessage && localClientId) {
+      if (isTransientMessageSendFailure(error) && optimisticMessage && localClientId && currentUserId) {
         await applyOwnSendResult({ ...optimisticMessage, local_status: 'queued' });
-        await queuedSendStore.put({
-          conversation_id: conversation.id,
-          local_client_id: localClientId,
-          sender_id: currentUserId || 'local-user',
-          text: trimmed,
-          uploaded_urls: uploadedAttachments,
-          reply_to_id: replyTo?.message_id || null,
-          link_preview: activeLinkPreview || undefined,
-          mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
-          created_at: optimisticMessage.created_at,
-        }).catch((queueError) => console.error('[QUEUED_SEND] failed to persist queued send', queueError));
-        onSendError?.(getQueuedSendNotice(error));
+        try {
+          await enqueueQueuedSend({
+            conversation_id: conversation.id,
+            local_client_id: localClientId,
+            sender_id: currentUserId,
+            text: trimmed,
+            uploaded_urls: uploadedAttachments,
+            reply_to_id: replyTo?.message_id || null,
+            link_preview: activeLinkPreview || undefined,
+            mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
+            created_at: optimisticMessage.created_at,
+          });
+          onSendError?.(getQueuedSendNotice(error));
+        } catch (queueError) {
+          console.error('[QUEUED_SEND] failed to persist queued send', queueError);
+          await applyOwnSendResult({ ...optimisticMessage, local_status: 'failed' });
+          onSendError?.('Message was not sent and could not be queued. Please retry it.');
+        }
       } else {
         if (!renderedOptimisticMessage) {
           setText(previous.text);

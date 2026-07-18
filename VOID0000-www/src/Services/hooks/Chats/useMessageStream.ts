@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Conversation, Message } from '../../Chat/chatService';
+import { subscribeQueuedSendOutcomes } from '../../Chat/queuedSendRecovery';
 import { gateway } from '../../Gateway/gateway';
 import type { MessageStreamEvent, MessageUpdate } from './MessageList/messageListTypes';
 
@@ -60,6 +61,14 @@ export const useMessageStream = ({
         setMessageDelete({ message_id: String(data.message_id) });
       }
     };
+    const unsubscribeQueuedSends = subscribeQueuedSendOutcomes((outcome) => {
+      if (
+        outcome.record.sender_id === user.id &&
+        String(outcome.record.conversation_id) === String(activeConversation.id)
+      ) {
+        pushMessageEvent(outcome.message);
+      }
+    });
 
     gateway.on('MESSAGE_CREATE', handleCreate);
     gateway.on('MESSAGE_UPDATE', handleUpdate);
@@ -68,6 +77,7 @@ export const useMessageStream = ({
       gateway.off('MESSAGE_CREATE', handleCreate);
       gateway.off('MESSAGE_UPDATE', handleUpdate);
       gateway.off('MESSAGE_DELETE', handleDelete);
+      unsubscribeQueuedSends();
     };
   }, [activeConversation?.id, clearUserTyping, pushMessageEvent, user?.id]);
 

@@ -107,12 +107,12 @@ const useMessageListLoading = ({
       });
     };
 
-    const restoreSavedRuntime = () => {
+    const restoreSavedRuntime = (): ConversationRuntime | null => {
       const savedRuntime = getSavedConversationRuntime(conversationId);
-      if (!savedRuntime) return false;
+      if (!savedRuntime) return null;
 
       const savedMessages = getRenderedMessages(savedRuntime);
-      if (savedMessages.length === 0) return false;
+      if (savedMessages.length === 0) return null;
 
       restoreRuntime({
         runtime: savedRuntime,
@@ -129,7 +129,7 @@ const useMessageListLoading = ({
       });
       onMessagesLoaded?.(savedMessages);
       settleInitialHydration();
-      return true;
+      return savedRuntime;
     };
 
     const applyVisibleMessages = (
@@ -171,11 +171,19 @@ const useMessageListLoading = ({
       lastLoadedConversationIdRef.current = conversationId;
       lastLoadedHistoryFenceSignatureRef.current = historyAccessFenceSignature;
 
-      if (!shouldPreserveMessages && historyAccessFenceSignature === 'none' && restoreSavedRuntime()) {
+      const savedRuntime = !shouldPreserveMessages && historyAccessFenceSignature === 'none'
+        ? restoreSavedRuntime()
+        : null;
+
+      // Keep an intentionally historical window exactly where the user left it.
+      // A runtime that was at present still needs to consume messages persisted by
+      // the global conversation-list listener while this conversation was inactive.
+      if (savedRuntime?.hasNewer) {
         return;
       }
 
-      if (!shouldPreserveMessages) resetVisibleWindow();
+      const shouldPreserveVisibleMessages = shouldPreserveMessages || Boolean(savedRuntime);
+      if (!shouldPreserveVisibleMessages) resetVisibleWindow();
 
       try {
         const { cached, syncPromise } = await messageSync.loadConversation(conversationId, {
@@ -189,7 +197,7 @@ const useMessageListLoading = ({
         const cachedMessages = filterMessagesByHistoryFence(cached.messages, historyAccessFence);
         const cachedUI = sortMessages(cachedMessages.map(toUIMessage));
         if (cachedUI.length > 0) {
-          applyVisibleMessages(cachedUI, shouldPreserveMessages, {
+          applyVisibleMessages(cachedUI, shouldPreserveVisibleMessages, {
             hasOlder: resolveInitialHasOlder({
               localHasMore: cached.has_more,
               localCount: cachedUI.length,
@@ -219,7 +227,7 @@ const useMessageListLoading = ({
 
         const freshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
         const freshUI = sortMessages(freshMessages.map(toUIMessage));
-        applyVisibleMessages(freshUI, false, {
+        applyVisibleMessages(freshUI, Boolean(savedRuntime), {
           hasOlder: resolveInitialHasOlder({
             localHasMore: fresh.has_more,
             localCount: freshUI.length,

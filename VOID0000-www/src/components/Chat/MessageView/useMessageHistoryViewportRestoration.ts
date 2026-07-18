@@ -33,7 +33,6 @@ interface UseMessageHistoryViewportRestorationOptions {
   historySkeletonRowHeight: number;
   olderTopExhaustionThreshold: number;
   hasNewer: boolean;
-  isAtPresent: boolean;
   pendingOlderLoadScrollSnapshotRef: MutableRefObject<HistoryLoadScrollSnapshot | null>;
   pendingNewerLoadScrollSnapshotRef: MutableRefObject<NewerHistoryLoadScrollSnapshot | null>;
   historyScrollTransactionActiveRef: MutableRefObject<boolean>;
@@ -69,7 +68,6 @@ export function useMessageHistoryViewportRestoration({
   historySkeletonRowHeight,
   olderTopExhaustionThreshold,
   hasNewer,
-  isAtPresent,
   pendingOlderLoadScrollSnapshotRef,
   pendingNewerLoadScrollSnapshotRef,
   historyScrollTransactionActiveRef,
@@ -293,13 +291,9 @@ export function useMessageHistoryViewportRestoration({
     atBottomRef.current = scrollState.atBottom;
     showJumpToPresentRef.current = scrollState.shouldShowJumpToPresent;
     setShowJumpToPresent(scrollState.shouldShowJumpToPresent);
-    onOwnSendHistoryModeChange?.(
-      !scrollState.atBottom ||
-      scrollState.shouldShowJumpToPresent ||
-      hasNewer ||
-      !scrollState.isAtPresent ||
-      !isAtPresent
-    );
+    // Scrolling within the latest loaded page does not require a page reload on
+    // send. Only an actual unloaded newer range needs the server-backed jump.
+    onOwnSendHistoryModeChange?.(hasNewer || renderedBottomSpacerHeight > 1);
 
     if (scrollState.atBottom) {
       forceFollowOutputRef.current = false;
@@ -318,10 +312,10 @@ export function useMessageHistoryViewportRestoration({
     getScrollState,
     hasNewer,
     historyScrollTransactionActiveRef,
-    isAtPresent,
     onOwnSendHistoryModeChange,
     pendingNewerLoadScrollSnapshotRef,
     pendingOlderLoadScrollSnapshotRef,
+    renderedBottomSpacerHeight,
     scrollerRef,
     setIsAtPresent,
     setShowJumpToPresent,

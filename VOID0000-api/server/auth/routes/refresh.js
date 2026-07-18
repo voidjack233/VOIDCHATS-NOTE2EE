@@ -26,6 +26,34 @@ const normalizeIP = (ip) => {
   return ip;
 };
 
+const syncRefreshStateBestEffort = ({
+  userId,
+  deviceId,
+  accessTokenExp,
+  sessionMetadata,
+}) => {
+  const sessionSync = (async () => {
+    const touched = await sessionStore.touch(userId, deviceId);
+    if (!touched) {
+      await sessionStore.create(userId, deviceId, sessionMetadata);
+    }
+  })();
+  const gatewaySync = Number.isInteger(accessTokenExp)
+    ? syncLiveTokenExpiry(userId, deviceId, accessTokenExp)
+    : Promise.resolve();
+
+  void Promise.allSettled([sessionSync, gatewaySync]).then((results) => {
+    results.forEach((result, index) => {
+      if (result.status !== 'rejected') return;
+      console.warn('[AUTH_REFRESH] best-effort synchronization failed', {
+        user_id: userId,
+        target: index === 0 ? 'session' : 'gateway',
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason || ''),
+      });
+    });
+  });
+};
+
 router.post('/', async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
 
@@ -38,6 +66,7 @@ router.post('/', async (req, res) => {
   }
 
   let client;
+  let transactionOpen = false;
 
   try {
     // 1. VERIFY JWT STRUCTURE
@@ -63,6 +92,7 @@ router.post('/', async (req, res) => {
     // 2. DATABASE LOOKUP
     client = await pool.connect();
     await client.query('BEGIN');
+    transactionOpen = true;
 
     const tokenHash = hashToken(refreshToken);
 
@@ -81,6 +111,7 @@ router.post('/', async (req, res) => {
 
     if (result.rows.length === 0) {
       await client.query('ROLLBACK');
+      transactionOpen = false;
 
       const deviceCheck = await pool.query(
         `SELECT 1 FROM refresh_tokens
@@ -115,6 +146,7 @@ router.post('/', async (req, res) => {
         jwtDevice: decoded.device_id
       });
       await client.query('ROLLBACK');
+      transactionOpen = false;
       return res.status(403).json({
         success: false,
         code: 'DEVICE_MISMATCH',
@@ -124,6 +156,7 @@ router.post('/', async (req, res) => {
 
     if (!tokenRecord.is_verified) {
       await client.query('ROLLBACK');
+      transactionOpen = false;
       return res.status(403).json({
         success: false,
         code: 'USER_NOT_VERIFIED',
@@ -173,20 +206,7 @@ router.post('/', async (req, res) => {
     );
 
     await client.query('COMMIT');
-
-    const touched = await sessionStore.touch(decoded.id, decoded.device_id);
-    if (!touched) {
-      await sessionStore.create(decoded.id, decoded.device_id, {
-        ip: normalizeIP(getClientIP(req)),
-        userAgent: req.get('User-Agent') || 'unknown',
-        deviceName: tokenRecord.device_name || 'Unknown',
-        deviceType: tokenRecord.device_type || 'unknown',
-      });
-    }
-
-    if (Number.isInteger(newAccessDecoded?.exp)) {
-      await syncLiveTokenExpiry(decoded.id, decoded.device_id, newAccessDecoded.exp);
-    }
+    transactionOpen = false;
 
     // 6. SET COOKIES
     res.cookie('accessToken', newTokens.accessToken, accessCookieOptions(req));
@@ -197,10 +217,29 @@ router.post('/', async (req, res) => {
       message: 'Token refreshed'
     });
 
+    syncRefreshStateBestEffort({
+      userId: decoded.id,
+      deviceId: decoded.device_id,
+      accessTokenExp: newAccessDecoded?.exp,
+      sessionMetadata: {
+        ip: normalizeIP(getClientIP(req)),
+        userAgent: req.get('User-Agent') || 'unknown',
+        deviceName: tokenRecord.device_name || 'Unknown',
+        deviceType: tokenRecord.device_type || 'unknown',
+      },
+    });
+
   } catch (err) {
-    if (client) await client.query('ROLLBACK');
+    if (client && transactionOpen) {
+      await client.query('ROLLBACK').catch((rollbackError) => {
+        console.error('Refresh rollback error:', rollbackError);
+      });
+      transactionOpen = false;
+    }
 
     console.error('Refresh error:', err);
+
+    if (res.headersSent) return;
 
     // Only clear cookies for definitive token errors
     if (err.name === 'TokenExpiredError' || err.name === 'JsonWebTokenError') {

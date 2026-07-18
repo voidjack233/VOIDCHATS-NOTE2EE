@@ -737,7 +737,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     historySkeletonRowHeight,
     olderTopExhaustionThreshold,
     hasNewer,
-    isAtPresent,
     pendingOlderLoadScrollSnapshotRef,
     pendingNewerLoadScrollSnapshotRef,
     historyScrollTransactionActiveRef,
@@ -980,14 +979,16 @@ const MessageViewV2 = memo(function MessageViewV2({
     pendingMessageJumpTargetRef.current = null;
     setOlderRangeError(false);
     setNewerRangeError(false);
-    await jumpToPresent();
+    if (hasNewerRef.current || bottomLogicalRangeHeight > 1) {
+      await jumpToPresent();
+    }
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         scrollToBottom('auto');
         syncScrollState();
       });
     });
-  }, [jumpToPresent, scrollToBottom, syncScrollState]);
+  }, [bottomLogicalRangeHeight, jumpToPresent, scrollToBottom, syncScrollState]);
 
   useEffect(() => {
     if (!ownSendJumpRequest || ownSendJumpRequest === lastOwnSendJumpRequestRef.current) {
