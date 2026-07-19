@@ -1,4 +1,13 @@
-import { Suspense, lazy, useEffect, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft,
@@ -6,6 +15,8 @@ import {
   Copy,
   Download,
   Forward,
+  ImageOff,
+  Loader2,
   Plus,
   Pencil,
   RefreshCcw,
@@ -15,6 +26,10 @@ import {
   X,
 } from 'lucide-react';
 import type { Message } from '../../../Services/Chat/chatService';
+import {
+  isAttachmentDeliveryUrlUsable,
+  refreshAttachmentDeliveryCapability,
+} from '../../../Services/Chat/attachmentService';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../../Services/Chat/reactionLimits';
 import type { Friend } from '../../../Services/hooks/Friends/useFriends';
 import FriendProfile from '../../common/Friends/FriendProfile';
@@ -93,6 +108,245 @@ function messageCanAddReaction(message: Message, emoji?: string) {
   }
 
   return hasActiveReactionEntry(reactions, emoji);
+}
+
+interface ImageViewerOverlayProps {
+  imageViewer: ImageViewerState;
+  onClose: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onSelectIndex: (index: number) => void;
+}
+
+function setIndexMembership(
+  setter: Dispatch<SetStateAction<Set<number>>>,
+  index: number,
+  enabled: boolean,
+) {
+  setter((current) => {
+    const next = new Set(current);
+    if (enabled) next.add(index);
+    else next.delete(index);
+    return next;
+  });
+}
+
+function ImageViewerOverlay({
+  imageViewer,
+  onClose,
+  onPrevious,
+  onNext,
+  onSelectIndex,
+}: ImageViewerOverlayProps) {
+  const [urls, setUrls] = useState(() => imageViewer.urls);
+  const [urlExpiries, setUrlExpiries] = useState<Array<number | undefined>>(() => (
+    imageViewer.attachments.map((attachment, index) => (
+      imageViewer.urls[index] ? attachment.url_expires_at : undefined
+    ))
+  ));
+  const [refreshingIndices, setRefreshingIndices] = useState<Set<number>>(() => new Set());
+  const [failedIndices, setFailedIndices] = useState<Set<number>>(() => new Set());
+  const [downloading, setDownloading] = useState(false);
+  const refreshAttemptedRef = useRef<Set<number>>(new Set());
+  const mountedRef = useRef(true);
+  const currentIndex = imageViewer.index;
+  const currentUrl = urls[currentIndex];
+  const currentUrlExpiry = urlExpiries[currentIndex];
+  const currentUrlUsable = Boolean(
+    currentUrl && isAttachmentDeliveryUrlUsable(currentUrl, currentUrlExpiry),
+  );
+  const currentRefreshing = refreshingIndices.has(currentIndex);
+  const currentFailed = failedIndices.has(currentIndex);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
+
+  const refreshDelivery = useCallback((index: number) => {
+    if (refreshAttemptedRef.current.has(index)) {
+      setUrls((current) => current.map((url, itemIndex) => (
+        itemIndex === index ? null : url
+      )));
+      setIndexMembership(setFailedIndices, index, true);
+      return;
+    }
+
+    const attachment = imageViewer.attachments[index];
+    if (!attachment) {
+      setIndexMembership(setFailedIndices, index, true);
+      return;
+    }
+
+    refreshAttemptedRef.current.add(index);
+    setIndexMembership(setRefreshingIndices, index, true);
+    setIndexMembership(setFailedIndices, index, false);
+    setUrls((current) => current.map((url, itemIndex) => (
+      itemIndex === index ? null : url
+    )));
+    void refreshAttachmentDeliveryCapability(attachment, {
+      conversationId: imageViewer.conversationId,
+    })
+      .then((delivery) => {
+        if (!mountedRef.current) return;
+        setUrls((current) => current.map((url, itemIndex) => (
+          itemIndex === index ? delivery.url : url
+        )));
+        setUrlExpiries((current) => current.map((expiry, itemIndex) => (
+          itemIndex === index ? delivery.urlExpiresAt : expiry
+        )));
+        setIndexMembership(setRefreshingIndices, index, false);
+      })
+      .catch((error) => {
+        console.error('Failed to refresh image viewer attachment delivery:', error);
+        if (!mountedRef.current) return;
+        setIndexMembership(setRefreshingIndices, index, false);
+        setIndexMembership(setFailedIndices, index, true);
+      });
+  }, [imageViewer.attachments, imageViewer.conversationId]);
+
+  useEffect(() => {
+    if (currentUrlUsable || currentRefreshing || currentFailed) return;
+
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) refreshDelivery(currentIndex);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentFailed,
+    currentIndex,
+    currentRefreshing,
+    currentUrlUsable,
+    refreshDelivery,
+  ]);
+
+  const handleDownload = async () => {
+    if (downloading) return;
+
+    const attachment = imageViewer.attachments[currentIndex];
+    if (!attachment) return;
+
+    setDownloading(true);
+    try {
+      let downloadUrl = currentUrlUsable ? currentUrl : null;
+      if (!downloadUrl) {
+        const delivery = await refreshAttachmentDeliveryCapability(attachment, {
+          conversationId: imageViewer.conversationId,
+        });
+        downloadUrl = delivery.url;
+        if (mountedRef.current) {
+          setUrls((current) => current.map((url, itemIndex) => (
+            itemIndex === currentIndex ? delivery.url : url
+          )));
+          setUrlExpiries((current) => current.map((expiry, itemIndex) => (
+            itemIndex === currentIndex ? delivery.urlExpiresAt : expiry
+          )));
+        }
+      }
+
+      if (!mountedRef.current) return;
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = attachment.name || 'attachment';
+      anchor.rel = 'noopener noreferrer';
+      anchor.click();
+    } catch (error) {
+      console.error('Failed to refresh image attachment download:', error);
+    } finally {
+      if (mountedRef.current) setDownloading(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="absolute top-4 right-4 flex items-center gap-2 z-10"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {!currentFailed ? (
+          <button
+            type="button"
+            onClick={() => { void handleDownload(); }}
+            disabled={downloading}
+            className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+            title="Download"
+          >
+            {downloading
+              ? <Loader2 className="h-5 w-5 animate-spin" />
+              : <Download className="w-5 h-5" />}
+          </button>
+        ) : null}
+        <button
+          onClick={onClose}
+          className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+          title="Close"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+
+      {currentIndex > 0 && (
+        <button
+          onClick={(event) => {
+            event.stopPropagation();
+            onPrevious();
+          }}
+          className="absolute left-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
+        >
+          <ChevronLeft className="w-6 h-6" />
+        </button>
+      )}
+
+      {currentRefreshing || (!currentUrlUsable && !currentFailed) ? (
+        <Loader2 className="h-8 w-8 animate-spin text-white/80" />
+      ) : currentFailed || !currentUrlUsable || !currentUrl ? (
+        <div className="flex flex-col items-center gap-2 text-white/70">
+          <ImageOff className="h-8 w-8" />
+          <span className="text-sm">Attachment unavailable</span>
+        </div>
+      ) : (
+        <img
+          src={currentUrl}
+          alt="attachment"
+          className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+          onError={() => refreshDelivery(currentIndex)}
+        />
+      )}
+
+      {currentIndex < urls.length - 1 && (
+        <button
+          onClick={(event) => {
+            event.stopPropagation();
+            onNext();
+          }}
+          className="absolute right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
+        >
+          <ChevronRight className="w-6 h-6" />
+        </button>
+      )}
+
+      {urls.length > 1 && (
+        <div
+          className="absolute bottom-4 flex items-center gap-1.5"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {urls.map((_, index) => (
+            <button
+              key={index}
+              onClick={() => onSelectIndex(index)}
+              className={`w-2 h-2 rounded-full transition-all ${index === currentIndex ? 'bg-white scale-125' : 'bg-white/40 hover:bg-white/70'}`}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function MessageOverlays({
@@ -634,77 +888,14 @@ export default function MessageOverlays({
       )}
 
       {imageViewer && createPortal(
-        <div
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 backdrop-blur-sm"
-          onClick={onCloseImageViewer}
-        >
-          <div
-            className="absolute top-4 right-4 flex items-center gap-2 z-10"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <a
-              href={imageViewer.urls[imageViewer.index]}
-              download
-              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
-              title="Download"
-            >
-              <Download className="w-5 h-5" />
-            </a>
-            <button
-              onClick={onCloseImageViewer}
-              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
-              title="Close"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {imageViewer.index > 0 && (
-            <button
-              onClick={(event) => {
-                event.stopPropagation();
-                onPreviousImage();
-              }}
-              className="absolute left-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
-            >
-              <ChevronLeft className="w-6 h-6" />
-            </button>
-          )}
-
-          <img
-            src={imageViewer.urls[imageViewer.index]}
-            alt="attachment"
-            className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          />
-
-          {imageViewer.index < imageViewer.urls.length - 1 && (
-            <button
-              onClick={(event) => {
-                event.stopPropagation();
-                onNextImage();
-              }}
-              className="absolute right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
-            >
-              <ChevronRight className="w-6 h-6" />
-            </button>
-          )}
-
-          {imageViewer.urls.length > 1 && (
-            <div
-              className="absolute bottom-4 flex items-center gap-1.5"
-              onClick={(event) => event.stopPropagation()}
-            >
-              {imageViewer.urls.map((_, index) => (
-                <button
-                  key={index}
-                  onClick={() => onSelectImageIndex(index)}
-                  className={`w-2 h-2 rounded-full transition-all ${index === imageViewer.index ? 'bg-white scale-125' : 'bg-white/40 hover:bg-white/70'}`}
-                />
-              ))}
-            </div>
-          )}
-        </div>,
+        <ImageViewerOverlay
+          key={imageViewer.sessionId}
+          imageViewer={imageViewer}
+          onClose={onCloseImageViewer}
+          onPrevious={onPreviousImage}
+          onNext={onNextImage}
+          onSelectIndex={onSelectImageIndex}
+        />,
         document.body,
       )}
     </>

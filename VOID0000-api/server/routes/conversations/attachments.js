@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { pool } from '../../db.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
+import { createSignedAttachmentDelivery } from '../../utils/attachmentDelivery.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 import sentinel, { createSentinelKey } from '../../sentinel/index.js';
@@ -69,6 +70,36 @@ async function resolveConversationForMember(conversationIdentifier, userId) {
   return { conversation, member: member.rows[0] };
 }
 
+async function findAttachmentObject(conversationId, attachmentId) {
+  const attachmentFlightKey = createSentinelKey(
+    'postgres.attachment-objects.by-id',
+    conversationId,
+    attachmentId,
+    ATTACH_BUCKET,
+  );
+  const result = await sentinel.guard(
+    attachmentFlightKey,
+    () => pool.query(
+      `SELECT object_key
+       FROM attachment_objects
+       WHERE id = $1
+         AND conversation_id = $2
+         AND bucket = $3
+       LIMIT 1`,
+      [attachmentId, conversationId, ATTACH_BUCKET],
+    ),
+  );
+  return result.rows[0] || null;
+}
+
+function statAttachmentObject(objectKey) {
+  const statFlightKey = createSentinelKey('minio.attachments.stat', ATTACH_BUCKET, objectKey);
+  return sentinel.guard(
+    statFlightKey,
+    () => minioClient.statObject(ATTACH_BUCKET, objectKey),
+  );
+}
+
 function setAttachmentResponseHeaders(res, objectStat) {
   const storedContentType = objectStat.metaData?.['content-type'];
   const contentType = typeof storedContentType === 'string' && MIME_TYPE_PATTERN.test(storedContentType)
@@ -118,13 +149,9 @@ async function readAttachmentObjectWithinBudget(objectKey, objectSize) {
 }
 
 async function streamAttachmentObject(res, objectKey) {
-  const statFlightKey = createSentinelKey('minio.attachments.stat', ATTACH_BUCKET, objectKey);
   let objectStat;
   try {
-    objectStat = await sentinel.guard(
-      statFlightKey,
-      () => minioClient.statObject(ATTACH_BUCKET, objectKey),
-    );
+    objectStat = await statAttachmentObject(objectKey);
   } catch {
     return res.status(404).json({ error: 'Attachment not found' });
   }
@@ -149,10 +176,7 @@ async function streamAttachmentObject(res, objectKey) {
     } catch (err) {
       if (err instanceof AttachmentBufferLimitError) {
         try {
-          objectStat = await sentinel.guard(
-            statFlightKey,
-            () => minioClient.statObject(ATTACH_BUCKET, objectKey),
-          );
+          objectStat = await statAttachmentObject(objectKey);
         } catch {
           return res.status(404).json({ error: 'Attachment not found' });
         }
@@ -291,6 +315,47 @@ router.post('/', async (req, res) => {
   });
 });
 
+// GET /api/conversations/:conversationId/attachments/:attachmentId/delivery-url
+// Returns a fresh short-lived CDN capability without reading attachment bytes.
+router.get('/:attachmentId/delivery-url', async (req, res) => {
+  const userId = req.user.id;
+  const { conversationId: conversationIdentifier, attachmentId } = req.params;
+
+  if (!UUID_PATTERN.test(attachmentId || '')) {
+    return res.status(400).json({ success: false, error: 'Invalid attachment id' });
+  }
+
+  try {
+    const resolved = await resolveConversationForMember(conversationIdentifier, userId);
+    if (!resolved.conversation) {
+      return res.status(resolved.status).json({ success: false, ...resolved.body });
+    }
+
+    const attachmentObject = await findAttachmentObject(resolved.conversation.id, attachmentId);
+    if (!attachmentObject) {
+      return res.status(404).json({ success: false, error: 'Attachment not found' });
+    }
+
+    try {
+      await statAttachmentObject(attachmentObject.object_key);
+    } catch {
+      return res.status(404).json({ success: false, error: 'Attachment not found' });
+    }
+
+    const delivery = await createSignedAttachmentDelivery(attachmentObject.object_key);
+    res.setHeader('Cache-Control', 'private, no-store');
+    return res.json({
+      success: true,
+      attachment_id: attachmentId,
+      url: delivery.url,
+      url_expires_at: delivery.url_expires_at,
+    });
+  } catch (err) {
+    console.error('Attachment delivery URL error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to issue attachment delivery URL' });
+  }
+});
+
 // GET /api/conversations/:conversationId/attachments/:attachmentId
 router.get('/:attachmentId', async (req, res) => {
   const userId = req.user.id;
@@ -306,30 +371,12 @@ router.get('/:attachmentId', async (req, res) => {
       return res.status(resolved.status).json(resolved.body);
     }
 
-    const attachmentFlightKey = createSentinelKey(
-      'postgres.attachment-objects.by-id',
-      resolved.conversation.id,
-      attachmentId,
-      ATTACH_BUCKET,
-    );
-    const attachmentResult = await sentinel.guard(
-      attachmentFlightKey,
-      () => pool.query(
-        `SELECT object_key
-         FROM attachment_objects
-         WHERE id = $1
-           AND conversation_id = $2
-           AND bucket = $3
-         LIMIT 1`,
-        [attachmentId, resolved.conversation.id, ATTACH_BUCKET],
-      ),
-    );
-
-    if (attachmentResult.rows.length === 0) {
+    const attachmentObject = await findAttachmentObject(resolved.conversation.id, attachmentId);
+    if (!attachmentObject) {
       return res.status(404).json({ error: 'Attachment not found' });
     }
 
-    return streamAttachmentObject(res, attachmentResult.rows[0].object_key);
+    return streamAttachmentObject(res, attachmentObject.object_key);
   } catch (err) {
     console.error('Attachment download error:', err);
     return res.status(500).json({ error: 'Attachment download failed' });

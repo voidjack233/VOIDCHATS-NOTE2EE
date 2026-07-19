@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Message, ConversationMember } from '../../../Services/Chat/chatService';
+import type { Attachment, Message, ConversationMember } from '../../../Services/Chat/chatService';
 import type { Friend } from '../../../Services/hooks/Friends/useFriends';
 
 export interface ContextMenuState {
@@ -15,7 +15,10 @@ export interface EmojiPickerTarget {
 }
 
 export interface ImageViewerState {
-  urls: string[];
+  sessionId: number;
+  attachments: Attachment[];
+  conversationId: string;
+  urls: Array<string | null>;
   index: number;
 }
 
@@ -47,6 +50,7 @@ export function useMessageActions({
   friendsRef.current = friends;
   const membersRef = useRef(members);
   membersRef.current = members;
+  const imageViewerSessionRef = useRef(0);
 
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
@@ -229,8 +233,20 @@ export function useMessageActions({
     }
   }, []);
 
-  const openImageViewer = useCallback((urls: string[], index: number) => {
-    setImageViewer({ urls, index });
+  const openImageViewer = useCallback((
+    attachments: Attachment[],
+    urls: Array<string | null>,
+    conversationId: string,
+    index: number,
+  ) => {
+    imageViewerSessionRef.current += 1;
+    setImageViewer({
+      sessionId: imageViewerSessionRef.current,
+      attachments,
+      conversationId,
+      urls,
+      index,
+    });
   }, []);
 
   return {

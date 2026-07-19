@@ -103,6 +103,15 @@ function presignAttachmentObject(objectKey) {
   });
 }
 
+export async function createSignedAttachmentDelivery(objectKey) {
+  const signingStartedAt = Date.now();
+  const url = await presignAttachmentObject(objectKey);
+  return {
+    url,
+    url_expires_at: signingStartedAt + (ATTACHMENT_SIGNED_URL_TTL_SECONDS * 1000),
+  };
+}
+
 export async function attachSignedAttachmentUrls(messages, conversationId) {
   if (!Array.isArray(messages) || messages.length === 0) return messages;
 
@@ -133,15 +142,13 @@ export async function attachSignedAttachmentUrls(messages, conversationId) {
       [conversationId, ATTACH_BUCKET, attachmentIds],
     );
     const objectKeyById = new Map(result.rows.map((row) => [row.id, row.object_key]));
-    const signingStartedAt = Date.now();
     const signedEntries = await Promise.all(
       [...objectKeyById.entries()].map(async ([attachmentId, objectKey]) => ([
         attachmentId,
-        await presignAttachmentObject(objectKey),
+        await createSignedAttachmentDelivery(objectKey),
       ])),
     );
-    const signedUrlById = new Map(signedEntries);
-    const expiresAt = signingStartedAt + (ATTACHMENT_SIGNED_URL_TTL_SECONDS * 1000);
+    const signedDeliveryById = new Map(signedEntries);
 
     return messages.map((message, messageIndex) => ({
       ...message,
@@ -150,17 +157,17 @@ export async function attachSignedAttachmentUrls(messages, conversationId) {
           return message.attachments[attachmentIndex];
         }
 
-        const signedUrl = signedUrlById.get(entry.attachmentId);
-        if (!signedUrl) {
+        const signedDelivery = signedDeliveryById.get(entry.attachmentId);
+        if (!signedDelivery) {
           return serializeStableAttachment(entry.descriptor, entry.stableUrl);
         }
 
         return JSON.stringify({
           ...entry.descriptor,
           id: entry.attachmentId,
-          url: signedUrl,
+          url: signedDelivery.url,
           fallback_url: entry.stableUrl,
-          url_expires_at: expiresAt,
+          url_expires_at: signedDelivery.url_expires_at,
         });
       }),
     }));

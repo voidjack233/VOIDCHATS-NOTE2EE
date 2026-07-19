@@ -26,7 +26,7 @@ import { parseAttachment, parseAttachments } from '../../../Services/Chat/chatSe
 import { CHAT_FORWARDED_MESSAGE_TYPE } from '../../../Services/Chat/chatUtils';
 import { getMentionUsernames } from '../../../Services/Chat/messageMentions';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../../Services/Chat/reactionLimits';
-import { resolveAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
+import { getCachedAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
 import { getMessageDateLabel } from './useMessageLayout';
 import {
   extractMessageTextSegments,
@@ -100,7 +100,12 @@ interface MessageItemProps {
   onRetryFailed?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
   onToggleReaction: (messageId: string, emoji: string) => void;
-  onOpenImageViewer: (urls: string[], index: number) => void;
+  onOpenImageViewer: (
+    attachments: Attachment[],
+    urls: Array<string | null>,
+    conversationId: string,
+    index: number,
+  ) => void;
   onAttachmentLoad?: () => void;
   canLoadAttachments?: boolean;
   onOpenLink?: (url: string) => void;
@@ -469,7 +474,6 @@ const MessageItem = memo(function MessageItem({
   isHighlighted = false,
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
-  const [openingImageViewer, setOpeningImageViewer] = useState(false);
   const [revealedEmbedSpoilers, setRevealedEmbedSpoilers] = useState<{
     messageKey: string;
     spoilerIds: Set<string>;
@@ -620,23 +624,13 @@ const MessageItem = memo(function MessageItem({
     }
   }, []);
 
-  const handleOpenAttachmentViewer = useCallback(async (attachmentUrls: string[], index: number) => {
-    if (isPending || openingImageViewer) return;
+  const handleOpenAttachmentViewer = useCallback((attachmentUrls: string[], index: number) => {
+    if (isPending) return;
 
-    setOpeningImageViewer(true);
-    try {
-      const resolvedUrls = await Promise.all(
-        parseAttachments(attachmentUrls).map((attachment) =>
-          resolveAttachmentObjectUrl(attachment, { conversationId: attachmentConversationId })
-        )
-      );
-      onOpenImageViewer(resolvedUrls, index);
-    } catch (error) {
-      console.error('Failed to open attachment viewer:', error);
-    } finally {
-      setOpeningImageViewer(false);
-    }
-  }, [attachmentConversationId, isPending, onOpenImageViewer, openingImageViewer]);
+    const attachments = parseAttachments(attachmentUrls);
+    const initialUrls = attachments.map(getCachedAttachmentObjectUrl);
+    onOpenImageViewer(attachments, initialUrls, attachmentConversationId, index);
+  }, [attachmentConversationId, isPending, onOpenImageViewer]);
   const showSenderMeta = startsGroup;
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
   const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
@@ -1291,7 +1285,7 @@ const MessageItem = memo(function MessageItem({
                               void handleOpenAttachmentViewer(viewerRawAttachments, index);
                             }}
                             data-message-gesture-target="attachment"
-                            disabled={isPending || openingImageViewer}
+                            disabled={isPending}
                             className={`relative block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none ${
                               imageEntries.length === 1
                                 ? 'max-w-full'

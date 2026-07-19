@@ -6,9 +6,26 @@ import type { Attachment } from './chatTypes';
 const BASE64_CHUNK_SIZE = 0x8000;
 const BLURHASH_MAX_DIMENSION = 32;
 const SIGNED_URL_EXPIRY_SAFETY_MS = 5_000;
+const ATTACHMENT_UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const ATTACHMENT_UUID_PATTERN = new RegExp(`^${ATTACHMENT_UUID_SOURCE}$`, 'i');
+const PROTECTED_ATTACHMENT_ID_PATTERN = new RegExp(
+  `/attachments/(${ATTACHMENT_UUID_SOURCE})(?:/|$)`,
+  'i',
+);
+const OBJECT_ATTACHMENT_ID_PATTERN = new RegExp(
+  `/(${ATTACHMENT_UUID_SOURCE})(?:\\.bin)?$`,
+  'i',
+);
+const attachmentDeliveryRefreshRequests = new Map<string, Promise<AttachmentDeliveryCapability>>();
 
 interface AttachmentResolveOptions {
   conversationId?: string | null;
+}
+
+export interface AttachmentDeliveryCapability {
+  attachmentId: string;
+  url: string;
+  urlExpiresAt: number;
 }
 
 interface PreparedAttachment {
@@ -101,14 +118,104 @@ function getAttachmentFallbackUrl(attachment: Attachment): string | null {
   return fallbackUrl || null;
 }
 
-function isPrimaryAttachmentUrlUsable(attachment: Attachment): boolean {
-  if (
-    typeof attachment.url_expires_at !== 'number' ||
-    !Number.isFinite(attachment.url_expires_at)
-  ) {
-    return true;
+function getAttachmentIdFromUrl(url?: string | null): string | null {
+  if (!url) return null;
+  try {
+    const pathname = new URL(url, window.location.origin).pathname;
+    return pathname.match(PROTECTED_ATTACHMENT_ID_PATTERN)?.[1] ||
+      pathname.match(OBJECT_ATTACHMENT_ID_PATTERN)?.[1] ||
+      null;
+  } catch {
+    return null;
   }
-  return Number(attachment.url_expires_at) > Date.now() + SIGNED_URL_EXPIRY_SAFETY_MS;
+}
+
+function getAttachmentId(attachment: Attachment): string | null {
+  const explicitId = attachment.id?.trim();
+  if (explicitId && ATTACHMENT_UUID_PATTERN.test(explicitId)) {
+    return explicitId;
+  }
+  return getAttachmentIdFromUrl(attachment.fallback_url) ||
+    getAttachmentIdFromUrl(attachment.url);
+}
+
+function isDirectAttachmentDeliveryUrl(url: string): boolean {
+  if (shouldUseAuthenticatedFetch(url)) return false;
+  try {
+    return ['http:', 'https:'].includes(new URL(url, window.location.origin).protocol);
+  } catch {
+    return false;
+  }
+}
+
+export function isAttachmentDeliveryUrlUsable(
+  url: string,
+  expiresAt?: number,
+): boolean {
+  if (!isDirectAttachmentDeliveryUrl(url)) return false;
+  if (expiresAt === undefined) return true;
+  return Number.isFinite(expiresAt) &&
+    expiresAt > Date.now() + SIGNED_URL_EXPIRY_SAFETY_MS;
+}
+
+function isPrimaryAttachmentUrlUsable(attachment: Attachment): boolean {
+  return isAttachmentDeliveryUrlUsable(attachment.url, attachment.url_expires_at);
+}
+
+function isDeliveryCapabilityUsable(url: string, expiresAt: number): boolean {
+  return Number.isFinite(expiresAt) &&
+    isAttachmentDeliveryUrlUsable(url, expiresAt);
+}
+
+export async function refreshAttachmentDeliveryCapability(
+  attachment: Attachment,
+  options?: AttachmentResolveOptions,
+): Promise<AttachmentDeliveryCapability> {
+  const conversationId = options?.conversationId?.trim();
+  const attachmentId = getAttachmentId(attachment);
+  if (!conversationId || !attachmentId) {
+    throw new Error('Attachment delivery identity is unavailable');
+  }
+
+  const requestKey = `${conversationId}:${attachmentId}`;
+  const existingRequest = attachmentDeliveryRefreshRequests.get(requestKey);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = (async () => {
+    const response = await fetchWithAuth(
+      `/api/conversations/${encodeURIComponent(conversationId)}` +
+        `/attachments/${encodeURIComponent(attachmentId)}/delivery-url`,
+      { cache: 'no-store' },
+    );
+    const data = await response.json().catch(() => null) as {
+      success?: boolean;
+      error?: string;
+      url?: string;
+      url_expires_at?: number;
+    } | null;
+    if (!response.ok || !data?.success) {
+      throw new Error(data?.error || `Attachment delivery refresh failed with status ${response.status}`);
+    }
+
+    const url = typeof data.url === 'string' ? data.url : '';
+    const urlExpiresAt = Number(data.url_expires_at);
+    if (!isDeliveryCapabilityUsable(url, urlExpiresAt)) {
+      throw new Error('Attachment delivery refresh returned an invalid capability');
+    }
+
+    return { attachmentId, url, urlExpiresAt };
+  })();
+
+  attachmentDeliveryRefreshRequests.set(requestKey, request);
+  try {
+    return await request;
+  } finally {
+    if (attachmentDeliveryRefreshRequests.get(requestKey) === request) {
+      attachmentDeliveryRefreshRequests.delete(requestKey);
+    }
+  }
 }
 
 async function fetchAttachmentResource(url: string, isExpiringCapability: boolean): Promise<Response> {
@@ -122,13 +229,15 @@ async function fetchAttachmentResource(url: string, isExpiringCapability: boolea
 
 export async function resolveAttachmentBlob(
   attachment: Attachment,
-  _options?: AttachmentResolveOptions,
+  options?: AttachmentResolveOptions,
 ): Promise<Blob> {
-  void _options;
   const fallbackUrl = getAttachmentFallbackUrl(attachment);
-  const primaryUrl = isPrimaryAttachmentUrlUsable(attachment)
-    ? attachment.url
-    : (fallbackUrl || attachment.url);
+  let primaryUrl = fallbackUrl || attachment.url;
+  try {
+    primaryUrl = await resolveAttachmentObjectUrl(attachment, options);
+  } catch {
+    // Explicit byte workflows retain the protected compatibility route.
+  }
 
   try {
     const response = await fetchAttachmentResource(
@@ -156,21 +265,20 @@ export async function resolveAttachmentBlob(
 
 export async function resolveAttachmentObjectUrl(
   attachment: Attachment,
-  _options?: AttachmentResolveOptions,
+  options?: AttachmentResolveOptions,
 ): Promise<string> {
-  void _options;
-  if (shouldUseAuthenticatedFetch(attachment.url)) {
-    throw new Error('Attachment requires a fresh signed delivery URL');
+  if (
+    isDirectAttachmentDeliveryUrl(attachment.url) &&
+    isPrimaryAttachmentUrlUsable(attachment)
+  ) {
+    return attachment.url;
   }
-  if (!isPrimaryAttachmentUrlUsable(attachment)) {
-    throw new Error('Attachment signed delivery URL has expired');
-  }
-  return attachment.url;
+  return (await refreshAttachmentDeliveryCapability(attachment, options)).url;
 }
 
 export function getCachedAttachmentObjectUrl(attachment: Attachment): string | null {
   if (
-    shouldUseAuthenticatedFetch(attachment.url) ||
+    !isDirectAttachmentDeliveryUrl(attachment.url) ||
     !isPrimaryAttachmentUrlUsable(attachment)
   ) {
     return null;

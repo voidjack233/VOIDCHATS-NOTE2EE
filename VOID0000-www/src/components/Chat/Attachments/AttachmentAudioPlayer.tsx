@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Download, FileAudio, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
   getCachedAttachmentObjectUrl,
-  resolveAttachmentObjectUrl,
+  isAttachmentDeliveryUrlUsable,
+  refreshAttachmentDeliveryCapability,
 } from '../../../Services/Chat/attachmentService';
 
 interface AttachmentAudioPlayerProps {
@@ -94,37 +95,55 @@ export default function AttachmentAudioPlayer({
   canLoad = true,
   onLoad,
 }: AttachmentAudioPlayerProps) {
-  const [src, setSrc] = useState<string | null>(
-    canLoad && !disabled ? getCachedAttachmentObjectUrl(attachment) : null,
+  const initialSrc = canLoad && !disabled ? getCachedAttachmentObjectUrl(attachment) : null;
+  const [src, setSrc] = useState<string | null>(initialSrc);
+  const [srcExpiresAt, setSrcExpiresAt] = useState<number | undefined>(
+    initialSrc ? attachment.url_expires_at : undefined,
   );
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const refreshAttemptedRef = useRef(false);
+  const requestRevisionRef = useRef(0);
   const displayName = useMemo(() => getAttachmentDisplayName(attachment), [attachment]);
 
   useEffect(() => {
     let cancelled = false;
+    const requestRevision = ++requestRevisionRef.current;
 
     setFailed(false);
+    refreshAttemptedRef.current = false;
 
     if (disabled || !canLoad) {
       setSrc(null);
+      setSrcExpiresAt(undefined);
       setLoading(false);
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+        if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
+      };
     }
 
     const cachedUrl = getCachedAttachmentObjectUrl(attachment);
     if (cachedUrl) {
       setSrc(cachedUrl);
+      setSrcExpiresAt(attachment.url_expires_at);
       setLoading(false);
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+        if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
+      };
     }
 
     setLoading(true);
     setSrc(null);
-    resolveAttachmentObjectUrl(attachment, { conversationId })
-      .then((nextUrl) => {
+    setSrcExpiresAt(undefined);
+    refreshAttemptedRef.current = true;
+    refreshAttachmentDeliveryCapability(attachment, { conversationId })
+      .then((delivery) => {
         if (!cancelled) {
-          setSrc(nextUrl);
+          setSrc(delivery.url);
+          setSrcExpiresAt(delivery.urlExpiresAt);
         }
       })
       .catch((error) => {
@@ -141,31 +160,63 @@ export default function AttachmentAudioPlayer({
 
     return () => {
       cancelled = true;
+      if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
     };
-  }, [
-    attachment.mime,
-    attachment.name,
-    attachment.url,
-    attachment.url_expires_at,
-    canLoad,
-    conversationId,
-    disabled,
-  ]);
+  }, [attachment, canLoad, conversationId, disabled]);
 
   const handleMediaError = () => {
-    setFailed(true);
-    setLoading(false);
+    if (refreshAttemptedRef.current) {
+      setFailed(true);
+      setLoading(false);
+      setSrc(null);
+      setSrcExpiresAt(undefined);
+      return;
+    }
+
+    refreshAttemptedRef.current = true;
+    const requestRevision = ++requestRevisionRef.current;
+    setFailed(false);
+    setLoading(true);
     setSrc(null);
+    void refreshAttachmentDeliveryCapability(attachment, { conversationId })
+      .then((delivery) => {
+        if (requestRevisionRef.current === requestRevision) {
+          setSrc(delivery.url);
+          setSrcExpiresAt(delivery.urlExpiresAt);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to refresh audio attachment delivery:', error);
+        if (requestRevisionRef.current === requestRevision) {
+          setFailed(true);
+          setLoading(false);
+        }
+      });
   };
 
-  const handleDownload = () => {
-    if (!src || disabled || loading) return;
+  const handleDownload = async () => {
+    if (!src || disabled || loading || downloading) return;
 
-    const anchor = document.createElement('a');
-    anchor.href = src;
-    anchor.download = displayName;
-    anchor.rel = 'noopener noreferrer';
-    anchor.click();
+    setDownloading(true);
+    try {
+      let downloadUrl = src;
+      if (!isAttachmentDeliveryUrlUsable(src, srcExpiresAt)) {
+        const delivery = await refreshAttachmentDeliveryCapability(attachment, { conversationId });
+        downloadUrl = delivery.url;
+        setSrc(delivery.url);
+        setSrcExpiresAt(delivery.urlExpiresAt);
+      }
+
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = displayName;
+      anchor.rel = 'noopener noreferrer';
+      anchor.click();
+    } catch (error) {
+      console.error('Failed to refresh audio attachment download:', error);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   return (
@@ -194,13 +245,15 @@ export default function AttachmentAudioPlayer({
 
         <button
           type="button"
-          onClick={handleDownload}
-          disabled={!src || disabled || loading}
+          onClick={() => { void handleDownload(); }}
+          disabled={!src || disabled || loading || downloading}
           className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-main/60 hover:text-void-text disabled:cursor-not-allowed disabled:opacity-40"
           title="Download audio"
           aria-label="Download audio"
         >
-          <Download className="h-4 w-4" />
+          {downloading
+            ? <Loader2 className="h-4 w-4 animate-spin" />
+            : <Download className="h-4 w-4" />}
         </button>
       </div>
 
