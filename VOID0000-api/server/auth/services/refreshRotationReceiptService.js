@@ -10,12 +10,18 @@ import { getRefreshSecret } from '../config/authSecrets.js';
 export const REFRESH_PREDECESSOR_GRACE_SECONDS = 5;
 
 const RECEIPT_VERSION = 1;
-const RECEIPT_KEY_PREFIX = 'auth:refresh-rotation-receipt:';
+const RECEIPT_KEY_PREFIX = 'auth:refresh-rotation-receipt:v2:';
+const LEGACY_RECEIPT_KEY_PREFIX = 'auth:refresh-rotation-receipt:';
 const RECEIPT_OPERATION_TIMEOUT_MS = 250;
 const RECEIPT_ENCRYPTION_CONTEXT = 'void-auth-refresh-rotation-receipt:v1';
 
-function getReceiptKey(consumedTokenHash) {
-  return `${RECEIPT_KEY_PREFIX}${consumedTokenHash}`;
+function getReceiptKey(consumedTokenHash, replacementTokenHash) {
+  // The replacement hash isolates orphaned pre-commit receipts from later retries.
+  return `${RECEIPT_KEY_PREFIX}${consumedTokenHash}:${replacementTokenHash}`;
+}
+
+function getLegacyReceiptKey(consumedTokenHash) {
+  return `${LEGACY_RECEIPT_KEY_PREFIX}${consumedTokenHash}`;
 }
 
 function getReceiptEncryptionKey() {
@@ -135,11 +141,13 @@ export async function storeRefreshRotationReceipt({
 
     const result = await settleWithin(
       valkey.set(
-        getReceiptKey(metadata.consumedTokenHash),
+        getReceiptKey(
+          metadata.consumedTokenHash,
+          metadata.replacementTokenHash,
+        ),
         JSON.stringify(receipt),
         'PXAT',
         expiresAt,
-        'NX',
       ),
       null,
     );
@@ -155,10 +163,15 @@ export async function getRefreshRotationReceipt({
   consumedJti,
   userId,
   deviceId,
+  replacementTokenHash,
 }) {
   try {
+    const expectedReplacementTokenHash = String(replacementTokenHash);
     const rawReceipt = await settleWithin(
-      valkey.get(getReceiptKey(consumedTokenHash)),
+      valkey.get(getReceiptKey(
+        consumedTokenHash,
+        expectedReplacementTokenHash,
+      )),
       null,
     );
     if (!rawReceipt) return null;
@@ -175,7 +188,7 @@ export async function getRefreshRotationReceipt({
       receipt.consumedJti !== expectedConsumedJti ||
       !Number.isFinite(receipt.expiresAt) ||
       receipt.expiresAt <= Date.now() ||
-      typeof receipt.replacementTokenHash !== 'string' ||
+      receipt.replacementTokenHash !== expectedReplacementTokenHash ||
       typeof receipt.replacementJti !== 'string' ||
       typeof receipt.iv !== 'string' ||
       typeof receipt.ciphertext !== 'string' ||
@@ -204,12 +217,18 @@ export async function getRefreshRotationReceipt({
   }
 }
 
-export async function deleteRefreshRotationReceipt(consumedTokenHash) {
-  if (!consumedTokenHash) return false;
+export async function deleteRefreshRotationReceipt({
+  consumedTokenHash,
+  replacementTokenHash,
+}) {
+  if (!consumedTokenHash || !replacementTokenHash) return false;
 
   try {
     const deleted = await settleWithin(
-      valkey.del(getReceiptKey(consumedTokenHash)),
+      valkey.del(
+        getReceiptKey(consumedTokenHash, replacementTokenHash),
+        getLegacyReceiptKey(consumedTokenHash),
+      ),
       0,
     );
     return deleted > 0;

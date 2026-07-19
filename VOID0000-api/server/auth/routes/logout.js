@@ -28,7 +28,7 @@ router.post('/', async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
   let userId = null;
   let deviceId = null;
-  const receiptHashesToDelete = new Set();
+  const receiptPairsToDelete = [];
 
   try {
     if (refreshToken) {
@@ -60,9 +60,11 @@ router.post('/', async (req, res) => {
           );
 
           for (const row of revoked.rows) {
-            if (row.revoked_token_hash) receiptHashesToDelete.add(row.revoked_token_hash);
-            if (row.revoked_previous_token_hash) {
-              receiptHashesToDelete.add(row.revoked_previous_token_hash);
+            if (row.revoked_previous_token_hash && row.revoked_token_hash) {
+              receiptPairsToDelete.push({
+                consumedTokenHash: row.revoked_previous_token_hash,
+                replacementTokenHash: row.revoked_token_hash,
+              });
             }
           }
         }
@@ -94,19 +96,20 @@ router.post('/', async (req, res) => {
         if (revoked.rows.length > 0) {
           userId = revoked.rows[0].user_id;
           deviceId = revoked.rows[0].device_id;
-          receiptHashesToDelete.add(tokenHash);
           for (const row of revoked.rows) {
-            if (row.revoked_token_hash) receiptHashesToDelete.add(row.revoked_token_hash);
-            if (row.revoked_previous_token_hash) {
-              receiptHashesToDelete.add(row.revoked_previous_token_hash);
+            if (row.revoked_previous_token_hash && row.revoked_token_hash) {
+              receiptPairsToDelete.push({
+                consumedTokenHash: row.revoked_previous_token_hash,
+                replacementTokenHash: row.revoked_token_hash,
+              });
             }
           }
         }
       }
 
       await Promise.all(
-        [...receiptHashesToDelete].map((tokenHash) =>
-          deleteRefreshRotationReceipt(tokenHash)
+        receiptPairsToDelete.map((receiptPair) =>
+          deleteRefreshRotationReceipt(receiptPair)
         ),
       );
 

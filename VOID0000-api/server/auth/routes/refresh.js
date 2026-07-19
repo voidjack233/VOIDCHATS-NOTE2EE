@@ -168,6 +168,7 @@ router.post('/', async (req, res) => {
         consumedJti: decoded.jti,
         userId: decoded.id,
         deviceId: decoded.device_id,
+        replacementTokenHash: tokenRecord.token_hash,
       });
       const replacementRefreshToken = getReplacementRefreshToken({
         receipt,
