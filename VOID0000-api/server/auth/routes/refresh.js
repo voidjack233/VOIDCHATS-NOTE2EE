@@ -175,6 +175,25 @@ router.post('/', async (req, res) => {
         tokenRecord,
         decoded,
       });
+
+      if (!replacementRefreshToken) {
+        await client.query('ROLLBACK');
+        transactionOpen = false;
+
+        debugLog('[AUTH_REFRESH] exact predecessor recovery deferred', {
+          user_id: decoded.id,
+          device_id: decoded.device_id,
+          code: 'REFRESH_RACE_RECOVERY_UNAVAILABLE',
+        });
+
+        return res.status(503).json({
+          success: false,
+          code: 'REFRESH_RACE_RECOVERY_UNAVAILABLE',
+          message: 'Refresh recovery is temporarily unavailable. Please retry.',
+          retryAfterMs: 250,
+        });
+      }
+
       const accessToken = signAccessToken({
         id: decoded.id,
         profile_id: decoded.profile_id,
@@ -186,9 +205,7 @@ router.post('/', async (req, res) => {
       transactionOpen = false;
 
       res.cookie('accessToken', accessToken, accessCookieOptions(req));
-      if (replacementRefreshToken) {
-        res.cookie('refreshToken', replacementRefreshToken, refreshCookieOptions(req));
-      }
+      res.cookie('refreshToken', replacementRefreshToken, refreshCookieOptions(req));
       res.json({
         success: true,
         message: 'Token refreshed (race recovery)',
@@ -197,7 +214,7 @@ router.post('/', async (req, res) => {
       debugLog('[AUTH_REFRESH] exact predecessor race recovered', {
         user_id: decoded.id,
         device_id: decoded.device_id,
-        replacement_replayed: Boolean(replacementRefreshToken),
+        replacement_replayed: true,
       });
       syncRefreshGatewayBestEffort({
         userId: decoded.id,
