@@ -1,12 +1,8 @@
 import {
   Suspense,
   lazy,
-  useCallback,
   useEffect,
-  useRef,
   useState,
-  type Dispatch,
-  type SetStateAction,
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -16,7 +12,6 @@ import {
   Download,
   Forward,
   ImageOff,
-  Loader2,
   Plus,
   Pencil,
   RefreshCcw,
@@ -29,7 +24,6 @@ import type { Message } from '../../../Services/Chat/chatService';
 import {
   isAttachmentDeliveryUrlUsable,
 } from '../../../Services/Chat/attachmentService';
-import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../../Services/Chat/reactionLimits';
 import type { Friend } from '../../../Services/hooks/Friends/useFriends';
 import FriendProfile from '../../common/Friends/FriendProfile';
@@ -118,19 +112,6 @@ interface ImageViewerOverlayProps {
   onSelectIndex: (index: number) => void;
 }
 
-function setIndexMembership(
-  setter: Dispatch<SetStateAction<Set<number>>>,
-  index: number,
-  enabled: boolean,
-) {
-  setter((current) => {
-    const next = new Set(current);
-    if (enabled) next.add(index);
-    else next.delete(index);
-    return next;
-  });
-}
-
 function ImageViewerOverlay({
   imageViewer,
   onClose,
@@ -138,127 +119,43 @@ function ImageViewerOverlay({
   onNext,
   onSelectIndex,
 }: ImageViewerOverlayProps) {
-  const [urls, setUrls] = useState(() => imageViewer.urls);
-  const [urlExpiries, setUrlExpiries] = useState<Array<number | undefined>>(() => (
-    imageViewer.attachments.map((attachment, index) => (
-      imageViewer.urls[index] ? attachment.url_expires_at : undefined
-    ))
-  ));
-  const [refreshingIndices, setRefreshingIndices] = useState<Set<number>>(() => new Set());
   const [failedIndices, setFailedIndices] = useState<Set<number>>(() => new Set());
-  const [downloading, setDownloading] = useState(false);
-  const refreshAttemptedRef = useRef<Set<number>>(new Set());
-  const mountedRef = useRef(true);
+  const urls = imageViewer.urls;
   const currentIndex = imageViewer.index;
+  const currentAttachment = imageViewer.attachments[currentIndex];
   const currentUrl = urls[currentIndex];
-  const currentUrlExpiry = urlExpiries[currentIndex];
   const currentUrlUsable = Boolean(
-    currentUrl && isAttachmentDeliveryUrlUsable(currentUrl, currentUrlExpiry),
+    currentUrl && isAttachmentDeliveryUrlUsable(
+      currentUrl,
+      currentAttachment?.url_expires_at,
+    ),
   );
-  const currentRefreshing = refreshingIndices.has(currentIndex);
   const currentFailed = failedIndices.has(currentIndex);
+  const compatibilityDownloadUrl = currentAttachment?.fallback_url?.trim() ||
+    (currentAttachment?.url_expires_at === undefined
+      ? currentAttachment?.url.trim()
+      : null);
+  const downloadUrl = currentUrlUsable && !currentFailed
+    ? currentUrl
+    : compatibilityDownloadUrl;
 
-  useEffect(() => () => {
-    mountedRef.current = false;
-  }, []);
-
-  const refreshDelivery = useCallback((index: number) => {
-    if (refreshAttemptedRef.current.has(index)) {
-      setUrls((current) => current.map((url, itemIndex) => (
-        itemIndex === index ? null : url
-      )));
-      setIndexMembership(setFailedIndices, index, true);
-      return;
-    }
-
-    const attachment = imageViewer.attachments[index];
-    if (!attachment) {
-      setIndexMembership(setFailedIndices, index, true);
-      return;
-    }
-
-    refreshAttemptedRef.current.add(index);
-    setIndexMembership(setRefreshingIndices, index, true);
-    setIndexMembership(setFailedIndices, index, false);
-    setUrls((current) => current.map((url, itemIndex) => (
-      itemIndex === index ? null : url
-    )));
-    void refreshAttachmentFromMessage(attachment, {
-      conversationId: imageViewer.conversationId,
-      messageId: imageViewer.messageId,
-    })
-      .then((delivery) => {
-        if (!mountedRef.current) return;
-        setUrls((current) => current.map((url, itemIndex) => (
-          itemIndex === index ? delivery.url : url
-        )));
-        setUrlExpiries((current) => current.map((expiry, itemIndex) => (
-          itemIndex === index ? delivery.urlExpiresAt : expiry
-        )));
-        setIndexMembership(setRefreshingIndices, index, false);
-      })
-      .catch((error) => {
-        console.error('Failed to refresh image viewer attachment delivery:', error);
-        if (!mountedRef.current) return;
-        setIndexMembership(setRefreshingIndices, index, false);
-        setIndexMembership(setFailedIndices, index, true);
-      });
-  }, [imageViewer.attachments, imageViewer.conversationId, imageViewer.messageId]);
-
-  useEffect(() => {
-    if (currentUrlUsable || currentRefreshing || currentFailed) return;
-
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) refreshDelivery(currentIndex);
+  const handleMediaError = () => {
+    setFailedIndices((current) => {
+      if (current.has(currentIndex)) return current;
+      const next = new Set(current);
+      next.add(currentIndex);
+      return next;
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    currentFailed,
-    currentIndex,
-    currentRefreshing,
-    currentUrlUsable,
-    refreshDelivery,
-  ]);
+  };
 
-  const handleDownload = async () => {
-    if (downloading) return;
+  const handleDownload = () => {
+    if (!currentAttachment || !downloadUrl) return;
 
-    const attachment = imageViewer.attachments[currentIndex];
-    if (!attachment) return;
-
-    setDownloading(true);
-    try {
-      let downloadUrl = currentUrlUsable ? currentUrl : null;
-      if (!downloadUrl) {
-        const delivery = await refreshAttachmentFromMessage(attachment, {
-          conversationId: imageViewer.conversationId,
-          messageId: imageViewer.messageId,
-        });
-        downloadUrl = delivery.url;
-        if (mountedRef.current) {
-          setUrls((current) => current.map((url, itemIndex) => (
-            itemIndex === currentIndex ? delivery.url : url
-          )));
-          setUrlExpiries((current) => current.map((expiry, itemIndex) => (
-            itemIndex === currentIndex ? delivery.urlExpiresAt : expiry
-          )));
-        }
-      }
-
-      if (!mountedRef.current) return;
-      const anchor = document.createElement('a');
-      anchor.href = downloadUrl;
-      anchor.download = attachment.name || 'attachment';
-      anchor.rel = 'noopener noreferrer';
-      anchor.click();
-    } catch (error) {
-      console.error('Failed to refresh image attachment download:', error);
-    } finally {
-      if (mountedRef.current) setDownloading(false);
-    }
+    const anchor = document.createElement('a');
+    anchor.href = downloadUrl;
+    anchor.download = currentAttachment.name || 'attachment';
+    anchor.rel = 'noopener noreferrer';
+    anchor.click();
   };
 
   return (
@@ -270,17 +167,14 @@ function ImageViewerOverlay({
         className="absolute top-4 right-4 flex items-center gap-2 z-10"
         onClick={(event) => event.stopPropagation()}
       >
-        {!currentFailed ? (
+        {downloadUrl ? (
           <button
             type="button"
-            onClick={() => { void handleDownload(); }}
-            disabled={downloading}
+            onClick={handleDownload}
             className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
             title="Download"
           >
-            {downloading
-              ? <Loader2 className="h-5 w-5 animate-spin" />
-              : <Download className="w-5 h-5" />}
+            <Download className="w-5 h-5" />
           </button>
         ) : null}
         <button
@@ -304,9 +198,7 @@ function ImageViewerOverlay({
         </button>
       )}
 
-      {currentRefreshing || (!currentUrlUsable && !currentFailed) ? (
-        <Loader2 className="h-8 w-8 animate-spin text-white/80" />
-      ) : currentFailed || !currentUrlUsable || !currentUrl ? (
+      {currentFailed || !currentUrlUsable || !currentUrl ? (
         <div className="flex flex-col items-center gap-2 text-white/70">
           <ImageOff className="h-8 w-8" />
           <span className="text-sm">Attachment unavailable</span>
@@ -317,7 +209,7 @@ function ImageViewerOverlay({
           alt="attachment"
           className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
           onClick={(event) => event.stopPropagation()}
-          onError={() => refreshDelivery(currentIndex)}
+          onError={handleMediaError}
         />
       )}
 

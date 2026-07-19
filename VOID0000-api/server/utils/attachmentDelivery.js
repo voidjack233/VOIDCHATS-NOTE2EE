@@ -6,9 +6,9 @@ const PROTECTED_ATTACHMENT_PATH_PATTERN = new RegExp(
   `^/api/conversations/[^/]+/attachments/(${UUID_SOURCE})/?$`,
   'i',
 );
-const DEFAULT_SIGNED_URL_TTL_SECONDS = 300;
+const DEFAULT_SIGNED_URL_TTL_SECONDS = 60 * 60;
 const MIN_SIGNED_URL_TTL_SECONDS = 30;
-const MAX_SIGNED_URL_TTL_SECONDS = 900;
+const MAX_SIGNED_URL_TTL_SECONDS = 60 * 60;
 const TRANSIENT_ATTACHMENT_FIELDS = new Set([
   'fallback_url',
   'url_expires_at',

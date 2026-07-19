@@ -103,8 +103,6 @@ interface MessageItemProps {
   onOpenImageViewer: (
     attachments: Attachment[],
     urls: Array<string | null>,
-    conversationId: string,
-    messageId: string,
     index: number,
   ) => void;
   onAttachmentLoad?: () => void;
@@ -231,11 +229,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   const firstAttachment = replyAttachments[0] ?? null;
   const firstAttachmentIsImage = Boolean(firstAttachment && looksLikeImageAttachment(firstAttachment));
   const firstAttachmentIsSpoiler = firstAttachment?.spoiler === true;
-  const replyAttachmentConversationId =
-    replyParent?.conversation_public_id ||
-    replyParent?.conversation_id ||
-    message.conversation_public_id ||
-    message.conversation_id;
   const additionalAttachmentCount = Math.max(0, replyAttachments.length - 1);
   const replyAuthorName = isOwn ? 'You' : getSenderName(message.sender_id);
   const targetName = replyParent?.sender_id
@@ -340,8 +333,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
               ) : firstAttachment ? (
                 <AttachmentImage
                   attachment={firstAttachment}
-                  conversationId={replyAttachmentConversationId}
-                  messageId={replyParent?.message_id || message.reply_to}
                   alt=""
                   className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
                   canLoad={canLoadAttachments}
@@ -397,8 +388,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
                 ) : (
                   <AttachmentImage
                     attachment={firstAttachment}
-                    conversationId={replyAttachmentConversationId}
-                    messageId={replyParent?.message_id || message.reply_to}
                     alt=""
                     className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
                     canLoad={canLoadAttachments}
@@ -529,7 +518,6 @@ const MessageItem = memo(function MessageItem({
   const isPending = isSending || isQueued;
   const pendingStatusLabel = isQueued ? 'queued' : 'sending...';
   const failedStatusLabel = 'failed to send';
-  const attachmentConversationId = message.conversation_public_id || message.conversation_id;
   const isRightAligned = isOwn && density === 'comfortable';
   const canSwipeReply = Boolean(onReply && !isFailed);
   const canSwipeEdit = Boolean(isOwn && onEdit && !isFailed);
@@ -632,14 +620,8 @@ const MessageItem = memo(function MessageItem({
 
     const attachments = parseAttachments(attachmentUrls);
     const initialUrls = attachments.map(getCachedAttachmentObjectUrl);
-    onOpenImageViewer(
-      attachments,
-      initialUrls,
-      attachmentConversationId,
-      message.message_id,
-      index,
-    );
-  }, [attachmentConversationId, isPending, message.message_id, onOpenImageViewer]);
+    onOpenImageViewer(attachments, initialUrls, index);
+  }, [isPending, onOpenImageViewer]);
   const showSenderMeta = startsGroup;
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
   const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
@@ -1304,8 +1286,6 @@ const MessageItem = memo(function MessageItem({
                           >
                             <AttachmentImage
                               attachment={attachment}
-                              conversationId={attachmentConversationId}
-                              messageId={message.message_id}
                               alt="attachment"
                               className="w-full h-full object-cover hover:opacity-90"
                               onLoad={onAttachmentLoad}
@@ -1339,8 +1319,6 @@ const MessageItem = memo(function MessageItem({
                   <AttachmentAudioPlayer
                     key={`${originalIndex}-${attachment.url}`}
                     attachment={attachment}
-                    conversationId={attachmentConversationId}
-                    messageId={message.message_id}
                     disabled={isPending}
                     canLoad={canLoadAttachments}
                     onLoad={onAttachmentLoad}
@@ -1356,8 +1334,6 @@ const MessageItem = memo(function MessageItem({
                   <AttachmentFileCard
                     key={`${originalIndex}-${attachment.url}`}
                     attachment={attachment}
-                    conversationId={attachmentConversationId}
-                    messageId={message.message_id}
                     disabled={isPending}
                   />
                 ))}

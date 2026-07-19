@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
   Download,
   File,
@@ -6,16 +6,12 @@ import {
   FileAudio,
   FileText,
   FileVideo,
-  Loader2,
 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import { getCachedAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
-import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
 
 interface AttachmentFileCardProps {
   attachment: Attachment;
-  conversationId?: string | null;
-  messageId?: string | null;
   disabled?: boolean;
 }
 
@@ -77,58 +73,33 @@ function getAttachmentIcon(mime: string | undefined) {
 
 export default function AttachmentFileCard({
   attachment,
-  conversationId,
-  messageId,
   disabled = false,
 }: AttachmentFileCardProps) {
-  const [downloading, setDownloading] = useState(false);
   const displayName = useMemo(() => getAttachmentDisplayName(attachment), [attachment]);
   const Icon = getAttachmentIcon(attachment.mime);
+  const downloadUrl = getCachedAttachmentObjectUrl(attachment) ||
+    attachment.fallback_url?.trim() ||
+    (attachment.url_expires_at === undefined ? attachment.url.trim() : null);
 
-  const handleDownload = async () => {
-    if (disabled || downloading) return;
+  const handleDownload = () => {
+    if (disabled || !downloadUrl) return;
 
-    setDownloading(true);
-    try {
-      let url = getCachedAttachmentObjectUrl(attachment);
-      if (!url) {
-        try {
-          url = (await refreshAttachmentFromMessage(attachment, {
-            conversationId,
-            messageId,
-          })).url;
-        } catch (error) {
-          const protectedFallback = attachment.fallback_url?.trim() || attachment.url.trim();
-          if (!protectedFallback) throw error;
-          url = protectedFallback;
-        }
-      }
-
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = displayName;
-      anchor.rel = 'noopener noreferrer';
-      anchor.click();
-    } catch (error) {
-      console.error('Failed to open attachment file:', error);
-    } finally {
-      setDownloading(false);
-    }
+    const anchor = document.createElement('a');
+    anchor.href = downloadUrl;
+    anchor.download = displayName;
+    anchor.rel = 'noopener noreferrer';
+    anchor.click();
   };
 
   return (
     <button
       type="button"
-      onClick={() => { void handleDownload(); }}
-      disabled={disabled || downloading}
+      onClick={handleDownload}
+      disabled={disabled || !downloadUrl}
       className="flex w-full items-center gap-3 rounded-xl border border-void-bg-hover bg-void-bg-hover/75 px-3 py-3 text-left transition-colors hover:bg-void-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
     >
       <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-void-bg-main/80">
-        {downloading ? (
-          <Loader2 className="h-5 w-5 animate-spin text-void-accent" />
-        ) : (
-          <Icon className="h-5 w-5 text-void-accent" />
-        )}
+        <Icon className="h-5 w-5 text-void-accent" />
       </div>
 
       <div className="min-w-0 flex-1">

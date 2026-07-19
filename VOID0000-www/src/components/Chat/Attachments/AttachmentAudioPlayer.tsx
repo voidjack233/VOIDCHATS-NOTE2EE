@@ -1,16 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertCircle, Download, FileAudio, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
-import {
-  getCachedAttachmentObjectUrl,
-  isAttachmentDeliveryUrlUsable,
-} from '../../../Services/Chat/attachmentService';
-import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
+import { getCachedAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
 
 interface AttachmentAudioPlayerProps {
   attachment: Attachment;
-  conversationId?: string | null;
-  messageId?: string | null;
   disabled?: boolean;
   canLoad?: boolean;
   onLoad?: () => void;
@@ -91,137 +85,30 @@ export function isAudioAttachment(attachment: Attachment): boolean {
 
 export default function AttachmentAudioPlayer({
   attachment,
-  conversationId,
-  messageId,
   disabled = false,
   canLoad = true,
   onLoad,
 }: AttachmentAudioPlayerProps) {
-  const initialSrc = canLoad && !disabled ? getCachedAttachmentObjectUrl(attachment) : null;
-  const [src, setSrc] = useState<string | null>(initialSrc);
-  const [srcExpiresAt, setSrcExpiresAt] = useState<number | undefined>(
-    initialSrc ? attachment.url_expires_at : undefined,
-  );
-  const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const refreshAttemptedRef = useRef(false);
-  const requestRevisionRef = useRef(0);
+  const availableSrc = canLoad && !disabled ? getCachedAttachmentObjectUrl(attachment) : null;
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const failed = canLoad && !disabled && (!availableSrc || failedSrc === availableSrc);
+  const src = failed ? null : availableSrc;
+  const loading = Boolean(src && loadedSrc !== src);
   const displayName = useMemo(() => getAttachmentDisplayName(attachment), [attachment]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const requestRevision = ++requestRevisionRef.current;
-
-    setFailed(false);
-    refreshAttemptedRef.current = false;
-
-    if (disabled || !canLoad) {
-      setSrc(null);
-      setSrcExpiresAt(undefined);
-      setLoading(false);
-      return () => {
-        cancelled = true;
-        if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
-      };
-    }
-
-    const cachedUrl = getCachedAttachmentObjectUrl(attachment);
-    if (cachedUrl) {
-      setSrc(cachedUrl);
-      setSrcExpiresAt(attachment.url_expires_at);
-      setLoading(false);
-      return () => {
-        cancelled = true;
-        if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
-      };
-    }
-
-    setLoading(true);
-    setSrc(null);
-    setSrcExpiresAt(undefined);
-    refreshAttemptedRef.current = true;
-    refreshAttachmentFromMessage(attachment, { conversationId, messageId })
-      .then((delivery) => {
-        if (!cancelled) {
-          setSrc(delivery.url);
-          setSrcExpiresAt(delivery.urlExpiresAt);
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to load audio attachment:', error);
-        if (!cancelled) {
-          setFailed(true);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
-    };
-  }, [attachment, canLoad, conversationId, disabled, messageId]);
-
   const handleMediaError = () => {
-    if (refreshAttemptedRef.current) {
-      setFailed(true);
-      setLoading(false);
-      setSrc(null);
-      setSrcExpiresAt(undefined);
-      return;
-    }
-
-    refreshAttemptedRef.current = true;
-    const requestRevision = ++requestRevisionRef.current;
-    setFailed(false);
-    setLoading(true);
-    setSrc(null);
-    void refreshAttachmentFromMessage(attachment, { conversationId, messageId })
-      .then((delivery) => {
-        if (requestRevisionRef.current === requestRevision) {
-          setSrc(delivery.url);
-          setSrcExpiresAt(delivery.urlExpiresAt);
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to refresh audio attachment delivery:', error);
-        if (requestRevisionRef.current === requestRevision) {
-          setFailed(true);
-          setLoading(false);
-        }
-      });
+    if (src) setFailedSrc(src);
   };
 
-  const handleDownload = async () => {
-    if (!src || disabled || loading || downloading) return;
+  const handleDownload = () => {
+    if (!src || disabled || loading) return;
 
-    setDownloading(true);
-    try {
-      let downloadUrl = src;
-      if (!isAttachmentDeliveryUrlUsable(src, srcExpiresAt)) {
-        const delivery = await refreshAttachmentFromMessage(attachment, {
-          conversationId,
-          messageId,
-        });
-        downloadUrl = delivery.url;
-        setSrc(delivery.url);
-        setSrcExpiresAt(delivery.urlExpiresAt);
-      }
-
-      const anchor = document.createElement('a');
-      anchor.href = downloadUrl;
-      anchor.download = displayName;
-      anchor.rel = 'noopener noreferrer';
-      anchor.click();
-    } catch (error) {
-      console.error('Failed to refresh audio attachment download:', error);
-    } finally {
-      setDownloading(false);
-    }
+    const anchor = document.createElement('a');
+    anchor.href = src;
+    anchor.download = displayName;
+    anchor.rel = 'noopener noreferrer';
+    anchor.click();
   };
 
   return (
@@ -250,15 +137,13 @@ export default function AttachmentAudioPlayer({
 
         <button
           type="button"
-          onClick={() => { void handleDownload(); }}
-          disabled={!src || disabled || loading || downloading}
+          onClick={handleDownload}
+          disabled={!src || disabled || loading}
           className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-main/60 hover:text-void-text disabled:cursor-not-allowed disabled:opacity-40"
           title="Download audio"
           aria-label="Download audio"
         >
-          {downloading
-            ? <Loader2 className="h-4 w-4 animate-spin" />
-            : <Download className="h-4 w-4" />}
+          <Download className="h-4 w-4" />
         </button>
       </div>
 
@@ -268,7 +153,7 @@ export default function AttachmentAudioPlayer({
           preload="metadata"
           src={src}
           onLoadedMetadata={() => {
-            setLoading(false);
+            setLoadedSrc(src);
             onLoad?.();
           }}
           onError={handleMediaError}

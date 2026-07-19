@@ -1,16 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { ImageOff, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
   getCachedAttachmentObjectUrl,
 } from '../../../Services/Chat/attachmentService';
-import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
 import BlurImage, { BlurhashPlaceholder } from '../../common/BlurImage';
 
 interface AttachmentImageProps {
   attachment: Attachment;
-  conversationId?: string | null;
-  messageId?: string | null;
   alt?: string;
   className?: string;
   onLoad?: () => void;
@@ -19,64 +16,15 @@ interface AttachmentImageProps {
 
 export default function AttachmentImage({
   attachment,
-  conversationId,
-  messageId,
   alt = '',
   className = '',
   onLoad,
   canLoad = true,
 }: AttachmentImageProps) {
-  const [src, setSrc] = useState<string | null>(
-    canLoad ? getCachedAttachmentObjectUrl(attachment) : null,
-  );
-  const [failed, setFailed] = useState(false);
-  const refreshAttemptedRef = useRef(false);
-  const requestRevisionRef = useRef(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    const requestRevision = ++requestRevisionRef.current;
-    setFailed(false);
-    refreshAttemptedRef.current = false;
-
-    if (!canLoad) {
-      setSrc(null);
-      return () => {
-        cancelled = true;
-        if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
-      };
-    }
-
-    const cachedUrl = getCachedAttachmentObjectUrl(attachment);
-    if (cachedUrl) {
-      setSrc(cachedUrl);
-      return () => {
-        cancelled = true;
-        if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
-      };
-    }
-
-    setSrc(null);
-    refreshAttemptedRef.current = true;
-
-    refreshAttachmentFromMessage(attachment, { conversationId, messageId })
-      .then((delivery) => {
-        if (!cancelled) {
-          setSrc(delivery.url);
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to load attachment image:', error);
-        if (!cancelled) {
-          setFailed(true);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
-    };
-  }, [attachment, conversationId, messageId, canLoad]);
+  const availableSrc = canLoad ? getCachedAttachmentObjectUrl(attachment) : null;
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const failed = canLoad && (!availableSrc || failedSrc === availableSrc);
+  const src = failed ? null : availableSrc;
 
   if (src) {
     return (
@@ -89,29 +37,7 @@ export default function AttachmentImage({
           onLoad?.();
         }}
         onError={() => {
-          if (refreshAttemptedRef.current) {
-            setFailed(true);
-            setSrc(null);
-            return;
-          }
-
-          refreshAttemptedRef.current = true;
-          const requestRevision = ++requestRevisionRef.current;
-          setFailed(false);
-          setSrc(null);
-          void refreshAttachmentFromMessage(attachment, { conversationId, messageId })
-            .then((delivery) => {
-              if (requestRevisionRef.current === requestRevision) {
-                setFailed(false);
-                setSrc(delivery.url);
-              }
-            })
-            .catch((error) => {
-              console.error('Failed to refresh attachment image delivery:', error);
-              if (requestRevisionRef.current === requestRevision) {
-                setFailed(true);
-              }
-            });
+          setFailedSrc(src);
         }}
         loading="eager"
       />
