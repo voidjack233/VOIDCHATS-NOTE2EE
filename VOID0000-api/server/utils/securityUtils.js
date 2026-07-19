@@ -314,7 +314,10 @@ export class DeviceManager {
         UPDATE refresh_tokens 
         SET is_revoked = TRUE,
             revoked_at = NOW(),
-            revoked_by = $1
+            revoked_by = $1,
+            previous_token_hash = NULL,
+            previous_jti = NULL,
+            previous_valid_until = NULL
         WHERE user_id = $1 
           AND device_id = $2
           AND is_revoked = FALSE

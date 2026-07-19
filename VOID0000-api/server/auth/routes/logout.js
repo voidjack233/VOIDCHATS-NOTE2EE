@@ -7,6 +7,7 @@ import {
   verifyRefreshToken,
 } from '../services/tokenService.js';
 import { sessionStore } from '../services/sessionService.js';
+import { deleteRefreshRotationReceipt } from '../services/refreshRotationReceiptService.js';
 import { disconnectLiveSession } from '../../gateway/control.js';
 
 const router = Router();
@@ -27,6 +28,7 @@ router.post('/', async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
   let userId = null;
   let deviceId = null;
+  const receiptHashesToDelete = new Set();
 
   try {
     if (refreshToken) {
@@ -36,28 +38,77 @@ router.post('/', async (req, res) => {
         deviceId = decoded.device_id || null;
 
         if (userId && deviceId) {
-          await pool.query(
-            `UPDATE refresh_tokens
-             SET is_revoked = TRUE, revoked_at = NOW()
-             WHERE user_id = $1 AND device_id = $2`,
+          const revoked = await pool.query(
+            `WITH target AS (
+               SELECT id, token_hash, previous_token_hash
+               FROM refresh_tokens
+               WHERE user_id = $1 AND device_id = $2
+               FOR UPDATE
+             )
+             UPDATE refresh_tokens AS rt
+             SET is_revoked = TRUE,
+                 revoked_at = NOW(),
+                 previous_token_hash = NULL,
+                 previous_jti = NULL,
+                 previous_valid_until = NULL
+             FROM target
+             WHERE rt.id = target.id
+             RETURNING
+               target.token_hash AS revoked_token_hash,
+               target.previous_token_hash AS revoked_previous_token_hash`,
             [userId, deviceId],
           );
+
+          for (const row of revoked.rows) {
+            if (row.revoked_token_hash) receiptHashesToDelete.add(row.revoked_token_hash);
+            if (row.revoked_previous_token_hash) {
+              receiptHashesToDelete.add(row.revoked_previous_token_hash);
+            }
+          }
         }
       } catch {
         const tokenHash = hashToken(refreshToken);
         const revoked = await pool.query(
-          `UPDATE refresh_tokens
-           SET is_revoked = TRUE, revoked_at = NOW()
-           WHERE token_hash = $1
-           RETURNING user_id, device_id`,
+          `WITH target AS (
+             SELECT id, user_id, device_id, token_hash, previous_token_hash
+             FROM refresh_tokens
+             WHERE token_hash = $1
+             FOR UPDATE
+           )
+           UPDATE refresh_tokens AS rt
+           SET is_revoked = TRUE,
+               revoked_at = NOW(),
+               previous_token_hash = NULL,
+               previous_jti = NULL,
+               previous_valid_until = NULL
+           FROM target
+           WHERE rt.id = target.id
+           RETURNING
+             target.user_id,
+             target.device_id,
+             target.token_hash AS revoked_token_hash,
+             target.previous_token_hash AS revoked_previous_token_hash`,
           [tokenHash],
         );
 
         if (revoked.rows.length > 0) {
           userId = revoked.rows[0].user_id;
           deviceId = revoked.rows[0].device_id;
+          receiptHashesToDelete.add(tokenHash);
+          for (const row of revoked.rows) {
+            if (row.revoked_token_hash) receiptHashesToDelete.add(row.revoked_token_hash);
+            if (row.revoked_previous_token_hash) {
+              receiptHashesToDelete.add(row.revoked_previous_token_hash);
+            }
+          }
         }
       }
+
+      await Promise.all(
+        [...receiptHashesToDelete].map((tokenHash) =>
+          deleteRefreshRotationReceipt(tokenHash)
+        ),
+      );
 
       if (userId && deviceId) {
         await sessionStore.revoke(userId, deviceId);

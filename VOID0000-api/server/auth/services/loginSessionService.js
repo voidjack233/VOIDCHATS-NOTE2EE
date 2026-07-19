@@ -53,12 +53,17 @@ export async function createLoginSessionRecord({
      DO UPDATE SET
        token_hash = EXCLUDED.token_hash,
        jti = EXCLUDED.jti,
+       previous_token_hash = NULL,
+       previous_jti = NULL,
+       previous_valid_until = NULL,
        expires_at = EXCLUDED.expires_at,
        ip_address = EXCLUDED.ip_address,
        user_agent = EXCLUDED.user_agent,
        device_name = EXCLUDED.device_name,
        device_type = EXCLUDED.device_type,
        is_revoked = FALSE,
+       revoked_at = NULL,
+       revoked_by = NULL,
        last_used_at = NOW(),
        created_at = NOW()`,
     [

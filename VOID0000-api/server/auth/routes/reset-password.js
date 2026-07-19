@@ -63,7 +63,10 @@ router.post('/', async (req, res) => {
       `UPDATE refresh_tokens
        SET is_revoked = TRUE,
            revoked_at = NOW(),
-           revoked_by = $1
+           revoked_by = $1,
+           previous_token_hash = NULL,
+           previous_jti = NULL,
+           previous_valid_until = NULL
        WHERE user_id = $1
          AND is_revoked = FALSE`,
       [user_id]
