@@ -35,17 +35,13 @@ export default function AttachmentImage({
 
     if (!canLoad) {
       setSrc(null);
-      return () => {
-        cancelled = true;
-      };
+      return () => { cancelled = true; };
     }
 
     const cachedUrl = getCachedAttachmentObjectUrl(attachment);
     if (cachedUrl) {
       setSrc(cachedUrl);
-      return () => {
-        cancelled = true;
-      };
+      return () => { cancelled = true; };
     }
 
     setSrc(null);
@@ -68,6 +64,7 @@ export default function AttachmentImage({
     };
   }, [
     attachment.url,
+    attachment.url_expires_at,
     attachment.blurhash,
     attachment.mime,
     conversationId,

@@ -26,10 +26,7 @@ import { parseAttachment, parseAttachments } from '../../../Services/Chat/chatSe
 import { CHAT_FORWARDED_MESSAGE_TYPE } from '../../../Services/Chat/chatUtils';
 import { getMentionUsernames } from '../../../Services/Chat/messageMentions';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../../Services/Chat/reactionLimits';
-import {
-  getCachedAttachmentObjectUrl,
-  resolveAttachmentObjectUrl,
-} from '../../../Services/Chat/attachmentService';
+import { resolveAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
 import { getMessageDateLabel } from './useMessageLayout';
 import {
   extractMessageTextSegments,
@@ -66,8 +63,6 @@ const SWIPE_START_THRESHOLD_ATTACHMENT = 18;
 const SWIPE_ACTION_THRESHOLD = 68;
 const SWIPE_ACTION_THRESHOLD_ATTACHMENT = 84;
 const UNAVAILABLE_REPLY_CONTENT = '[deleted or unavailable]';
-const replyPreviewAttachmentUrlCache = new Map<string, string>();
-const replyPreviewAttachmentUrlPromises = new Map<string, Promise<string>>();
 
 interface MessageItemProps {
   message: Message;
@@ -194,14 +189,6 @@ function getReplyAttachmentLabel(attachment: Attachment): string {
   return 'File';
 }
 
-function getReplyPreviewAttachmentCacheKey(attachment: Attachment): string {
-  return [
-    attachment.url || '',
-    attachment.mime || '',
-    attachment.name || '',
-  ].join('::');
-}
-
 interface CompactReplyPreviewProps {
   message: Message;
   replyParent: Message | null;
@@ -238,26 +225,11 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   const firstAttachment = replyAttachments[0] ?? null;
   const firstAttachmentIsImage = Boolean(firstAttachment && looksLikeImageAttachment(firstAttachment));
   const firstAttachmentIsSpoiler = firstAttachment?.spoiler === true;
-  const firstAttachmentCacheKey = firstAttachment && firstAttachmentIsImage
-    ? getReplyPreviewAttachmentCacheKey(firstAttachment)
-    : null;
   const replyAttachmentConversationId =
     replyParent?.conversation_public_id ||
     replyParent?.conversation_id ||
     message.conversation_public_id ||
     message.conversation_id;
-  const cachedThumbnailUrl = firstAttachment &&
-    firstAttachmentIsImage &&
-    !firstAttachmentIsSpoiler &&
-    firstAttachmentCacheKey
-    ? getCachedAttachmentObjectUrl(firstAttachment) ||
-      replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey) ||
-      null
-    : null;
-  const [resolvedThumbnail, setResolvedThumbnail] = useState<{ cacheKey: string | null; url: string | null }>({
-    cacheKey: firstAttachmentCacheKey,
-    url: cachedThumbnailUrl,
-  });
   const additionalAttachmentCount = Math.max(0, replyAttachments.length - 1);
   const replyAuthorName = isOwn ? 'You' : getSenderName(message.sender_id);
   const targetName = replyParent?.sender_id
@@ -265,11 +237,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     : 'a message';
   const isCompact = density === 'compact';
   const hasPreviewImage = Boolean(firstAttachmentIsImage);
-  const thumbnailUrl = !firstAttachmentIsSpoiler ? (
-    resolvedThumbnail.cacheKey === firstAttachmentCacheKey
-      ? resolvedThumbnail.url
-      : null
-  ) || cachedThumbnailUrl : null;
   const replyImagePresentation = firstAttachment && firstAttachmentIsImage
     ? getSingleAttachmentReservedPresentation(firstAttachment)
     : null;
@@ -313,69 +280,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
           : 'Message unavailable';
   const shouldShowTextPreview = hasReadableText || !hasPreviewImage;
   const hasTextAndImagePreview = hasPreviewImage && shouldShowTextPreview;
-  useEffect(() => {
-    if (
-      !firstAttachment ||
-      !firstAttachmentIsImage ||
-      firstAttachmentIsSpoiler ||
-      !firstAttachmentCacheKey
-    ) {
-      setResolvedThumbnail({ cacheKey: null, url: null });
-      return undefined;
-    }
-
-    const cachedUrl = getCachedAttachmentObjectUrl(firstAttachment) ||
-      replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey) ||
-      null;
-    if (cachedUrl) {
-      replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, cachedUrl);
-      setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url: cachedUrl });
-      return undefined;
-    }
-
-    if (!canLoadAttachments) {
-      setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url: null });
-      return undefined;
-    }
-
-    let cancelled = false;
-    const pendingUrl = replyPreviewAttachmentUrlPromises.get(firstAttachmentCacheKey) ||
-      resolveAttachmentObjectUrl(firstAttachment, { conversationId: replyAttachmentConversationId })
-        .then((url) => {
-          replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, url);
-          replyPreviewAttachmentUrlPromises.delete(firstAttachmentCacheKey);
-          return url;
-        })
-        .catch((error) => {
-          replyPreviewAttachmentUrlPromises.delete(firstAttachmentCacheKey);
-          throw error;
-        });
-
-    replyPreviewAttachmentUrlPromises.set(firstAttachmentCacheKey, pendingUrl);
-    void pendingUrl
-      .then((url) => {
-        if (!cancelled) {
-          setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url: null });
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    canLoadAttachments,
-    firstAttachment,
-    firstAttachmentCacheKey,
-    firstAttachmentIsImage,
-    firstAttachmentIsSpoiler,
-    replyAttachmentConversationId,
-  ]);
-
   return (
     <div className={`mb-0.5 flex max-w-full flex-col ${stackInsetClass}`}>
       <div
@@ -427,12 +331,13 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
                 <span className="rounded bg-black/55 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
                   Spoiler
                 </span>
-              ) : thumbnailUrl ? (
-                <img
-                  src={thumbnailUrl}
+              ) : firstAttachment ? (
+                <AttachmentImage
+                  attachment={firstAttachment}
+                  conversationId={replyAttachmentConversationId}
                   alt=""
                   className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
-                  loading="lazy"
+                  canLoad={canLoadAttachments}
                 />
               ) : firstAttachmentIsImage ? (
                 <Image className="h-4 w-4" />
@@ -482,17 +387,14 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
                   <span className="rounded bg-black/55 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
                     Spoiler
                   </span>
-                ) : thumbnailUrl ? (
-                  <img
-                    src={thumbnailUrl}
+                ) : (
+                  <AttachmentImage
+                    attachment={firstAttachment}
+                    conversationId={replyAttachmentConversationId}
                     alt=""
                     className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
-                    loading="lazy"
+                    canLoad={canLoadAttachments}
                   />
-                ) : firstAttachmentIsImage ? (
-                  <Image className="h-4 w-4" />
-                ) : (
-                  <FileText className="h-4 w-4" />
                 )}
                 {additionalAttachmentCount > 0 ? (
                   <span className="absolute bottom-0.5 right-0.5 rounded bg-black/65 px-1 text-[9px] font-semibold leading-3 text-white">
@@ -1403,7 +1305,7 @@ const MessageItem = memo(function MessageItem({
                               alt="attachment"
                               className="w-full h-full object-cover hover:opacity-90"
                               onLoad={onAttachmentLoad}
-                              canLoad={canLoadAttachments}
+                              canLoad={canLoadAttachments && !isPending}
                             />
                             {isSpoilerCovered ? (
                               <div className="absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-void-bg-main">

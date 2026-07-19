@@ -5,11 +5,7 @@ import type { Attachment } from './chatTypes';
 
 const BASE64_CHUNK_SIZE = 0x8000;
 const BLURHASH_MAX_DIMENSION = 32;
-const MAX_CACHED_ATTACHMENT_OBJECT_URLS = 128;
 const SIGNED_URL_EXPIRY_SAFETY_MS = 5_000;
-const attachmentObjectUrlCache = new Map<string, string>();
-const attachmentObjectUrlRequests = new Map<string, Promise<string>>();
-let attachmentCacheGeneration = 0;
 
 interface AttachmentResolveOptions {
   conversationId?: string | null;
@@ -115,14 +111,6 @@ function isPrimaryAttachmentUrlUsable(attachment: Attachment): boolean {
   return Number(attachment.url_expires_at) > Date.now() + SIGNED_URL_EXPIRY_SAFETY_MS;
 }
 
-function getAttachmentCacheKey(attachment: Attachment): string {
-  return getAttachmentFallbackUrl(attachment) || attachment.url;
-}
-
-function requiresAttachmentBlobResolution(attachment: Attachment): boolean {
-  return shouldUseAuthenticatedFetch(attachment.url) || Boolean(getAttachmentFallbackUrl(attachment));
-}
-
 async function fetchAttachmentResource(url: string, isExpiringCapability: boolean): Promise<Response> {
   const options: RequestInit = {
     cache: isExpiringCapability ? 'no-store' : 'force-cache',
@@ -130,34 +118,6 @@ async function fetchAttachmentResource(url: string, isExpiringCapability: boolea
   return shouldUseAuthenticatedFetch(url)
     ? fetchWithAuth(url, options)
     : fetch(url, options);
-}
-
-function withAttachmentMime(blob: Blob, mime?: string): Blob {
-  const normalizedMime = mime?.trim().toLowerCase();
-  if (!normalizedMime || blob.type === normalizedMime) {
-    return blob;
-  }
-
-  return new Blob([blob], { type: normalizedMime });
-}
-
-function cacheAttachmentObjectUrl(key: string, objectUrl: string): void {
-  const existingUrl = attachmentObjectUrlCache.get(key);
-  if (existingUrl && existingUrl !== objectUrl) {
-    URL.revokeObjectURL(existingUrl);
-  }
-  attachmentObjectUrlCache.delete(key);
-
-  while (attachmentObjectUrlCache.size >= MAX_CACHED_ATTACHMENT_OBJECT_URLS) {
-    const oldestEntry = attachmentObjectUrlCache.entries().next().value as
-      | [string, string]
-      | undefined;
-    if (!oldestEntry) break;
-    attachmentObjectUrlCache.delete(oldestEntry[0]);
-    URL.revokeObjectURL(oldestEntry[1]);
-  }
-
-  attachmentObjectUrlCache.set(key, objectUrl);
 }
 
 export async function resolveAttachmentBlob(
@@ -196,64 +156,24 @@ export async function resolveAttachmentBlob(
 
 export async function resolveAttachmentObjectUrl(
   attachment: Attachment,
-  options?: AttachmentResolveOptions,
+  _options?: AttachmentResolveOptions,
 ): Promise<string> {
-  if (!requiresAttachmentBlobResolution(attachment)) {
-    return attachment.url;
+  void _options;
+  if (shouldUseAuthenticatedFetch(attachment.url)) {
+    throw new Error('Attachment requires a fresh signed delivery URL');
   }
-
-  const cachedUrl = getCachedAttachmentObjectUrl(attachment);
-  if (cachedUrl) {
-    return cachedUrl;
+  if (!isPrimaryAttachmentUrlUsable(attachment)) {
+    throw new Error('Attachment signed delivery URL has expired');
   }
-
-  const cacheKey = getAttachmentCacheKey(attachment);
-  const existingRequest = attachmentObjectUrlRequests.get(cacheKey);
-  if (existingRequest) {
-    return existingRequest;
-  }
-
-  const requestGeneration = attachmentCacheGeneration;
-  const request = resolveAttachmentBlob(attachment, options).then((blob) => {
-    const objectUrl = URL.createObjectURL(withAttachmentMime(blob, attachment.mime));
-    if (requestGeneration !== attachmentCacheGeneration) {
-      URL.revokeObjectURL(objectUrl);
-      throw new Error('Attachment cache was cleared while loading');
-    }
-
-    cacheAttachmentObjectUrl(cacheKey, objectUrl);
-    return objectUrl;
-  });
-
-  attachmentObjectUrlRequests.set(cacheKey, request);
-  try {
-    return await request;
-  } finally {
-    if (attachmentObjectUrlRequests.get(cacheKey) === request) {
-      attachmentObjectUrlRequests.delete(cacheKey);
-    }
-  }
+  return attachment.url;
 }
 
 export function getCachedAttachmentObjectUrl(attachment: Attachment): string | null {
-  if (!requiresAttachmentBlobResolution(attachment)) {
-    return attachment.url;
-  }
-
-  const cacheKey = getAttachmentCacheKey(attachment);
-  const cachedUrl = attachmentObjectUrlCache.get(cacheKey);
-  if (!cachedUrl) {
+  if (
+    shouldUseAuthenticatedFetch(attachment.url) ||
+    !isPrimaryAttachmentUrlUsable(attachment)
+  ) {
     return null;
   }
-
-  attachmentObjectUrlCache.delete(cacheKey);
-  attachmentObjectUrlCache.set(cacheKey, cachedUrl);
-  return cachedUrl;
-}
-
-export function clearAttachmentCaches(): void {
-  attachmentCacheGeneration += 1;
-  attachmentObjectUrlRequests.clear();
-  attachmentObjectUrlCache.forEach((objectUrl) => URL.revokeObjectURL(objectUrl));
-  attachmentObjectUrlCache.clear();
+  return attachment.url;
 }

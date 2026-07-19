@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Download, FileAudio, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
-import { resolveAttachmentBlob } from '../../../Services/Chat/attachmentService';
+import {
+  getCachedAttachmentObjectUrl,
+  resolveAttachmentObjectUrl,
+} from '../../../Services/Chat/attachmentService';
 
 interface AttachmentAudioPlayerProps {
   attachment: Attachment;
@@ -91,39 +94,38 @@ export default function AttachmentAudioPlayer({
   canLoad = true,
   onLoad,
 }: AttachmentAudioPlayerProps) {
-  const [src, setSrc] = useState<string | null>(null);
+  const [src, setSrc] = useState<string | null>(
+    canLoad && !disabled ? getCachedAttachmentObjectUrl(attachment) : null,
+  );
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const displayName = useMemo(() => getAttachmentDisplayName(attachment), [attachment]);
-  const playableMime = useMemo(() => getAudioMime(attachment), [attachment]);
 
   useEffect(() => {
     let cancelled = false;
-    let objectUrl: string | null = null;
 
     setFailed(false);
 
     if (disabled || !canLoad) {
       setSrc(null);
       setLoading(false);
-      return () => {
-        cancelled = true;
-      };
+      return () => { cancelled = true; };
+    }
+
+    const cachedUrl = getCachedAttachmentObjectUrl(attachment);
+    if (cachedUrl) {
+      setSrc(cachedUrl);
+      setLoading(false);
+      return () => { cancelled = true; };
     }
 
     setLoading(true);
     setSrc(null);
-
-    resolveAttachmentBlob(attachment, { conversationId })
-      .then((blob) => {
-        if (cancelled) return;
-
-        const playableBlob = playableMime && !blob.type.startsWith('audio/')
-          ? new Blob([blob], { type: playableMime })
-          : blob;
-
-        objectUrl = URL.createObjectURL(playableBlob);
-        setSrc(objectUrl);
+    resolveAttachmentObjectUrl(attachment, { conversationId })
+      .then((nextUrl) => {
+        if (!cancelled) {
+          setSrc(nextUrl);
+        }
       })
       .catch((error) => {
         console.error('Failed to load audio attachment:', error);
@@ -139,19 +141,22 @@ export default function AttachmentAudioPlayer({
 
     return () => {
       cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
     };
   }, [
     attachment.mime,
     attachment.name,
     attachment.url,
+    attachment.url_expires_at,
     canLoad,
     conversationId,
     disabled,
-    playableMime,
   ]);
+
+  const handleMediaError = () => {
+    setFailed(true);
+    setLoading(false);
+    setSrc(null);
+  };
 
   const handleDownload = () => {
     if (!src || disabled || loading) return;
@@ -204,7 +209,11 @@ export default function AttachmentAudioPlayer({
           controls
           preload="metadata"
           src={src}
-          onLoadedMetadata={onLoad}
+          onLoadedMetadata={() => {
+            setLoading(false);
+            onLoad?.();
+          }}
+          onError={handleMediaError}
           className="block h-9 w-full min-w-0"
         />
       ) : (

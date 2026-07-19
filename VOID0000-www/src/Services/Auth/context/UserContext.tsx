@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { clearAppBootstrap, fetchAppBootstrap } from '../../bootstrap';
-import { clearAttachmentCaches } from '../../Chat/attachmentService';
 import { gateway } from '../../Gateway/gateway';
 import {
   AUTH_SESSION_INVALIDATED_EVENT,
@@ -118,7 +117,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     setIsLoggingOut(true);
     gateway.disconnect();
-    clearAttachmentCaches();
     clearAppBootstrap();
     try {
       await authService.logout();
@@ -131,7 +129,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const handleSessionInvalidated = () => {
       gateway.disconnect();
-      clearAttachmentCaches();
       clearAppBootstrap();
       authRetryingRef.current = false;
       setAuthRetrying(false);
