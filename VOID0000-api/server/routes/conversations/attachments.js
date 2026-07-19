@@ -6,7 +6,6 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { pool } from '../../db.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
-import { createSignedAttachmentDelivery } from '../../utils/attachmentDelivery.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 import sentinel, { createSentinelKey } from '../../sentinel/index.js';
@@ -313,47 +312,6 @@ router.post('/', async (req, res) => {
     urls,
     blurhashes,
   });
-});
-
-// GET /api/conversations/:conversationId/attachments/:attachmentId/delivery-url
-// Returns a fresh short-lived CDN capability without reading attachment bytes.
-router.get('/:attachmentId/delivery-url', async (req, res) => {
-  const userId = req.user.id;
-  const { conversationId: conversationIdentifier, attachmentId } = req.params;
-
-  if (!UUID_PATTERN.test(attachmentId || '')) {
-    return res.status(400).json({ success: false, error: 'Invalid attachment id' });
-  }
-
-  try {
-    const resolved = await resolveConversationForMember(conversationIdentifier, userId);
-    if (!resolved.conversation) {
-      return res.status(resolved.status).json({ success: false, ...resolved.body });
-    }
-
-    const attachmentObject = await findAttachmentObject(resolved.conversation.id, attachmentId);
-    if (!attachmentObject) {
-      return res.status(404).json({ success: false, error: 'Attachment not found' });
-    }
-
-    try {
-      await statAttachmentObject(attachmentObject.object_key);
-    } catch {
-      return res.status(404).json({ success: false, error: 'Attachment not found' });
-    }
-
-    const delivery = await createSignedAttachmentDelivery(attachmentObject.object_key);
-    res.setHeader('Cache-Control', 'private, no-store');
-    return res.json({
-      success: true,
-      attachment_id: attachmentId,
-      url: delivery.url,
-      url_expires_at: delivery.url_expires_at,
-    });
-  } catch (err) {
-    console.error('Attachment delivery URL error:', err);
-    return res.status(500).json({ success: false, error: 'Failed to issue attachment delivery URL' });
-  }
 });
 
 // GET /api/conversations/:conversationId/attachments/:attachmentId

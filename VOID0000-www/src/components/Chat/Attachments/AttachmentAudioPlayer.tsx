@@ -4,12 +4,13 @@ import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
   getCachedAttachmentObjectUrl,
   isAttachmentDeliveryUrlUsable,
-  refreshAttachmentDeliveryCapability,
 } from '../../../Services/Chat/attachmentService';
+import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
 
 interface AttachmentAudioPlayerProps {
   attachment: Attachment;
   conversationId?: string | null;
+  messageId?: string | null;
   disabled?: boolean;
   canLoad?: boolean;
   onLoad?: () => void;
@@ -91,6 +92,7 @@ export function isAudioAttachment(attachment: Attachment): boolean {
 export default function AttachmentAudioPlayer({
   attachment,
   conversationId,
+  messageId,
   disabled = false,
   canLoad = true,
   onLoad,
@@ -139,7 +141,7 @@ export default function AttachmentAudioPlayer({
     setSrc(null);
     setSrcExpiresAt(undefined);
     refreshAttemptedRef.current = true;
-    refreshAttachmentDeliveryCapability(attachment, { conversationId })
+    refreshAttachmentFromMessage(attachment, { conversationId, messageId })
       .then((delivery) => {
         if (!cancelled) {
           setSrc(delivery.url);
@@ -162,7 +164,7 @@ export default function AttachmentAudioPlayer({
       cancelled = true;
       if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
     };
-  }, [attachment, canLoad, conversationId, disabled]);
+  }, [attachment, canLoad, conversationId, disabled, messageId]);
 
   const handleMediaError = () => {
     if (refreshAttemptedRef.current) {
@@ -178,7 +180,7 @@ export default function AttachmentAudioPlayer({
     setFailed(false);
     setLoading(true);
     setSrc(null);
-    void refreshAttachmentDeliveryCapability(attachment, { conversationId })
+    void refreshAttachmentFromMessage(attachment, { conversationId, messageId })
       .then((delivery) => {
         if (requestRevisionRef.current === requestRevision) {
           setSrc(delivery.url);
@@ -201,7 +203,10 @@ export default function AttachmentAudioPlayer({
     try {
       let downloadUrl = src;
       if (!isAttachmentDeliveryUrlUsable(src, srcExpiresAt)) {
-        const delivery = await refreshAttachmentDeliveryCapability(attachment, { conversationId });
+        const delivery = await refreshAttachmentFromMessage(attachment, {
+          conversationId,
+          messageId,
+        });
         downloadUrl = delivery.url;
         setSrc(delivery.url);
         setSrcExpiresAt(delivery.urlExpiresAt);

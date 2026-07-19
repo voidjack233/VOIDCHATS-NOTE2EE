@@ -3,14 +3,14 @@ import { ImageOff, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
   getCachedAttachmentObjectUrl,
-  refreshAttachmentDeliveryCapability,
-  resolveAttachmentObjectUrl,
 } from '../../../Services/Chat/attachmentService';
+import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
 import BlurImage, { BlurhashPlaceholder } from '../../common/BlurImage';
 
 interface AttachmentImageProps {
   attachment: Attachment;
   conversationId?: string | null;
+  messageId?: string | null;
   alt?: string;
   className?: string;
   onLoad?: () => void;
@@ -20,6 +20,7 @@ interface AttachmentImageProps {
 export default function AttachmentImage({
   attachment,
   conversationId,
+  messageId,
   alt = '',
   className = '',
   onLoad,
@@ -58,10 +59,10 @@ export default function AttachmentImage({
     setSrc(null);
     refreshAttemptedRef.current = true;
 
-    resolveAttachmentObjectUrl(attachment, { conversationId })
-      .then((nextUrl) => {
+    refreshAttachmentFromMessage(attachment, { conversationId, messageId })
+      .then((delivery) => {
         if (!cancelled) {
-          setSrc(nextUrl);
+          setSrc(delivery.url);
         }
       })
       .catch((error) => {
@@ -75,7 +76,7 @@ export default function AttachmentImage({
       cancelled = true;
       if (requestRevisionRef.current === requestRevision) requestRevisionRef.current += 1;
     };
-  }, [attachment, conversationId, canLoad]);
+  }, [attachment, conversationId, messageId, canLoad]);
 
   if (src) {
     return (
@@ -98,7 +99,7 @@ export default function AttachmentImage({
           const requestRevision = ++requestRevisionRef.current;
           setFailed(false);
           setSrc(null);
-          void refreshAttachmentDeliveryCapability(attachment, { conversationId })
+          void refreshAttachmentFromMessage(attachment, { conversationId, messageId })
             .then((delivery) => {
               if (requestRevisionRef.current === requestRevision) {
                 setFailed(false);

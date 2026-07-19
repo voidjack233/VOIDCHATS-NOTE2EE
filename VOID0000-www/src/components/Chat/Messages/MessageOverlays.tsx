@@ -28,8 +28,8 @@ import {
 import type { Message } from '../../../Services/Chat/chatService';
 import {
   isAttachmentDeliveryUrlUsable,
-  refreshAttachmentDeliveryCapability,
 } from '../../../Services/Chat/attachmentService';
+import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../../Services/Chat/reactionLimits';
 import type { Friend } from '../../../Services/hooks/Friends/useFriends';
 import FriendProfile from '../../common/Friends/FriendProfile';
@@ -183,8 +183,9 @@ function ImageViewerOverlay({
     setUrls((current) => current.map((url, itemIndex) => (
       itemIndex === index ? null : url
     )));
-    void refreshAttachmentDeliveryCapability(attachment, {
+    void refreshAttachmentFromMessage(attachment, {
       conversationId: imageViewer.conversationId,
+      messageId: imageViewer.messageId,
     })
       .then((delivery) => {
         if (!mountedRef.current) return;
@@ -202,7 +203,7 @@ function ImageViewerOverlay({
         setIndexMembership(setRefreshingIndices, index, false);
         setIndexMembership(setFailedIndices, index, true);
       });
-  }, [imageViewer.attachments, imageViewer.conversationId]);
+  }, [imageViewer.attachments, imageViewer.conversationId, imageViewer.messageId]);
 
   useEffect(() => {
     if (currentUrlUsable || currentRefreshing || currentFailed) return;
@@ -232,8 +233,9 @@ function ImageViewerOverlay({
     try {
       let downloadUrl = currentUrlUsable ? currentUrl : null;
       if (!downloadUrl) {
-        const delivery = await refreshAttachmentDeliveryCapability(attachment, {
+        const delivery = await refreshAttachmentFromMessage(attachment, {
           conversationId: imageViewer.conversationId,
+          messageId: imageViewer.messageId,
         });
         downloadUrl = delivery.url;
         if (mountedRef.current) {

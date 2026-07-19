@@ -9,11 +9,13 @@ import {
   Loader2,
 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
-import { resolveAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
+import { getCachedAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
+import { refreshAttachmentFromMessage } from '../../../Services/Chat/attachmentRecoveryService';
 
 interface AttachmentFileCardProps {
   attachment: Attachment;
   conversationId?: string | null;
+  messageId?: string | null;
   disabled?: boolean;
 }
 
@@ -76,6 +78,7 @@ function getAttachmentIcon(mime: string | undefined) {
 export default function AttachmentFileCard({
   attachment,
   conversationId,
+  messageId,
   disabled = false,
 }: AttachmentFileCardProps) {
   const [downloading, setDownloading] = useState(false);
@@ -87,7 +90,20 @@ export default function AttachmentFileCard({
 
     setDownloading(true);
     try {
-      const url = await resolveAttachmentObjectUrl(attachment, { conversationId });
+      let url = getCachedAttachmentObjectUrl(attachment);
+      if (!url) {
+        try {
+          url = (await refreshAttachmentFromMessage(attachment, {
+            conversationId,
+            messageId,
+          })).url;
+        } catch (error) {
+          const protectedFallback = attachment.fallback_url?.trim() || attachment.url.trim();
+          if (!protectedFallback) throw error;
+          url = protectedFallback;
+        }
+      }
+
       const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = displayName;

@@ -18,6 +18,7 @@ export interface ImageViewerState {
   sessionId: number;
   attachments: Attachment[];
   conversationId: string;
+  messageId: string;
   urls: Array<string | null>;
   index: number;
 }
@@ -237,6 +238,7 @@ export function useMessageActions({
     attachments: Attachment[],
     urls: Array<string | null>,
     conversationId: string,
+    messageId: string,
     index: number,
   ) => {
     imageViewerSessionRef.current += 1;
@@ -244,6 +246,7 @@ export function useMessageActions({
       sessionId: imageViewerSessionRef.current,
       attachments,
       conversationId,
+      messageId,
       urls,
       index,
     });
