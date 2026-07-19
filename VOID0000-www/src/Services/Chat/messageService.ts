@@ -92,7 +92,7 @@ export async function sendMessage(
   return normalizeMessage({
     ...data.message,
     content,
-    attachments: options?.attachments || data.message?.attachments,
+    attachments: data.message?.attachments || options?.attachments,
     forwarded: options?.forwarded || undefined,
     mentions: options?.mentions || undefined,
     link_preview: options?.linkPreview || undefined,

@@ -8,6 +8,7 @@ import {
   verifyMembership,
 } from './shared.js';
 import sentinel, { createSentinelKey } from '../../../sentinel/index.js';
+import { attachSignedAttachmentUrls } from '../../../utils/attachmentDelivery.js';
 
 const router = Router({ mergeParams: true });
 
@@ -142,10 +143,14 @@ router.get('/', async (req, res) => {
       ...message,
       reactions: reactions[message.message_id] || {},
     }));
+    const messagesWithSignedAttachments = await attachSignedAttachmentUrls(
+      messagesWithReactions,
+      conversationId,
+    );
 
     res.json({
       success: true,
-      messages: messagesWithReactions,
+      messages: messagesWithSignedAttachments,
       has_more: hasMore,
     });
   } catch (err) {

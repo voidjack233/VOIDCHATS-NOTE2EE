@@ -5,6 +5,10 @@ import { debugLog } from '../../../utils/debugLog.js';
 import { emitConversationUpdate } from '../../../utils/groupMembership.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
+  attachSignedAttachmentUrls,
+  normalizeStoredAttachments,
+} from '../../../utils/attachmentDelivery.js';
+import {
   cassandra,
   getConversationMembers,
   mapStoredMessageRow,
@@ -83,7 +87,9 @@ async function restoreIdempotentMessage({
       return null;
     }
 
-    return mapStoredMessageRow(row, conversationPublic);
+    const storedMessage = mapStoredMessageRow(row, conversationPublic);
+    const [message] = await attachSignedAttachmentUrls([storedMessage], conversationId);
+    return message;
   } catch (error) {
     console.warn('[MESSAGE_IDEMPOTENCY] failed to restore cached message', {
       conversation_id: conversationId,
@@ -183,7 +189,8 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
     messageId = cassandra.types.TimeUuid.now();
     const messageIdString = messageId.toString();
     const now = new Date();
-    const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
+    const normalizedAttachments = normalizeStoredAttachments(attachments);
+    const attachList = normalizedAttachments.length > 0 ? normalizedAttachments : null;
     const storedForwarded = serializeStoredMessageMetadata(normalizedForwarded);
     const storedMentions = serializeStoredMessageMetadata(normalizedMentions);
     const storedLinkPreview = serializeStoredMessageMetadata(link_preview);
@@ -271,6 +278,7 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       is_deleted: false,
       created_at: now.toISOString(),
     };
+    const [messageForDelivery] = await attachSignedAttachmentUrls([message], conversationId);
 
     if (normalizedClientMessageId) {
       await valkey.set(
@@ -298,7 +306,7 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       includes_sender_sessions: true,
     });
     members.forEach((memberId) => {
-      sendLiveEventToUser(memberId, 'MESSAGE_CREATE', message);
+      sendLiveEventToUser(memberId, 'MESSAGE_CREATE', messageForDelivery);
     });
     void dispatchMessagePushNotifications({
       senderId: userId,
@@ -307,7 +315,7 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       mentions: normalizedMentions,
     });
 
-    return { message };
+    return { message: messageForDelivery };
   } catch (err) {
     if (messagePersistedToScylla && storageConversationUuid && messageId) {
       try {

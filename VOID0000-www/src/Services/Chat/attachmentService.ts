@@ -6,6 +6,7 @@ import type { Attachment } from './chatTypes';
 const BASE64_CHUNK_SIZE = 0x8000;
 const BLURHASH_MAX_DIMENSION = 32;
 const MAX_CACHED_ATTACHMENT_OBJECT_URLS = 128;
+const SIGNED_URL_EXPIRY_SAFETY_MS = 5_000;
 const attachmentObjectUrlCache = new Map<string, string>();
 const attachmentObjectUrlRequests = new Map<string, Promise<string>>();
 let attachmentCacheGeneration = 0;
@@ -99,6 +100,38 @@ function shouldUseAuthenticatedFetch(url: string): boolean {
   }
 }
 
+function getAttachmentFallbackUrl(attachment: Attachment): string | null {
+  const fallbackUrl = attachment.fallback_url?.trim();
+  return fallbackUrl || null;
+}
+
+function isPrimaryAttachmentUrlUsable(attachment: Attachment): boolean {
+  if (
+    typeof attachment.url_expires_at !== 'number' ||
+    !Number.isFinite(attachment.url_expires_at)
+  ) {
+    return true;
+  }
+  return Number(attachment.url_expires_at) > Date.now() + SIGNED_URL_EXPIRY_SAFETY_MS;
+}
+
+function getAttachmentCacheKey(attachment: Attachment): string {
+  return getAttachmentFallbackUrl(attachment) || attachment.url;
+}
+
+function requiresAttachmentBlobResolution(attachment: Attachment): boolean {
+  return shouldUseAuthenticatedFetch(attachment.url) || Boolean(getAttachmentFallbackUrl(attachment));
+}
+
+async function fetchAttachmentResource(url: string, isExpiringCapability: boolean): Promise<Response> {
+  const options: RequestInit = {
+    cache: isExpiringCapability ? 'no-store' : 'force-cache',
+  };
+  return shouldUseAuthenticatedFetch(url)
+    ? fetchWithAuth(url, options)
+    : fetch(url, options);
+}
+
 function withAttachmentMime(blob: Blob, mime?: string): Blob {
   const normalizedMime = mime?.trim().toLowerCase();
   if (!normalizedMime || blob.type === normalizedMime) {
@@ -132,20 +165,40 @@ export async function resolveAttachmentBlob(
   _options?: AttachmentResolveOptions,
 ): Promise<Blob> {
   void _options;
-  const response = shouldUseAuthenticatedFetch(attachment.url)
-    ? await fetchWithAuth(attachment.url, { cache: 'force-cache' })
-    : await fetch(attachment.url, { cache: 'force-cache' });
-  if (!response.ok) {
-    throw new Error(`Attachment download failed with status ${response.status}`);
+  const fallbackUrl = getAttachmentFallbackUrl(attachment);
+  const primaryUrl = isPrimaryAttachmentUrlUsable(attachment)
+    ? attachment.url
+    : (fallbackUrl || attachment.url);
+
+  try {
+    const response = await fetchAttachmentResource(
+      primaryUrl,
+      primaryUrl === attachment.url && typeof attachment.url_expires_at === 'number',
+    );
+    if (response.ok) {
+      return response.blob();
+    }
+    if (!fallbackUrl || primaryUrl === fallbackUrl) {
+      throw new Error(`Attachment download failed with status ${response.status}`);
+    }
+  } catch (error) {
+    if (!fallbackUrl || primaryUrl === fallbackUrl) {
+      throw error;
+    }
   }
-  return response.blob();
+
+  const fallbackResponse = await fetchAttachmentResource(fallbackUrl, false);
+  if (!fallbackResponse.ok) {
+    throw new Error(`Attachment fallback download failed with status ${fallbackResponse.status}`);
+  }
+  return fallbackResponse.blob();
 }
 
 export async function resolveAttachmentObjectUrl(
   attachment: Attachment,
   options?: AttachmentResolveOptions,
 ): Promise<string> {
-  if (!shouldUseAuthenticatedFetch(attachment.url)) {
+  if (!requiresAttachmentBlobResolution(attachment)) {
     return attachment.url;
   }
 
@@ -154,7 +207,8 @@ export async function resolveAttachmentObjectUrl(
     return cachedUrl;
   }
 
-  const existingRequest = attachmentObjectUrlRequests.get(attachment.url);
+  const cacheKey = getAttachmentCacheKey(attachment);
+  const existingRequest = attachmentObjectUrlRequests.get(cacheKey);
   if (existingRequest) {
     return existingRequest;
   }
@@ -167,32 +221,33 @@ export async function resolveAttachmentObjectUrl(
       throw new Error('Attachment cache was cleared while loading');
     }
 
-    cacheAttachmentObjectUrl(attachment.url, objectUrl);
+    cacheAttachmentObjectUrl(cacheKey, objectUrl);
     return objectUrl;
   });
 
-  attachmentObjectUrlRequests.set(attachment.url, request);
+  attachmentObjectUrlRequests.set(cacheKey, request);
   try {
     return await request;
   } finally {
-    if (attachmentObjectUrlRequests.get(attachment.url) === request) {
-      attachmentObjectUrlRequests.delete(attachment.url);
+    if (attachmentObjectUrlRequests.get(cacheKey) === request) {
+      attachmentObjectUrlRequests.delete(cacheKey);
     }
   }
 }
 
 export function getCachedAttachmentObjectUrl(attachment: Attachment): string | null {
-  if (!shouldUseAuthenticatedFetch(attachment.url)) {
+  if (!requiresAttachmentBlobResolution(attachment)) {
     return attachment.url;
   }
 
-  const cachedUrl = attachmentObjectUrlCache.get(attachment.url);
+  const cacheKey = getAttachmentCacheKey(attachment);
+  const cachedUrl = attachmentObjectUrlCache.get(cacheKey);
   if (!cachedUrl) {
     return null;
   }
 
-  attachmentObjectUrlCache.delete(attachment.url);
-  attachmentObjectUrlCache.set(attachment.url, cachedUrl);
+  attachmentObjectUrlCache.delete(cacheKey);
+  attachmentObjectUrlCache.set(cacheKey, cachedUrl);
   return cachedUrl;
 }
 

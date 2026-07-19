@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { debugLog } from '../../../utils/debugLog.js';
 import {
+  attachSignedAttachmentUrls,
+  normalizeStoredAttachments,
+} from '../../../utils/attachmentDelivery.js';
+import {
   batchFetchReactions,
   cassandra,
   getConversationMembers,
@@ -155,13 +159,19 @@ router.get('/:messageId/context', async (req, res) => {
     const messageIds = contextMessages.map((message) => message.message_id);
     const reactions = await batchFetchReactions(storageConversationId, messageIds, userId);
 
+    const messagesWithReactions = contextMessages.map((message) => ({
+      ...message,
+      reactions: reactions[message.message_id] || {},
+    }));
+    const messagesWithSignedAttachments = await attachSignedAttachmentUrls(
+      messagesWithReactions,
+      conversationId,
+    );
+
     res.json({
       success: true,
       target_message_id: String(messageId),
-      messages: contextMessages.map((message) => ({
-        ...message,
-        reactions: reactions[message.message_id] || {},
-      })),
+      messages: messagesWithSignedAttachments,
       has_older: olderContext.hasMore,
       has_newer: newerContext.hasMore,
     });
@@ -195,7 +205,8 @@ router.get('/:messageId', async (req, res) => {
 
     if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'Message not found' });
 
-    const message = mapStoredMessageRow(result.rows[0], conversationPublic);
+    const storedMessage = mapStoredMessageRow(result.rows[0], conversationPublic);
+    const [message] = await attachSignedAttachmentUrls([storedMessage], conversationId);
 
     res.json({ success: true, message });
   } catch (err) {
@@ -325,7 +336,8 @@ router.put('/:messageId', async (req, res) => {
     const storedForwarded = serializeStoredMessageMetadata(normalizedForwarded);
     const storedMentions = serializeStoredMessageMetadata(normalizedMentions);
     const storedLinkPreview = serializeStoredMessageMetadata(link_preview);
-    const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
+    const normalizedAttachments = normalizeStoredAttachments(attachments);
+    const attachList = normalizedAttachments.length > 0 ? normalizedAttachments : null;
     const normalizedContent = content.trim();
 
     const now = new Date();
@@ -361,6 +373,7 @@ router.put('/:messageId', async (req, res) => {
       is_edited: true,
       edited_at: now.toISOString(),
     };
+    const [updateForDelivery] = await attachSignedAttachmentUrls([update], conversationId);
 
     const members = await getConversationMembers(conversationId);
     debugLog('[WS_FANOUT] MESSAGE_UPDATE', {
@@ -370,10 +383,10 @@ router.put('/:messageId', async (req, res) => {
       includes_sender_sessions: true,
     });
     members.forEach((memberId) => {
-      sendLiveEventToUser(memberId, 'MESSAGE_UPDATE', update);
+      sendLiveEventToUser(memberId, 'MESSAGE_UPDATE', updateForDelivery);
     });
 
-    res.json({ success: true, ...update });
+    res.json({ success: true, ...updateForDelivery });
   } catch (err) {
     console.error('Message edit error:', err);
     res.status(500).json({ error: 'Failed to edit message' });

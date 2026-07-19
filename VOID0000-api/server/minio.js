@@ -4,6 +4,10 @@ import * as Minio from 'minio';
 const isProduction = process.env.NODE_ENV === 'production';
 const accessKey = process.env.MINIO_ACCESS_KEY || (isProduction ? '' : 'minioadmin');
 const secretKey = process.env.MINIO_SECRET_KEY || (isProduction ? '' : 'minioadmin');
+const minioEndpoint = process.env.MINIO_ENDPOINT || '127.0.0.1';
+const minioPort = parseInt(process.env.MINIO_PORT || '9000', 10);
+const minioUseSSL = process.env.MINIO_USE_SSL === 'true';
+const minioRegion = process.env.MINIO_REGION || 'us-east-1';
 
 if (!accessKey || !secretKey) {
   throw new Error('MINIO_ACCESS_KEY and MINIO_SECRET_KEY are required');
@@ -14,12 +18,43 @@ if (isProduction && (accessKey === 'minioadmin' || secretKey === 'minioadmin')) 
 }
 
 const minioClient = new Minio.Client({
-  endPoint: process.env.MINIO_ENDPOINT || '127.0.0.1',
-  port: parseInt(process.env.MINIO_PORT || '9000', 10),
-  useSSL: process.env.MINIO_USE_SSL === 'true',
+  endPoint: minioEndpoint,
+  port: minioPort,
+  useSSL: minioUseSSL,
   accessKey,
   secretKey,
+  region: minioRegion,
 });
+
+function getCdnMinioClient() {
+  const fallbackUrl = isProduction
+    ? 'https://cdn.void0000.online'
+    : `${minioUseSSL ? 'https' : 'http'}://${minioEndpoint}:${minioPort}`;
+  const cdnUrl = new URL(process.env.CDN_URL || fallbackUrl);
+
+  if (
+    !['http:', 'https:'].includes(cdnUrl.protocol) ||
+    cdnUrl.pathname !== '/' ||
+    cdnUrl.username ||
+    cdnUrl.password ||
+    cdnUrl.search ||
+    cdnUrl.hash
+  ) {
+    throw new Error('CDN_URL must be an HTTP(S) origin without a path');
+  }
+
+  return new Minio.Client({
+    endPoint: cdnUrl.hostname,
+    port: Number(cdnUrl.port) || (cdnUrl.protocol === 'https:' ? 443 : 80),
+    useSSL: cdnUrl.protocol === 'https:',
+    accessKey,
+    secretKey,
+    region: minioRegion,
+    pathStyle: true,
+  });
+}
+
+const cdnMinioClient = getCdnMinioClient();
 
 const BUCKET = process.env.MINIO_BUCKET || 'avatars';
 const GROUP_AVATAR_BUCKET = process.env.MINIO_GROUP_AVATAR_BUCKET || 'group-avatars';
@@ -79,4 +114,10 @@ async function ensurePrivateBucket(bucket) {
   }
 })();
 
-export { minioClient, BUCKET, GROUP_AVATAR_BUCKET, ATTACH_BUCKET };
+export {
+  minioClient,
+  cdnMinioClient,
+  BUCKET,
+  GROUP_AVATAR_BUCKET,
+  ATTACH_BUCKET,
+};

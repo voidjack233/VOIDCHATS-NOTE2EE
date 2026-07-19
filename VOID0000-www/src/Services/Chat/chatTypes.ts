@@ -44,7 +44,10 @@ export interface Conversation {
 }
 
 export interface Attachment {
+  id?: string;
   url: string;
+  fallback_url?: string;
+  url_expires_at?: number;
   spoiler?: boolean;
   blurhash?: string;
   width?: number;

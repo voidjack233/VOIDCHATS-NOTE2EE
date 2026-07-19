@@ -18,12 +18,21 @@ export function parseAttachments(raws?: string[]): Attachment[] {
 }
 
 export function serializeAttachment(attachment: Attachment): string {
-  const normalizedEntries = Object.entries(attachment).filter(([, value]) => value !== undefined);
-  if (normalizedEntries.length === 1 && typeof attachment.url === 'string') {
-    return attachment.url;
+  const {
+    fallback_url: fallbackUrl,
+    url_expires_at: _urlExpiresAt,
+    ...stableAttachment
+  } = attachment;
+  void _urlExpiresAt;
+  stableAttachment.url = fallbackUrl?.trim() || attachment.url;
+
+  const normalizedEntries = Object.entries(stableAttachment)
+    .filter(([, value]) => value !== undefined);
+  if (normalizedEntries.length === 1 && typeof stableAttachment.url === 'string') {
+    return stableAttachment.url;
   }
 
-  return JSON.stringify(attachment);
+  return JSON.stringify(stableAttachment);
 }
 
 export function serializeAttachments(attachments: Attachment[]): string[] {
