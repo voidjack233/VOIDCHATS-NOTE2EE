@@ -50,6 +50,19 @@ const apps = [
     autorestart: true,
   },
   {
+    name: 'voidapp-vmd-service',
+    script: 'server/entrypoints/vmd-server.js',
+    instances: 1,
+    exec_mode: 'fork',
+    env: {
+      ...commonEnv,
+      VMD_SERVICE_PORT: 3006,
+    },
+    max_memory_restart: '450M',
+    watch: false,
+    autorestart: true,
+  },
+  {
     name: 'voidapp-social-profile-service',
     script: 'server/entrypoints/social-server.js',
     instances: 1,

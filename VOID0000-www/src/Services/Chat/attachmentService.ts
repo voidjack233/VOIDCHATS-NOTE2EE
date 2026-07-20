@@ -124,6 +124,17 @@ function isPrimaryAttachmentUrlUsable(attachment: Attachment): boolean {
   return isAttachmentDeliveryUrlUsable(attachment.url, attachment.url_expires_at);
 }
 
+function getDisplayAttachmentUrl(attachment: Attachment): string | null {
+  const displayUrl = attachment.display_url?.trim();
+  if (!displayUrl) return null;
+  return isAttachmentDeliveryUrlUsable(
+    displayUrl,
+    attachment.display_url_expires_at,
+  )
+    ? displayUrl
+    : null;
+}
+
 async function fetchAttachmentResource(url: string, isExpiringCapability: boolean): Promise<Response> {
   const options: RequestInit = {
     cache: isExpiringCapability ? 'no-store' : 'force-cache',
@@ -168,11 +179,21 @@ export async function resolveAttachmentBlob(
 }
 
 export function getCachedAttachmentObjectUrl(attachment: Attachment): string | null {
+  return getAttachmentRenderUrls(attachment)[0] || null;
+}
+
+export function getAttachmentRenderUrls(attachment: Attachment): string[] {
+  const urls: string[] = [];
+  const displayUrl = getDisplayAttachmentUrl(attachment);
+  if (displayUrl) urls.push(displayUrl);
+
   if (
-    !isDirectAttachmentDeliveryUrl(attachment.url) ||
-    !isPrimaryAttachmentUrlUsable(attachment)
+    isDirectAttachmentDeliveryUrl(attachment.url) &&
+    isPrimaryAttachmentUrlUsable(attachment) &&
+    attachment.url !== displayUrl
   ) {
-    return null;
+    urls.push(attachment.url);
   }
-  return attachment.url;
+
+  return urls;
 }

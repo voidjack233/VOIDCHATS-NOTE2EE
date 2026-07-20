@@ -83,6 +83,7 @@ const BlurImage = ({
         alt={alt}
         loading={loading}
         decoding="async"
+        style={{ visibility: loaded ? 'visible' : 'hidden' }}
         onLoad={(event) => {
           setLoaded(true);
           onLoad?.(event.currentTarget);

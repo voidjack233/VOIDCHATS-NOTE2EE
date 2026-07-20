@@ -21,9 +21,13 @@ export function serializeAttachment(attachment: Attachment): string {
   const {
     fallback_url: fallbackUrl,
     url_expires_at: _urlExpiresAt,
+    display_url: _displayUrl,
+    display_url_expires_at: _displayUrlExpiresAt,
     ...stableAttachment
   } = attachment;
   void _urlExpiresAt;
+  void _displayUrl;
+  void _displayUrlExpiresAt;
   stableAttachment.url = fallbackUrl?.trim() || attachment.url;
 
   const normalizedEntries = Object.entries(stableAttachment)

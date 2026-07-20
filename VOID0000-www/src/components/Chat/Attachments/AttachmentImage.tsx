@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ImageOff, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
-  getCachedAttachmentObjectUrl,
+  getAttachmentRenderUrls,
 } from '../../../Services/Chat/attachmentService';
 import BlurImage, { BlurhashPlaceholder } from '../../common/BlurImage';
 
@@ -21,14 +21,15 @@ export default function AttachmentImage({
   onLoad,
   canLoad = true,
 }: AttachmentImageProps) {
-  const availableSrc = canLoad ? getCachedAttachmentObjectUrl(attachment) : null;
-  const [failedSrc, setFailedSrc] = useState<string | null>(null);
-  const failed = canLoad && (!availableSrc || failedSrc === availableSrc);
-  const src = failed ? null : availableSrc;
+  const availableSources = canLoad ? getAttachmentRenderUrls(attachment) : [];
+  const [failedSources, setFailedSources] = useState<Set<string>>(() => new Set());
+  const src = availableSources.find((candidate) => !failedSources.has(candidate)) || null;
+  const failed = canLoad && !src;
 
   if (src) {
     return (
       <BlurImage
+        key={src}
         src={src}
         blurhash={attachment.blurhash}
         alt={alt}
@@ -37,7 +38,12 @@ export default function AttachmentImage({
           onLoad?.();
         }}
         onError={() => {
-          setFailedSrc(src);
+          setFailedSources((current) => {
+            if (current.has(src)) return current;
+            const next = new Set(current);
+            next.add(src);
+            return next;
+          });
         }}
         loading="eager"
       />

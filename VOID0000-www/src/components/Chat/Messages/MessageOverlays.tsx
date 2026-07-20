@@ -127,17 +127,19 @@ function ImageViewerOverlay({
   const currentUrlUsable = Boolean(
     currentUrl && isAttachmentDeliveryUrlUsable(
       currentUrl,
-      currentAttachment?.url_expires_at,
+      currentUrl === currentAttachment?.display_url
+        ? currentAttachment.display_url_expires_at
+        : currentAttachment?.url_expires_at,
     ),
   );
   const currentFailed = failedIndices.has(currentIndex);
-  const compatibilityDownloadUrl = currentAttachment?.fallback_url?.trim() ||
-    (currentAttachment?.url_expires_at === undefined
-      ? currentAttachment?.url.trim()
-      : null);
-  const downloadUrl = currentUrlUsable && !currentFailed
-    ? currentUrl
-    : compatibilityDownloadUrl;
+  const originalDownloadUrl = currentAttachment && isAttachmentDeliveryUrlUsable(
+    currentAttachment.url,
+    currentAttachment.url_expires_at,
+  )
+    ? currentAttachment.url
+    : null;
+  const downloadUrl = originalDownloadUrl || currentAttachment?.fallback_url?.trim() || null;
 
   const handleMediaError = () => {
     setFailedIndices((current) => {

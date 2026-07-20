@@ -13,7 +13,7 @@ export const customCSP = (allowedOrigins = []) => {
             "style-src 'self' 'unsafe-inline'",
 
             // Images - only from your CDN and local data/blob fallbacks
-            "img-src 'self' data: blob: https://cdn.void0000.online",
+            "img-src 'self' data: blob: https://cdn.void0000.online https://vmd.void0000.online",
 
             "font-src 'self' data:",
 

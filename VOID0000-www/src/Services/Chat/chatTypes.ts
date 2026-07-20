@@ -48,6 +48,8 @@ export interface Attachment {
   url: string;
   fallback_url?: string;
   url_expires_at?: number;
+  display_url?: string;
+  display_url_expires_at?: number;
   spoiler?: boolean;
   blurhash?: string;
   width?: number;

@@ -52,8 +52,11 @@ export function useNearViewportMessages(
           (entries) => {
             updateIds(entries.flatMap((entry) => {
               const messageId = observedElements.get(entry.target as HTMLElement);
-              return messageId
-                ? [{ messageId, isNear: entry.isIntersecting }]
+              // Once a mounted row has loaded its media, keep it loaded. Turning
+              // canLoad off while scrolling causes decoded images to flash back
+              // to their blurhash even though the message is still rendered.
+              return messageId && entry.isIntersecting
+                ? [{ messageId, isNear: true }]
                 : [];
             }));
           },

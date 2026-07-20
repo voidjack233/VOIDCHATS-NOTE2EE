@@ -418,7 +418,7 @@ server {
     index index.html;
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.your-domain.example; font-src 'self' data:; connect-src 'self' https://api.your-domain.example wss://api.your-domain.example https://cdn.your-domain.example; media-src 'self' data: blob: https://cdn.your-domain.example; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.your-domain.example https://vmd.your-domain.example; font-src 'self' data:; connect-src 'self' https://api.your-domain.example wss://api.your-domain.example https://cdn.your-domain.example; media-src 'self' data: blob: https://cdn.your-domain.example; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests" always;
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
@@ -432,7 +432,7 @@ server {
         expires 1y;
         add_header Cache-Control "public, immutable";
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.your-domain.example; font-src 'self' data:; connect-src 'self' https://api.your-domain.example wss://api.your-domain.example https://cdn.your-domain.example; media-src 'self' data: blob: https://cdn.your-domain.example; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.your-domain.example https://vmd.your-domain.example; font-src 'self' data:; connect-src 'self' https://api.your-domain.example wss://api.your-domain.example https://cdn.your-domain.example; media-src 'self' data: blob: https://cdn.your-domain.example; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests" always;
         add_header X-Frame-Options "DENY" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
