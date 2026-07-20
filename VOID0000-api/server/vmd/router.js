@@ -9,9 +9,9 @@ function getSingleQueryValue(value) {
   return typeof value === 'string' ? value : null;
 }
 
-function setPrivateMediaHeaders(res, expiresAt, now, body) {
+function setPrivateMediaHeaders(res, expiresAt, now, body, providedEtag) {
   const remainingSeconds = Math.max(0, expiresAt - Math.floor(now / 1000));
-  const etag = `"${createHash('sha256').update(body).digest('base64url')}"`;
+  const etag = providedEtag || `"${createHash('sha256').update(body).digest('base64url')}"`;
 
   res.setHeader('Cache-Control', `private, max-age=${remainingSeconds}, immutable`);
   res.setHeader('CDN-Cache-Control', 'private, no-store');
@@ -68,6 +68,7 @@ export function createVmdRouter({
         verification.expiresAt,
         requestNow,
         image.body,
+        image.etag,
       );
 
       if (req.headers['if-none-match'] === etag) {

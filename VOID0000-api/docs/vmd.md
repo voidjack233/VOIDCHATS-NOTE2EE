@@ -10,7 +10,8 @@ downloads continue to use signed `cdn.void0000.online` URLs.
    `display_url` capability.
 3. The browser puts `display_url` directly in the image `src` attribute.
 4. VMD validates the capability, resolves the attachment UUID through
-   `attachment_objects`, reads the private MinIO object, and returns WebP.
+   `attachment_objects`, checks its private persistent variant cache, and
+   returns WebP. Only a cache miss reads and transforms the private original.
 
 VMD does not accept external URLs or client-provided object keys.
 
@@ -44,18 +45,36 @@ request, not Fetch/XHR.
 ## Caching And Privacy
 
 Successful responses use private browser caching until the signed capability
-expires. `CDN-Cache-Control: private, no-store` keeps the initial version out of
+expires. `CDN-Cache-Control: private, no-store` still keeps this stage out of
 shared edge caches. The URL signature binds the attachment UUID, fixed variant,
 and expiration. The signature key is domain-separated from `ACCESS_SECRET`, or
 can be isolated with an optional `VMD_SIGNING_SECRET` override.
+
+Generated variants persist in the private `vmd-variants` MinIO bucket. The
+object key is:
+
+```text
+variants/v1/<attachment UUID>/<source fingerprint>/<variant>.webp
+```
+
+The source fingerprint is SHA-256 over the trusted original object key, MinIO
+ETag, version ID, size, and last-modified value. Changing any source identity or
+the VMD cache version creates a new entry. Cached bytes carry a SHA-256 checksum
+and are regenerated if metadata or bytes do not match. MinIO object writes are
+atomic; if a cache write fails, VMD still serves the generated response.
+
+The dedicated cache bucket stays private and has a 30-day lifecycle on the
+`variants/` prefix. This bounds orphaned attachment variants and old cache
+versions without recursive cleanup in request paths. An expired active variant
+is regenerated lazily on its next request.
 
 Different images use a bounded FIFO work queue: two MinIO-read/Sharp pipelines
 run concurrently and up to eight wait briefly before VMD returns `503`. Sentinel
 still coalesces simultaneous requests for the same attachment and variant.
 
-V1 does not persist transformed variants and intentionally does not allow shared
-edge caching. A later cache can be added behind the same capability and URL
-contract without changing frontend rendering.
+VMD exposes low-noise persistent-cache, transform, and queue counters in its
+`/health` response. Cache failure warnings are rate-limited. Shared edge caching
+remains disabled at this stage.
 
 V1 supports static JPEG, PNG, WebP, and AVIF inputs. Other attachment types keep
 the existing original CDN delivery path.

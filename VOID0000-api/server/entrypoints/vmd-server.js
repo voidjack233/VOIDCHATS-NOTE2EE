@@ -13,9 +13,21 @@ const { pool } = await import('../db.js');
 const { minioClient, ATTACH_BUCKET } = await import('../minio.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
 const { getVmdSigningKey } = await import('../vmd/capability.js');
+const { initializeVmdCacheStorage } = await import('../vmd/persistentCache.js');
+const { getVmdStorageMetrics } = await import('../vmd/storage.js');
 const { default: vmdRouter } = await import('../vmd/index.js');
 
 getVmdSigningKey();
+void initializeVmdCacheStorage().then(
+  (cacheStorage) => {
+    console.log('[VMD_CACHE] persistent storage ready', cacheStorage);
+  },
+  (error) => {
+    console.warn('[VMD_CACHE] persistent storage initialization failed; continuing without cache', {
+      error: error instanceof Error ? error.message : String(error || ''),
+    });
+  },
+);
 
 const app = express();
 const PORT = process.env.VMD_SERVICE_PORT || 3006;
@@ -29,6 +41,7 @@ app.get('/health', (_req, res) => {
     success: true,
     service: 'voidapp-vmd-service',
     pid: process.pid,
+    metrics: getVmdStorageMetrics(),
   });
 });
 

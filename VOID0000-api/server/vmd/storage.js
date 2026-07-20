@@ -2,6 +2,11 @@ import { pool } from '../db.js';
 import { ATTACH_BUCKET, minioClient } from '../minio.js';
 import sentinel, { createSentinelKey } from '../sentinel/index.js';
 import { transformVmdImage, VmdMediaError } from './imageVariants.js';
+import { getVmdMetricsSnapshot, incrementVmdMetric } from './metrics.js';
+import {
+  createVmdVariantIdentity,
+  vmdPersistentCache,
+} from './persistentCache.js';
 import { VmdWorkQueue } from './workQueue.js';
 
 const DEFAULT_MAX_SOURCE_BYTES = 12 * 1024 * 1024;
@@ -40,6 +45,19 @@ const transformQueue = new VmdWorkQueue({
   maxQueued: MAX_QUEUED_TRANSFORMS,
   waitTimeoutMs: QUEUE_WAIT_TIMEOUT_MS,
 });
+const CACHE_WARNING_INTERVAL_MS = 60_000;
+const lastCacheWarningAt = new Map();
+
+function warnCacheFailure(kind, error) {
+  const now = Date.now();
+  const lastWarningAt = lastCacheWarningAt.get(kind) || 0;
+  if (now - lastWarningAt < CACHE_WARNING_INTERVAL_MS) return;
+
+  lastCacheWarningAt.set(kind, now);
+  console.warn(`[VMD_CACHE] ${kind}`, {
+    error: error instanceof Error ? error.message : String(error || ''),
+  });
+}
 
 function isObjectNotFoundError(error) {
   const code = String(error?.code || error?.name || '');
@@ -130,10 +148,52 @@ async function renderStoredImage(attachmentId, variant) {
     });
   }
 
-  return transformQueue.run(async () => {
-    const source = await readObjectBuffer(attachment.object_key, objectStat.size);
-    return transformVmdImage(source, variant);
+  const cacheIdentity = createVmdVariantIdentity({
+    attachmentId,
+    objectKey: attachment.object_key,
+    objectStat,
+    variant,
   });
+  const cached = await vmdPersistentCache.read(cacheIdentity);
+
+  if (cached.status === 'hit') {
+    incrementVmdMetric('persistent_cache_hits');
+    return cached.image;
+  }
+
+  incrementVmdMetric('persistent_cache_misses');
+  if (cached.status === 'corrupt') {
+    incrementVmdMetric('persistent_cache_corrupt');
+  } else if (cached.status === 'unavailable') {
+    incrementVmdMetric('persistent_cache_read_failures');
+    warnCacheFailure('read unavailable; regenerating from source', cached.error);
+  }
+
+  let generated;
+  try {
+    generated = await transformQueue.run(async () => {
+      const source = await readObjectBuffer(attachment.object_key, objectStat.size);
+      const image = await transformVmdImage(source, variant);
+      incrementVmdMetric('transforms_generated');
+      return image;
+    });
+  } catch (error) {
+    if (error?.code === 'VMD_AT_CAPACITY') {
+      incrementVmdMetric('queue_full');
+    } else if (error?.code === 'VMD_QUEUE_TIMEOUT') {
+      incrementVmdMetric('queue_timeouts');
+    }
+    throw error;
+  }
+
+  try {
+    generated.etag = await vmdPersistentCache.write(cacheIdentity, generated);
+  } catch (error) {
+    incrementVmdMetric('persistent_cache_write_failures');
+    warnCacheFailure('write failed; serving generated response', error);
+  }
+
+  return generated;
 }
 
 export function renderStoredVmdImage(attachmentId, variant) {
@@ -142,4 +202,11 @@ export function renderStoredVmdImage(attachmentId, variant) {
     flightKey,
     () => renderStoredImage(attachmentId, variant),
   );
+}
+
+export function getVmdStorageMetrics() {
+  return {
+    ...getVmdMetricsSnapshot(),
+    work_queue: transformQueue.getSnapshot(),
+  };
 }
