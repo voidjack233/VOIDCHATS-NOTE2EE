@@ -49,5 +49,13 @@ shared edge caches. The URL signature binds the attachment UUID, fixed variant,
 and expiration. The signature key is domain-separated from `ACCESS_SECRET`, or
 can be isolated with an optional `VMD_SIGNING_SECRET` override.
 
+Different images use a bounded FIFO work queue: two MinIO-read/Sharp pipelines
+run concurrently and up to eight wait briefly before VMD returns `503`. Sentinel
+still coalesces simultaneous requests for the same attachment and variant.
+
+V1 does not persist transformed variants and intentionally does not allow shared
+edge caching. A later cache can be added behind the same capability and URL
+contract without changing frontend rendering.
+
 V1 supports static JPEG, PNG, WebP, and AVIF inputs. Other attachment types keep
 the existing original CDN delivery path.

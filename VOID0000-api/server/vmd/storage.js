@@ -2,13 +2,21 @@ import { pool } from '../db.js';
 import { ATTACH_BUCKET, minioClient } from '../minio.js';
 import sentinel, { createSentinelKey } from '../sentinel/index.js';
 import { transformVmdImage, VmdMediaError } from './imageVariants.js';
+import { VmdWorkQueue } from './workQueue.js';
 
 const DEFAULT_MAX_SOURCE_BYTES = 12 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_TRANSFORMS = 2;
+const DEFAULT_MAX_QUEUED_TRANSFORMS = 8;
+const DEFAULT_QUEUE_WAIT_TIMEOUT_MS = 10_000;
 
 function resolvePositiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveNonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 const MAX_SOURCE_BYTES = resolvePositiveInteger(
@@ -19,8 +27,19 @@ const MAX_CONCURRENT_TRANSFORMS = resolvePositiveInteger(
   process.env.VMD_MAX_CONCURRENT_TRANSFORMS,
   DEFAULT_MAX_CONCURRENT_TRANSFORMS,
 );
-
-let activeTransforms = 0;
+const MAX_QUEUED_TRANSFORMS = resolveNonNegativeInteger(
+  process.env.VMD_MAX_QUEUED_TRANSFORMS,
+  DEFAULT_MAX_QUEUED_TRANSFORMS,
+);
+const QUEUE_WAIT_TIMEOUT_MS = resolvePositiveInteger(
+  process.env.VMD_QUEUE_WAIT_TIMEOUT_MS,
+  DEFAULT_QUEUE_WAIT_TIMEOUT_MS,
+);
+const transformQueue = new VmdWorkQueue({
+  maxConcurrent: MAX_CONCURRENT_TRANSFORMS,
+  maxQueued: MAX_QUEUED_TRANSFORMS,
+  waitTimeoutMs: QUEUE_WAIT_TIMEOUT_MS,
+});
 
 function isObjectNotFoundError(error) {
   const code = String(error?.code || error?.name || '');
@@ -87,44 +106,34 @@ async function readObjectBuffer(objectKey, expectedSize) {
 }
 
 async function renderStoredImage(attachmentId, variant) {
-  if (activeTransforms >= MAX_CONCURRENT_TRANSFORMS) {
-    throw new VmdMediaError('VMD is temporarily at capacity', {
-      code: 'VMD_AT_CAPACITY',
-      status: 503,
+  const attachment = await findAttachmentObject(attachmentId);
+  if (!attachment) {
+    throw new VmdMediaError('Attachment not found', {
+      code: 'VMD_ATTACHMENT_NOT_FOUND',
+      status: 404,
     });
   }
 
-  activeTransforms += 1;
+  let objectStat;
   try {
-    const attachment = await findAttachmentObject(attachmentId);
-    if (!attachment) {
+    objectStat = await minioClient.statObject(ATTACH_BUCKET, attachment.object_key);
+  } catch (error) {
+    if (isObjectNotFoundError(error)) {
       throw new VmdMediaError('Attachment not found', {
         code: 'VMD_ATTACHMENT_NOT_FOUND',
         status: 404,
       });
     }
+    throw new VmdMediaError('Attachment storage is unavailable', {
+      code: 'VMD_STORAGE_UNAVAILABLE',
+      status: 502,
+    });
+  }
 
-    let objectStat;
-    try {
-      objectStat = await minioClient.statObject(ATTACH_BUCKET, attachment.object_key);
-    } catch (error) {
-      if (isObjectNotFoundError(error)) {
-        throw new VmdMediaError('Attachment not found', {
-          code: 'VMD_ATTACHMENT_NOT_FOUND',
-          status: 404,
-        });
-      }
-      throw new VmdMediaError('Attachment storage is unavailable', {
-        code: 'VMD_STORAGE_UNAVAILABLE',
-        status: 502,
-      });
-    }
-
+  return transformQueue.run(async () => {
     const source = await readObjectBuffer(attachment.object_key, objectStat.size);
     return transformVmdImage(source, variant);
-  } finally {
-    activeTransforms -= 1;
-  }
+  });
 }
 
 export function renderStoredVmdImage(attachmentId, variant) {
