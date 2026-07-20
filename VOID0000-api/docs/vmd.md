@@ -95,5 +95,19 @@ still coalesces simultaneous requests for the same attachment and variant.
 VMD exposes low-noise persistent-cache, transform, and queue counters in its
 `/health` response. Cache failure warnings are rate-limited.
 
-V1 supports static JPEG, PNG, WebP, and AVIF inputs. Other attachment types keep
-the existing original CDN delivery path.
+## Supported Inputs And Limits
+
+VMD supports static JPEG, PNG, WebP, AVIF, GIF, and TIFF. Sharp reports AVIF as
+HEIF with AV1 compression; HEIC/HEIF using HEVC remains unsupported because the
+installed runtime does not advertise reliable HEIC file decoding.
+
+Animated GIF and animated WebP are preserved as animated WebP, including frame
+delays and loop count. Animation is limited to 60 frames, 12 million decoded
+pixels per frame, and 30 million decoded pixels total. Static images are limited
+to 25 million decoded pixels. The original source remains capped at 12 MiB and a
+persisted generated variant at 16 MiB.
+
+SVG is rejected before Sharp parsing and is never returned raw by VMD. Animated
+PNG, multi-page TIFF, and other unsupported multi-page inputs are rejected
+rather than silently flattened to their first frame. Audio, video, PDF, ZIP,
+and other attachments continue to use original CDN delivery.

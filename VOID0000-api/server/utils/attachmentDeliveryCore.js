@@ -11,11 +11,13 @@ const TRANSIENT_ATTACHMENT_FIELDS = new Set([
 ]);
 const VMD_IMAGE_MIME_TYPES = new Set([
   'image/avif',
+  'image/gif',
   'image/jpeg',
   'image/png',
+  'image/tiff',
   'image/webp',
 ]);
-const VMD_IMAGE_FILENAME_PATTERN = /\.(avif|jpe?g|png|webp)$/i;
+const VMD_IMAGE_FILENAME_PATTERN = /\.(avif|gif|jpe?g|png|tiff?|webp)$/i;
 
 function parseAttachmentDescriptor(rawAttachment) {
   if (typeof rawAttachment !== 'string' || rawAttachment.length === 0) {
