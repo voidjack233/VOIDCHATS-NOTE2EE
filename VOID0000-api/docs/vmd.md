@@ -44,11 +44,31 @@ request, not Fetch/XHR.
 
 ## Caching And Privacy
 
-Successful responses use private browser caching until the signed capability
-expires. `CDN-Cache-Control: private, no-store` still keeps this stage out of
-shared edge caches. The URL signature binds the attachment UUID, fixed variant,
-and expiration. The signature key is domain-separated from `ACCESS_SECRET`, or
-can be isolated with an optional `VMD_SIGNING_SECRET` override.
+Successful responses allow browser and shared-edge caching only for the signed
+capability's remaining lifetime. The URL signature binds the attachment UUID,
+fixed variant, and expiration. The signature key is domain-separated from
+`ACCESS_SECRET`, or can be isolated with an optional `VMD_SIGNING_SECRET`
+override.
+
+VMD sends `public`, matching `max-age`/`s-maxage`, `must-revalidate`,
+`no-transform`, and `immutable` directives. `CDN-Cache-Control` and
+`Cloudflare-CDN-Cache-Control` carry the same bounded shared-cache lifetime.
+The lifetime is calculated after rendering and can never extend beyond `exp`.
+Errors and invalid capabilities send `no-store` for every cache-control layer.
+
+Cloudflare must use the complete URL as the cache key. Configure one Cache Rule:
+
+- match hostname `vmd.void0000.online` and path beginning `/v1/images/`
+- mark the response eligible for cache
+- use the default cache key with all query parameters included
+- set Edge TTL to **Use cache-control header if present, bypass cache if not**
+- set Browser TTL to **Respect origin**
+- do not use an Edge Cache TTL override, Cache Everything override with a fixed
+  TTL, stale serving beyond origin directives, or query-string normalization
+
+Never ignore or remove `exp` or `sig` from the cache key. The edge may serve a
+cached response without contacting VMD, so the exact signed capability must be
+the identity that originally populated that entry.
 
 Generated variants persist in the private `vmd-variants` MinIO bucket. The
 object key is:
@@ -73,8 +93,7 @@ run concurrently and up to eight wait briefly before VMD returns `503`. Sentinel
 still coalesces simultaneous requests for the same attachment and variant.
 
 VMD exposes low-noise persistent-cache, transform, and queue counters in its
-`/health` response. Cache failure warnings are rate-limited. Shared edge caching
-remains disabled at this stage.
+`/health` response. Cache failure warnings are rate-limited.
 
 V1 supports static JPEG, PNG, WebP, and AVIF inputs. Other attachment types keep
 the existing original CDN delivery path.

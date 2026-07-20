@@ -9,12 +9,28 @@ function getSingleQueryValue(value) {
   return typeof value === 'string' ? value : null;
 }
 
-function setPrivateMediaHeaders(res, expiresAt, now, body, providedEtag) {
+function setMediaCacheHeaders(res, expiresAt, now, body, providedEtag) {
   const remainingSeconds = Math.max(0, expiresAt - Math.floor(now / 1000));
   const etag = providedEtag || `"${createHash('sha256').update(body).digest('base64url')}"`;
+  const sharedDirectives = [
+    'public',
+    `max-age=${remainingSeconds}`,
+    'must-revalidate',
+    'no-transform',
+  ];
+  const browserDirectives = [
+    ...sharedDirectives,
+    `s-maxage=${remainingSeconds}`,
+    'proxy-revalidate',
+  ];
+  if (remainingSeconds > 0) {
+    browserDirectives.push('immutable');
+    sharedDirectives.push('immutable');
+  }
 
-  res.setHeader('Cache-Control', `private, max-age=${remainingSeconds}, immutable`);
-  res.setHeader('CDN-Cache-Control', 'private, no-store');
+  res.setHeader('Cache-Control', browserDirectives.join(', '));
+  res.setHeader('CDN-Cache-Control', sharedDirectives.join(', '));
+  res.setHeader('Cloudflare-CDN-Cache-Control', sharedDirectives.join(', '));
   res.setHeader('ETag', etag);
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -24,6 +40,8 @@ function setPrivateMediaHeaders(res, expiresAt, now, body, providedEtag) {
 
 function sendError(res, status, code) {
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('CDN-Cache-Control', 'no-store');
+  res.setHeader('Cloudflare-CDN-Cache-Control', 'no-store');
   return res.status(status).json({
     success: false,
     code,
@@ -63,10 +81,10 @@ export function createVmdRouter({
 
     try {
       const image = await renderImage(req.params.attachmentId, req.params.variant);
-      const etag = setPrivateMediaHeaders(
+      const etag = setMediaCacheHeaders(
         res,
         verification.expiresAt,
-        requestNow,
+        now(),
         image.body,
         image.etag,
       );
