@@ -1,7 +1,7 @@
 // src/components/common/BlurImage.tsx
 // Image with blurhash canvas placeholder that fades out once the image loads.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { decode } from 'blurhash';
 
 interface BlurImageProps {
@@ -64,11 +64,21 @@ const BlurImage = ({
   onError,
   loading = 'lazy',
 }: BlurImageProps) => {
-  const [loaded, setLoaded] = useState(false);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const reportedLoadedSrcRef = useRef<string | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const loaded = loadedSrc === src;
 
-  useEffect(() => {
-    setLoaded(false);
-  }, [src]);
+  useLayoutEffect(() => {
+    const image = imageRef.current;
+    if (!image?.complete || image.naturalWidth <= 0) return;
+
+    setLoadedSrc(src);
+    if (reportedLoadedSrcRef.current !== src) {
+      reportedLoadedSrcRef.current = src;
+      onLoad?.(image);
+    }
+  }, [onLoad, src]);
 
   return (
     <div className="relative w-full h-full">
@@ -79,17 +89,21 @@ const BlurImage = ({
         />
       )}
       <img
+        ref={imageRef}
         src={src}
         alt={alt}
         loading={loading}
         decoding="async"
         style={{ visibility: loaded ? 'visible' : 'hidden' }}
         onLoad={(event) => {
-          setLoaded(true);
-          onLoad?.(event.currentTarget);
+          setLoadedSrc(src);
+          if (reportedLoadedSrcRef.current !== src) {
+            reportedLoadedSrcRef.current = src;
+            onLoad?.(event.currentTarget);
+          }
         }}
         onError={(event) => {
-          setLoaded(false);
+          setLoadedSrc((current) => (current === src ? null : current));
           onError?.(event.currentTarget);
         }}
         className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}

@@ -52,7 +52,7 @@ export default function AttachmentImage({
 
   return (
     <div className={`relative overflow-hidden bg-void-bg-main/50 ${className}`}>
-      {attachment.blurhash ? (
+      {!failed && attachment.blurhash ? (
         <BlurhashPlaceholder
           blurhash={attachment.blurhash}
           className="absolute inset-0 h-full w-full object-cover"
