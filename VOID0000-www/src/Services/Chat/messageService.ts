@@ -141,7 +141,24 @@ export async function uploadAttachments(conversationId: string, files: File[]): 
   }
   const urls = Array.isArray(data.urls) ? data.urls as string[] : [];
   if (urls.length !== prepared.length) throw new Error('Attachment upload response was incomplete');
-  return urls.map((url, index) => serializeAttachment({ ...prepared[index]!.attachment, url }));
+  const storedAttachments = Array.isArray(data.attachments) ? data.attachments : [];
+  return urls.map((url, index) => {
+    const stored = storedAttachments[index];
+    const storedMetadata = stored && typeof stored === 'object'
+      ? {
+          ...(typeof stored.mime === 'string' ? { mime: stored.mime } : {}),
+          ...(Number.isFinite(stored.size) ? { size: stored.size } : {}),
+          ...(Number.isFinite(stored.width) && stored.width > 0 ? { width: stored.width } : {}),
+          ...(Number.isFinite(stored.height) && stored.height > 0 ? { height: stored.height } : {}),
+        }
+      : {};
+
+    return serializeAttachment({
+      ...prepared[index]!.attachment,
+      ...storedMetadata,
+      url,
+    });
+  });
 }
 
 export async function getMessages(

@@ -8,12 +8,17 @@ import { pool } from '../../db.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
+import {
+  ChatImageSanitizationError,
+  MAX_CHAT_ATTACHMENT_BYTES,
+  sanitizeChatAttachmentImage,
+} from '../../utils/chatImageSanitizer.js';
 import sentinel, { createSentinelKey } from '../../sentinel/index.js';
 
 const router = Router({ mergeParams: true });
 
 const MAX_FILES = 5;
-const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_FILE_BYTES = MAX_CHAT_ATTACHMENT_BYTES;
 const DEFAULT_MAX_COALESCED_ATTACHMENT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_TOTAL_COALESCED_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
@@ -252,8 +257,7 @@ router.post('/', async (req, res) => {
     return res.status(500).json({ error: 'Membership check failed' });
   }
 
-  const urls = [];
-  const blurhashes = [];
+  const preparedFiles = [];
 
   for (const file of files) {
     const { data } = file;
@@ -275,42 +279,114 @@ router.post('/', async (req, res) => {
     }
 
     try {
-      const attachmentId = randomUUID();
-      const filename = `${conversation.id}/${attachmentId}.bin`;
-      const contentType = typeof file?.mime === 'string' && file.mime.trim()
+      const requestedContentType = typeof file?.mime === 'string' && file.mime.trim()
         ? file.mime.trim().slice(0, 255)
         : 'application/octet-stream';
+      const sanitizedImage = await sanitizeChatAttachmentImage(
+        fileBuffer,
+        requestedContentType,
+      );
+
+      preparedFiles.push({
+        buffer: sanitizedImage?.buffer || fileBuffer,
+        contentType: sanitizedImage?.contentType || requestedContentType,
+        width: sanitizedImage?.width,
+        height: sanitizedImage?.height,
+      });
+    } catch (err) {
+      if (err instanceof ChatImageSanitizationError) {
+        return res.status(err.status).json({
+          error: err.message,
+          code: err.code,
+        });
+      }
+      console.error('Attachment sanitization error:', err);
+      return res.status(500).json({ error: 'Failed to process attachment' });
+    }
+  }
+
+  const storedAttachments = [];
+  let dbClient = null;
+
+  try {
+    for (const prepared of preparedFiles) {
+      const attachmentId = randomUUID();
+      const filename = `${conversation.id}/${attachmentId}.bin`;
 
       await minioClient.putObject(
         ATTACH_BUCKET,
         filename,
-        fileBuffer,
-        fileBuffer.length,
+        prepared.buffer,
+        prepared.buffer.length,
         {
-          'Content-Type': contentType,
-        }
+          'Content-Type': prepared.contentType,
+        },
       );
 
-      await pool.query(
+      storedAttachments.push({
+        ...prepared,
+        attachmentId,
+        filename,
+      });
+    }
+
+    dbClient = await pool.connect();
+    await dbClient.query('BEGIN');
+    for (const attachment of storedAttachments) {
+      await dbClient.query(
         `INSERT INTO attachment_objects (id, conversation_id, uploader_id, bucket, object_key)
          VALUES ($1, $2, $3, $4, $5)`,
-        [attachmentId, conversation.id, userId, ATTACH_BUCKET, filename]
+        [
+          attachment.attachmentId,
+          conversation.id,
+          userId,
+          ATTACH_BUCKET,
+          attachment.filename,
+        ],
       );
-
-      urls.push(buildPrivateAttachmentUrl(conversation, attachmentId));
-      blurhashes.push('');
-    } catch (err) {
-      console.error('Attachment upload error:', err);
-      return res.status(500).json({ error: 'Failed to process attachment' });
     }
+    await dbClient.query('COMMIT');
+  } catch (err) {
+    if (dbClient) {
+      try {
+        await dbClient.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Attachment database rollback error:', rollbackError);
+      }
+    }
+
+    const cleanupResults = await Promise.allSettled(
+      storedAttachments.map((attachment) => (
+        minioClient.removeObject(ATTACH_BUCKET, attachment.filename)
+      )),
+    );
+    cleanupResults.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.error('Attachment object cleanup error:', result.reason);
+      }
+    });
+
+    console.error('Attachment upload error:', err);
+    return res.status(500).json({ error: 'Failed to process attachment' });
+  } finally {
+    dbClient?.release();
   }
+
+  const attachments = storedAttachments.map((attachment) => ({
+    url: buildPrivateAttachmentUrl(conversation, attachment.attachmentId),
+    mime: attachment.contentType,
+    size: attachment.buffer.length,
+    ...(attachment.width ? { width: attachment.width } : {}),
+    ...(attachment.height ? { height: attachment.height } : {}),
+  }));
 
   res.json({
     success: true,
     conversation_id: conversation.id,
     conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
-    urls,
-    blurhashes,
+    urls: attachments.map((attachment) => attachment.url),
+    blurhashes: attachments.map(() => ''),
+    attachments,
   });
 });
 
