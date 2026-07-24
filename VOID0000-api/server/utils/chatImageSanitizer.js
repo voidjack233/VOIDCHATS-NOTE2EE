@@ -1,10 +1,21 @@
 import sharp from 'sharp';
+import { ChatImageSanitizationError } from './chatImageErrors.js';
+import {
+  MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_IMAGE_ANIMATED_FRAME_PIXELS,
+  MAX_CHAT_IMAGE_ANIMATED_TOTAL_PIXELS,
+  MAX_CHAT_IMAGE_ANIMATION_FRAMES,
+  MAX_CHAT_IMAGE_STATIC_PIXELS,
+} from './chatImageLimits.js';
 
-export const MAX_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const MAX_CHAT_IMAGE_STATIC_PIXELS = 25_000_000;
-export const MAX_CHAT_IMAGE_ANIMATED_FRAME_PIXELS = 12_000_000;
-export const MAX_CHAT_IMAGE_ANIMATED_TOTAL_PIXELS = 30_000_000;
-export const MAX_CHAT_IMAGE_ANIMATION_FRAMES = 60;
+export { ChatImageSanitizationError } from './chatImageErrors.js';
+export {
+  MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_IMAGE_ANIMATED_FRAME_PIXELS,
+  MAX_CHAT_IMAGE_ANIMATED_TOTAL_PIXELS,
+  MAX_CHAT_IMAGE_ANIMATION_FRAMES,
+  MAX_CHAT_IMAGE_STATIC_PIXELS,
+} from './chatImageLimits.js';
 
 const SUPPORTED_FORMATS = new Set(['jpeg', 'png', 'webp', 'gif', 'tiff']);
 const ANIMATED_FORMATS = new Set(['gif', 'webp']);
@@ -22,15 +33,6 @@ const INPUT_OPTIONS = Object.freeze({
   limitInputPixels: MAX_CHAT_IMAGE_ANIMATED_TOTAL_PIXELS,
   sequentialRead: true,
 });
-
-export class ChatImageSanitizationError extends Error {
-  constructor(message, { code, status }) {
-    super(message);
-    this.name = 'ChatImageSanitizationError';
-    this.code = code;
-    this.status = status;
-  }
-}
 
 function invalidImageError() {
   return new ChatImageSanitizationError('Attachment is not a valid image', {

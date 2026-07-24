@@ -1,16 +1,22 @@
 // server/queues/imageQueue.js
 import { Queue, Worker, QueueEvents } from 'bullmq';
-import sharp from 'sharp';
 import { pool } from '../db.js';
 import { minioClient, BUCKET } from '../minio.js';
 import { profileCache } from '../middleware/profileCache.js';
 import { debugLog } from '../utils/debugLog.js';
+import { runSharpWork } from '../imageProcessing/sharpWorkGate.js';
 
 const connection = {
   host: process.env.VALKEY_HOST || '127.0.0.1',
   port: parseInt(process.env.VALKEY_PORT || '6379', 10),
   db: parseInt(process.env.VALKEY_DB || '0', 10),
 };
+let sharpModulePromise;
+
+function getSharp() {
+  sharpModulePromise ||= import('sharp').then((module) => module.default);
+  return sharpModulePromise;
+}
 
 // ============== QUEUE ==============
 
@@ -54,12 +60,15 @@ export function startImageWorker() {
       // 1. Decode base64 to buffer
       const buffer = Buffer.from(imageData, 'base64');
 
-      // 2. Process with sharp (resize, strip EXIF, convert to webp)
-      const processed = await sharp(buffer)
-        .resize(256, 256, { fit: 'cover', position: 'center' })
-        .rotate() // auto-rotate based on EXIF then strip it
-        .webp({ quality: 80 })
-        .toBuffer();
+      // 2. Share the worker process' bounded Sharp capacity with attachments.
+      const processed = await runSharpWork(async () => {
+        const sharp = await getSharp();
+        return sharp(buffer)
+          .resize(256, 256, { fit: 'cover', position: 'center' })
+          .rotate() // auto-rotate based on EXIF then strip it
+          .webp({ quality: 80 })
+          .toBuffer();
+      });
 
       // 3. Upload to MinIO
       const avatarFilename = `avatar-${profileId}-${Date.now()}.webp`;

@@ -9,10 +9,13 @@ import { minioClient, ATTACH_BUCKET } from '../../minio.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 import {
+  AttachmentSanitizerTransportError,
   ChatImageSanitizationError,
-  MAX_CHAT_ATTACHMENT_BYTES,
-  sanitizeChatAttachmentImage,
-} from '../../utils/chatImageSanitizer.js';
+} from '../../utils/chatImageErrors.js';
+import { MAX_CHAT_ATTACHMENT_BYTES } from '../../utils/chatImageLimits.js';
+import {
+  sanitizeChatAttachmentImageInWorker,
+} from '../../attachmentSanitizer/client.js';
 import sentinel, { createSentinelKey } from '../../sentinel/index.js';
 
 const router = Router({ mergeParams: true });
@@ -282,7 +285,7 @@ router.post('/', async (req, res) => {
       const requestedContentType = typeof file?.mime === 'string' && file.mime.trim()
         ? file.mime.trim().slice(0, 255)
         : 'application/octet-stream';
-      const sanitizedImage = await sanitizeChatAttachmentImage(
+      const sanitizedImage = await sanitizeChatAttachmentImageInWorker(
         fileBuffer,
         requestedContentType,
       );
@@ -298,6 +301,13 @@ router.post('/', async (req, res) => {
         return res.status(err.status).json({
           error: err.message,
           code: err.code,
+        });
+      }
+      if (err instanceof AttachmentSanitizerTransportError) {
+        return res.status(err.status).json({
+          error: err.message,
+          code: err.code,
+          retryable: err.retryable,
         });
       }
       console.error('Attachment sanitization error:', err);

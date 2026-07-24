@@ -39,7 +39,7 @@ At runtime it is split into:
   - runs from `startup/run-phoenix-gateway.sh`
   - default port: `4001`
 - `voidapp-worker-service`
-  - image jobs, cleanup, and presence fanout
+  - avatar image jobs, local chat-image sanitization, cleanup, and presence fanout
   - runs from `server/entrypoints/worker-server.js`
 
 PM2 manages the current NOTE2EE app processes.
@@ -154,6 +154,11 @@ The Node service set:
 - serves REST/API routes across the account, message, social, and conversation services
 - publishes realtime events into Valkey where needed
 - runs background cleanup, image processing, and presence fanout in `voidapp-worker-service`
+
+Chat attachment image bytes move from the message service to the worker through
+a permission-restricted Unix socket. They do not use BullMQ/Valkey and are not
+persisted until the worker returns a sanitized image. See
+`docs/attachment-sanitization.md`.
 
 So seeing `phoenix gateway mode` in Node logs means:
 

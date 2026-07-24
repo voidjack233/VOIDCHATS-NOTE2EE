@@ -10,11 +10,15 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 const { initPublisher } = await import('../valkey-pubsub.js');
 const { initPresenceFanout } = await import('../gateway/presence-fanout.js');
 const { startImageWorker } = await import('../queues/imageQueue.js');
+const {
+  startAttachmentSanitizerServer,
+} = await import('../attachmentSanitizer/server.js');
 const { cleanupAllExpired } = await import('../utils/cleanUpExpired.js');
 
 initPublisher();
 initPresenceFanout();
 
+const attachmentSanitizerServer = await startAttachmentSanitizerServer();
 const imageWorker = startImageWorker();
 
 async function runCleanup() {
@@ -32,8 +36,17 @@ const cleanupInterval = setInterval(runCleanup, 6 * 60 * 60 * 1000);
 async function shutdown(signal) {
   console.log(`Worker service received ${signal}, shutting down...`);
   clearInterval(cleanupInterval);
-  await imageWorker.close().catch((error) => {
-    console.error('Image worker shutdown failed:', error);
+  await Promise.allSettled([
+    attachmentSanitizerServer.close(),
+    imageWorker.close(),
+  ]).then((results) => {
+    const [attachmentResult, imageResult] = results;
+    if (attachmentResult.status === 'rejected') {
+      console.error('Attachment sanitizer shutdown failed:', attachmentResult.reason);
+    }
+    if (imageResult.status === 'rejected') {
+      console.error('Image worker shutdown failed:', imageResult.reason);
+    }
   });
   process.exit(0);
 }
@@ -46,4 +59,6 @@ process.on('SIGTERM', () => {
   void shutdown('SIGTERM');
 });
 
-console.log(`✅ Worker service running (PID ${process.pid})`);
+console.log(
+  `✅ Worker service running (PID ${process.pid}, attachment IPC ${attachmentSanitizerServer.socketPath})`,
+);

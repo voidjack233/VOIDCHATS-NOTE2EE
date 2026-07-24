@@ -113,7 +113,7 @@ const apps = [
     instances: 1,
     exec_mode: 'fork',
     env: commonEnv,
-    max_memory_restart: '350M',
+    max_memory_restart: '2G',
     watch: false,
     autorestart: true,
   },
