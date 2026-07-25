@@ -170,7 +170,7 @@ export default function TwoFactorVerify({
             </button>
           )}
 
-          {activeMethod !== 'backup' && (
+          {twoFactorData.methods.includes('backup') && activeMethod !== 'backup' && (
             <button
               onClick={() => switchMethod('backup')}
               className="w-full flex items-center justify-between p-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl transition-colors group"

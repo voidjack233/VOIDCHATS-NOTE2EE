@@ -1,8 +1,6 @@
 import { getTrustScore, updateTrustScore, TRUST_THRESHOLD, shouldRequireCaptchaForRegistration } from './trustScore.js';
 import {
-  deleteCaptchaChallenge,
-  getCaptchaChallenge,
-  updateCaptchaChallenge,
+  consumeCaptchaChallenge,
 } from '../../utils/captchaStore.js';
 
 export async function verifyCaptcha(req, res, next) {
@@ -46,9 +44,20 @@ async function verifyCaptchaAnswer(req, res, next) {
     });
   }
 
-  const captchaData = await getCaptchaChallenge(captchaId);
+  let result;
+  try {
+    result = await consumeCaptchaChallenge(captchaId, captchaAnswer);
+  } catch (err) {
+    console.error('Captcha security counter error:', err);
+    return res.status(503).json({
+      success: false,
+      message: 'Captcha verification is temporarily unavailable.',
+      code: 'CAPTCHA_SECURITY_UNAVAILABLE',
+      retryable: true,
+    });
+  }
 
-  if (!captchaData) {
+  if (result.status === 'missing') {
     return res.status(400).json({
       success: false,
       message: 'Captcha expired or invalid. Please refresh.',
@@ -56,38 +65,20 @@ async function verifyCaptchaAnswer(req, res, next) {
     });
   }
 
-  if (captchaData.attempts >= 3) {
-    await deleteCaptchaChallenge(captchaId);
+  if (result.status === 'wrong' || result.status === 'exhausted') {
     const trust = await getTrustScore(req);
     await updateTrustScore(trust.deviceId, 'CAPTCHA_FAILED', req);
     return res.status(400).json({
       success: false,
-      message: 'Too many failed attempts. Please refresh captcha.',
-      code: 'CAPTCHA_MAX_ATTEMPTS'
-    });
-  }
-
-  captchaData.attempts++;
-  await updateCaptchaChallenge(captchaId, captchaData);
-
-  if (captchaAnswer.toUpperCase().trim() !== captchaData.solution) {
-    const trust = await getTrustScore(req);
-    await updateTrustScore(trust.deviceId, 'CAPTCHA_FAILED', req);
-    if (captchaData.attempts >= 3) {
-      await deleteCaptchaChallenge(captchaId);
-    }
-    return res.status(400).json({
-      success: false,
-      message: captchaData.attempts >= 3
+      message: result.status === 'exhausted'
         ? 'Too many failed attempts. Please refresh captcha.'
         : 'Incorrect captcha. Please try again.',
-      code: captchaData.attempts >= 3 ? 'CAPTCHA_MAX_ATTEMPTS' : 'CAPTCHA_WRONG',
-      attemptsLeft: 3 - captchaData.attempts
+      code: result.status === 'exhausted' ? 'CAPTCHA_MAX_ATTEMPTS' : 'CAPTCHA_WRONG',
+      attemptsLeft: result.attemptsLeft,
     });
   }
 
-  await deleteCaptchaChallenge(captchaId);
   const trust = await getTrustScore(req);
   await updateTrustScore(trust.deviceId, 'CAPTCHA_PASSED', req);
-  next();
+  return next();
 }

@@ -17,6 +17,11 @@ import {
   sanitizeChatAttachmentImageInWorker,
 } from '../../attachmentSanitizer/client.js';
 import sentinel, { createSentinelKey } from '../../sentinel/index.js';
+import {
+  createAttachmentObjectMetadata,
+  createAttachmentStoragePolicy,
+  resolveStoredAttachmentPolicy,
+} from '../../utils/attachmentContentPolicy.js';
 
 const router = Router({ mergeParams: true });
 
@@ -24,7 +29,6 @@ const MAX_FILES = 5;
 const MAX_FILE_BYTES = MAX_CHAT_ATTACHMENT_BYTES;
 const DEFAULT_MAX_COALESCED_ATTACHMENT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_TOTAL_COALESCED_ATTACHMENT_BYTES = 32 * 1024 * 1024;
-const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function resolveByteLimit(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
@@ -107,13 +111,10 @@ function statAttachmentObject(objectKey) {
   );
 }
 
-function setAttachmentResponseHeaders(res, objectStat) {
-  const storedContentType = objectStat.metaData?.['content-type'];
-  const contentType = typeof storedContentType === 'string' && MIME_TYPE_PATTERN.test(storedContentType)
-    ? storedContentType
-    : 'application/octet-stream';
-
-  res.setHeader('Content-Type', contentType);
+function setAttachmentResponseHeaders(res, objectStat, objectKey) {
+  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey);
+  res.setHeader('Content-Type', policy.contentType);
+  res.setHeader('Content-Disposition', policy.contentDisposition);
   if (Number.isFinite(objectStat.size) && objectStat.size >= 0) {
     res.setHeader('Content-Length', String(objectStat.size));
   }
@@ -177,7 +178,7 @@ async function streamAttachmentObject(res, objectKey) {
         () => readAttachmentObjectWithinBudget(objectKey, objectStat.size),
       );
       if (objectBuffer) {
-        setAttachmentResponseHeaders(res, objectStat);
+        setAttachmentResponseHeaders(res, objectStat, objectKey);
         return res.end(objectBuffer);
       }
     } catch (err) {
@@ -200,7 +201,7 @@ async function streamAttachmentObject(res, objectKey) {
     return res.status(404).json({ error: 'Attachment not found' });
   }
 
-  setAttachmentResponseHeaders(res, objectStat);
+  setAttachmentResponseHeaders(res, objectStat, objectKey);
 
   objectStream.on('error', (err) => {
     console.error('Attachment download stream error:', err);
@@ -289,10 +290,14 @@ router.post('/', async (req, res) => {
         fileBuffer,
         requestedContentType,
       );
+      const contentPolicy = createAttachmentStoragePolicy({
+        sanitizedImage,
+        originalName: file?.name,
+      });
 
       preparedFiles.push({
         buffer: sanitizedImage?.buffer || fileBuffer,
-        contentType: sanitizedImage?.contentType || requestedContentType,
+        ...contentPolicy,
         width: sanitizedImage?.width,
         height: sanitizedImage?.height,
       });
@@ -328,9 +333,7 @@ router.post('/', async (req, res) => {
         filename,
         prepared.buffer,
         prepared.buffer.length,
-        {
-          'Content-Type': prepared.contentType,
-        },
+        createAttachmentObjectMetadata(prepared),
       );
 
       storedAttachments.push({

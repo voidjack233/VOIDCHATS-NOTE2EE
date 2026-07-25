@@ -14,6 +14,7 @@ import {
   createLoginSessionRecord,
   setLoginSessionCookies,
 } from '../services/loginSessionService.js';
+import { loadAllowedTwoFactorMethods } from '../services/twoFactorMethodService.js';
 
 const router = Router();
 
@@ -72,24 +73,15 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Check if user has 2FA enabled
-    const twoFAResult = await pool.query(
-      `SELECT method FROM user_2fa WHERE user_id = $1 AND is_enabled = true`,
-      [user.id]
-    );
-
-    if (twoFAResult.rows.length > 0) {
-      const methods = twoFAResult.rows.map(r => r.method);
-      const twoFactorToken = await create2FASession(user.id, req);
-
-      // Record successful password auth for trust scoring
-      await updateTrustScore(trustDeviceId, 'LOGIN_SUCCESS', req);
+    const methods = await loadAllowedTwoFactorMethods(pool, user.id);
+    if (methods.length > 0) {
+      const twoFactorToken = await create2FASession(user.id, req, methods);
 
       return res.json({
         success: true,
         requires2FA: true,
         twoFactorToken,
-        methods, // ['totp', 'email'] or ['totp'] or ['email']
+        methods,
         defaultMethod: methods.includes('totp') ? 'totp' : 'email',
       });
     }

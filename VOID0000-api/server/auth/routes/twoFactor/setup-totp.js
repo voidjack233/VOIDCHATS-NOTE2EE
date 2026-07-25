@@ -4,8 +4,17 @@ import { totp } from '../../services/totpService.js';
 import QRCode from 'qrcode';
 import { verifyPassword } from '../../services/credentialService.js';
 import { encrypt, decrypt } from '../../services/twoFactorService.js';
+import {
+  clearSensitiveTwoFactorActionFailures,
+  reserveSensitiveTwoFactorActionAttempt,
+} from '../../services/authAttemptLimitService.js';
+import {
+  handleSensitiveActionSecurityError,
+  sendSensitiveActionRateLimit,
+} from './actionSecurityResponses.js';
 
 const router = Router();
+const ACTION_NAME = 'setup_totp';
 
 router.post('/', async (req, res) => {
   try {
@@ -19,6 +28,15 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const attemptState = await reserveSensitiveTwoFactorActionAttempt({
+      req,
+      userId,
+      action: ACTION_NAME,
+    });
+    if (attemptState.blocked) {
+      return sendSensitiveActionRateLimit(res, attemptState);
+    }
+
     const userResult = await pool.query(
       'SELECT email, username, password_hash FROM users WHERE id = $1',
       [userId]
@@ -27,11 +45,19 @@ router.post('/', async (req, res) => {
 
     const match = await verifyPassword(user.password_hash, password);
     if (!match) {
+      if (attemptState.limitReached) {
+        return sendSensitiveActionRateLimit(res, attemptState);
+      }
       return res.status(401).json({
         success: false,
         message: 'Incorrect password.',
       });
     }
+    await clearSensitiveTwoFactorActionFailures({
+      req,
+      userId,
+      action: ACTION_NAME,
+    });
 
     const existing = await pool.query(
       `SELECT is_enabled FROM user_2fa WHERE user_id = $1 AND method = 'totp'`,
@@ -64,8 +90,10 @@ router.post('/', async (req, res) => {
       qrCode,
     });
   } catch (err) {
+    const securityResponse = handleSensitiveActionSecurityError(res, err);
+    if (securityResponse) return securityResponse;
     console.error('TOTP setup error:', err);
-    res.status(500).json({ success: false, message: 'Failed to set up authenticator' });
+    return res.status(500).json({ success: false, message: 'Failed to set up authenticator' });
   }
 });
 

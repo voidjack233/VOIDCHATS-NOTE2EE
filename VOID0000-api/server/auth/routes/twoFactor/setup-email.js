@@ -6,8 +6,17 @@ import {
   generateSetupEmailCode,
   hashSetupEmailCode,
 } from '../../services/twoFactorService.js';
+import {
+  clearSensitiveTwoFactorActionFailures,
+  reserveSensitiveTwoFactorActionAttempt,
+} from '../../services/authAttemptLimitService.js';
+import {
+  handleSensitiveActionSecurityError,
+  sendSensitiveActionRateLimit,
+} from './actionSecurityResponses.js';
 
 const router = Router();
+const ACTION_NAME = 'setup_email';
 
 router.post('/', async (req, res) => {
   try {
@@ -21,6 +30,15 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const attemptState = await reserveSensitiveTwoFactorActionAttempt({
+      req,
+      userId,
+      action: ACTION_NAME,
+    });
+    if (attemptState.blocked) {
+      return sendSensitiveActionRateLimit(res, attemptState);
+    }
+
     const userResult = await pool.query(
       'SELECT email, password_hash FROM users WHERE id = $1',
       [userId]
@@ -29,11 +47,19 @@ router.post('/', async (req, res) => {
 
     const match = await verifyPassword(user.password_hash, password);
     if (!match) {
+      if (attemptState.limitReached) {
+        return sendSensitiveActionRateLimit(res, attemptState);
+      }
       return res.status(401).json({
         success: false,
         message: 'Incorrect password.',
       });
     }
+    await clearSensitiveTwoFactorActionFailures({
+      req,
+      userId,
+      action: ACTION_NAME,
+    });
 
     const existing = await pool.query(
       `SELECT is_enabled FROM user_2fa WHERE user_id = $1 AND method = 'email'`,
@@ -70,8 +96,10 @@ router.post('/', async (req, res) => {
       message: 'Verification code sent to your email.',
     });
   } catch (err) {
+    const securityResponse = handleSensitiveActionSecurityError(res, err);
+    if (securityResponse) return securityResponse;
     console.error('Email 2FA setup error:', err);
-    res.status(500).json({ success: false, message: 'Failed to set up email 2FA' });
+    return res.status(500).json({ success: false, message: 'Failed to set up email 2FA' });
   }
 });
 

@@ -4,6 +4,14 @@ import valkey from '../../valkey.js';
 import { DeviceFingerprint } from '../../utils/deviceFingerprint.js';
 import { getClientIP } from '../../utils/securityUtils.js';
 import { getTwoFactorCodeSecret } from '../config/authSecrets.js';
+import {
+  buildAllowedTwoFactorMethods,
+} from './twoFactorMethodService.js';
+import {
+  clearFixedWindowCounters,
+  getFixedWindowCounterState,
+  incrementFixedWindowCounters,
+} from './securityCounterService.js';
 
 const TWO_FACTOR_VERIFY_WINDOW_SEC = 5 * 60;
 const TWO_FACTOR_VERIFY_MAX_ATTEMPTS = 5;
@@ -59,11 +67,19 @@ export async function deletePendingTwoFactorSession(twoFactorToken) {
   await valkey.del(getTwoFactorSessionKey(twoFactorToken));
 }
 
-export async function create2FASession(userId, req) {
+export async function create2FASession(userId, req, allowedMethods) {
   const token = uuidv4();
+  const normalizedMethods = buildAllowedTwoFactorMethods(
+    allowedMethods,
+    Array.isArray(allowedMethods) && allowedMethods.includes('backup'),
+  );
+  if (normalizedMethods.length === 0) {
+    throw new Error('Cannot create a 2FA challenge without an authorized method');
+  }
 
   await savePendingTwoFactorSession(token, {
     userId,
+    allowedMethods: normalizedMethods,
     ip: getClientIP(req),
     ...getRequestBinding(req),
     userAgent: req.get('User-Agent') || 'unknown',
@@ -82,52 +98,45 @@ function getTwoFactorEmailKey(twoFactorToken) {
 }
 
 export async function clearTwoFactorAttemptState(twoFactorToken) {
-  await valkey.del(
-    getTwoFactorSessionKey(twoFactorToken),
+  await valkey.del(getTwoFactorSessionKey(twoFactorToken));
+  await clearFixedWindowCounters([
     getTwoFactorVerifyKey(twoFactorToken),
     getTwoFactorEmailKey(twoFactorToken),
-  );
-}
-
-async function getTwoFactorVerifyState(twoFactorToken) {
-  const raw = await valkey.get(getTwoFactorVerifyKey(twoFactorToken));
-  return raw ? JSON.parse(raw) : { attempts: 0, blockedUntil: 0 };
+  ]);
 }
 
 export async function recordTwoFactorFailure(twoFactorToken) {
-  const state = await getTwoFactorVerifyState(twoFactorToken);
-  state.attempts = (state.attempts || 0) + 1;
-  if (state.attempts >= TWO_FACTOR_VERIFY_MAX_ATTEMPTS) {
-    state.blockedUntil = Date.now() + TWO_FACTOR_VERIFY_WINDOW_SEC * 1000;
-  }
-  await valkey.set(
-    getTwoFactorVerifyKey(twoFactorToken),
-    JSON.stringify(state),
-    'EX',
-    TWO_FACTOR_VERIFY_WINDOW_SEC,
-  );
-  return state;
+  const state = await incrementFixedWindowCounters({
+    keys: getTwoFactorVerifyKey(twoFactorToken),
+    maxAttempts: TWO_FACTOR_VERIFY_MAX_ATTEMPTS,
+    windowSeconds: TWO_FACTOR_VERIFY_WINDOW_SEC,
+  });
+  return {
+    ...state,
+    blockedUntil: state.exhausted
+      ? Date.now() + state.retryAfterSeconds * 1000
+      : 0,
+  };
 }
 
 export async function checkTwoFactorBlocked(twoFactorToken) {
-  const state = await getTwoFactorVerifyState(twoFactorToken);
-  const now = Date.now();
-  if (state.blockedUntil && now < state.blockedUntil) {
-    return {
-      blocked: true,
-      retryAfterSeconds: Math.ceil((state.blockedUntil - now) / 1000),
-    };
-  }
-  return { blocked: false, retryAfterSeconds: 0 };
+  const state = await getFixedWindowCounterState({
+    keys: getTwoFactorVerifyKey(twoFactorToken),
+    maxAttempts: TWO_FACTOR_VERIFY_MAX_ATTEMPTS,
+  });
+  return {
+    blocked: state.exhausted,
+    retryAfterSeconds: state.retryAfterSeconds,
+  };
 }
 
 export async function recordTwoFactorEmailSend(twoFactorToken) {
-  const key = getTwoFactorEmailKey(twoFactorToken);
-  const count = await valkey.incr(key);
-  if (count === 1) {
-    await valkey.expire(key, TWO_FACTOR_EMAIL_WINDOW_SEC);
-  }
-  return count;
+  const state = await incrementFixedWindowCounters({
+    keys: getTwoFactorEmailKey(twoFactorToken),
+    maxAttempts: TWO_FACTOR_EMAIL_MAX_SENDS + 1,
+    windowSeconds: TWO_FACTOR_EMAIL_WINDOW_SEC,
+  });
+  return state.attempts;
 }
 
 export function hasExceededTwoFactorEmailSends(count) {
@@ -135,6 +144,9 @@ export function hasExceededTwoFactorEmailSends(count) {
 }
 
 export async function getTwoFactorEmailRetryAfter(twoFactorToken) {
-  const ttl = await valkey.ttl(getTwoFactorEmailKey(twoFactorToken));
-  return ttl > 0 ? ttl : TWO_FACTOR_EMAIL_WINDOW_SEC;
+  const state = await getFixedWindowCounterState({
+    keys: getTwoFactorEmailKey(twoFactorToken),
+    maxAttempts: TWO_FACTOR_EMAIL_MAX_SENDS + 1,
+  });
+  return state.retryAfterSeconds || TWO_FACTOR_EMAIL_WINDOW_SEC;
 }

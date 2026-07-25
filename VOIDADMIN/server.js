@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import pg from 'pg';
 import argon2 from 'argon2';
+import { resolveAdminConfig } from './adminConfig.js';
 
 const { Pool } = pg;
 const __filename = fileURLToPath(import.meta.url);
@@ -22,9 +23,12 @@ if (fs.existsSync(localEnvPath)) {
 }
 
 const app = express();
-const port = Number.parseInt(process.env.ADMIN_PANEL_PORT || '4310', 10);
-const adminUsername = process.env.ADMIN_PANEL_USERNAME || 'admin';
-const adminPassword = process.env.ADMIN_PANEL_PASSWORD || 'admin';
+const {
+  host,
+  port,
+  username: adminUsername,
+  password: adminPassword,
+} = resolveAdminConfig();
 
 const pool = new Pool({
   host: process.env.PGHOST,
@@ -352,6 +356,6 @@ app.get(/.*/, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(port, () => {
-  console.log(`VOIDADMIN running on http://127.0.0.1:${port}`);
+app.listen(port, host, () => {
+  console.log(`VOIDADMIN running on http://${host}:${port}`);
 });

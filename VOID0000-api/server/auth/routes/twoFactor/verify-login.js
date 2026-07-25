@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { pool } from '../../../db.js';
 import { totp } from '../../services/totpService.js';
 import { sendVerificationEmail } from '../../../middleware/emailService.js';
+import { updateTrustScore } from '../../../middleware/captcha/trustScore.js';
+import { DeviceFingerprint } from '../../../utils/deviceFingerprint.js';
+import { IPSecurity } from '../../../utils/securityUtils.js';
 import {
   decrypt,
   findMatchingBackupCodeId,
@@ -23,6 +26,13 @@ import {
   savePendingTwoFactorSession,
 } from '../../services/twoFactorChallengeService.js';
 import {
+  isTwoFactorMethodAuthorized,
+  normalizeTwoFactorMethod,
+} from '../../services/twoFactorMethodService.js';
+import {
+  SecurityCounterUnavailableError,
+} from '../../services/securityCounterService.js';
+import {
   activateLoginSession,
   createLoginSessionRecord,
   setLoginSessionCookies,
@@ -31,6 +41,34 @@ import {
 const router = Router();
 
 export { create2FASession };
+
+function sendTwoFactorCounterUnavailable(res) {
+  return res.status(503).json({
+    success: false,
+    message: 'Verification is temporarily unavailable. Please try again.',
+    code: 'TWO_FA_SECURITY_UNAVAILABLE',
+    retryable: true,
+  });
+}
+
+async function sendFailedTwoFactorAttempt(res, twoFactorToken, message) {
+  const failureState = await recordTwoFactorFailure(twoFactorToken);
+  if (failureState.exhausted) {
+    await deletePendingTwoFactorSession(twoFactorToken);
+    res.set('Retry-After', String(Math.max(1, failureState.retryAfterSeconds)));
+    return res.status(429).json({
+      success: false,
+      message: 'Too many invalid 2FA attempts. Please login again.',
+      code: 'TWO_FA_RATE_LIMIT',
+      retryAfterSeconds: failureState.retryAfterSeconds,
+    });
+  }
+
+  return res.status(400).json({
+    success: false,
+    message,
+  });
+}
 
 // POST /api/auth/2fa/verify-login/send-email — Send email code during login
 router.post('/send-email', async (req, res) => {
@@ -53,6 +91,16 @@ router.post('/send-email', async (req, res) => {
         success: false,
         message: '2FA session changed devices. Please login again.',
         code: 'TWO_FA_DEVICE_MISMATCH',
+      });
+    }
+
+    if (
+      !await isTwoFactorMethodAuthorized(pool, session, 'email')
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'The selected verification method is unavailable.',
+        code: 'TWO_FA_METHOD_UNAVAILABLE',
       });
     }
 
@@ -85,17 +133,21 @@ router.post('/send-email', async (req, res) => {
 
     res.json({ success: true, message: 'Verification code sent to your email.' });
   } catch (err) {
+    if (err instanceof SecurityCounterUnavailableError) {
+      return sendTwoFactorCounterUnavailable(res);
+    }
     console.error('2FA send email error:', err);
-    res.status(500).json({ success: false, message: 'Failed to send code' });
+    return res.status(500).json({ success: false, message: 'Failed to send code' });
   }
 });
 
 // POST /api/auth/2fa/verify-login — Verify 2FA code and complete login
 router.post('/', async (req, res) => {
   try {
-    const { twoFactorToken, code, method } = req.body;
+    const { twoFactorToken, code } = req.body;
+    const method = normalizeTwoFactorMethod(req.body.method);
 
-    if (!twoFactorToken || !code || !method) {
+    if (!twoFactorToken || !code || typeof req.body.method !== 'string') {
       return res.status(400).json({
         success: false,
         message: 'Token, code, and method are required.',
@@ -125,12 +177,24 @@ router.post('/', async (req, res) => {
     const blockedState = await checkTwoFactorBlocked(twoFactorToken);
     if (blockedState.blocked) {
       await deletePendingTwoFactorSession(twoFactorToken);
+      res.set('Retry-After', String(Math.max(1, blockedState.retryAfterSeconds)));
       return res.status(429).json({
         success: false,
         message: 'Too many invalid 2FA attempts. Please login again.',
         code: 'TWO_FA_RATE_LIMIT',
         retryAfterSeconds: blockedState.retryAfterSeconds,
       });
+    }
+
+    if (
+      !method ||
+      !await isTwoFactorMethodAuthorized(pool, session, method)
+    ) {
+      return sendFailedTwoFactorAttempt(
+        res,
+        twoFactorToken,
+        'The selected verification method is unavailable.',
+      );
     }
 
     const userId = session.userId;
@@ -145,14 +209,7 @@ router.post('/', async (req, res) => {
       const usedCodeId = await findMatchingBackupCodeId(backupCodes.rows, code);
 
       if (!usedCodeId) {
-        const failureState = await recordTwoFactorFailure(twoFactorToken);
-        if (failureState.blockedUntil) {
-          await deletePendingTwoFactorSession(twoFactorToken);
-        }
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid backup code.',
-        });
+        return sendFailedTwoFactorAttempt(res, twoFactorToken, 'Invalid backup code.');
       }
 
       // Mark code as used
@@ -178,14 +235,11 @@ router.post('/', async (req, res) => {
       const isValid = totp.verifyToken(code, secret);
 
       if (!isValid) {
-        const failureState = await recordTwoFactorFailure(twoFactorToken);
-        if (failureState.blockedUntil) {
-          await deletePendingTwoFactorSession(twoFactorToken);
-        }
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid code. Please try again.',
-        });
+        return sendFailedTwoFactorAttempt(
+          res,
+          twoFactorToken,
+          'Invalid code. Please try again.',
+        );
       }
     } else if (method === 'email') {
       // Verify email code
@@ -198,14 +252,11 @@ router.post('/', async (req, res) => {
 
       const submittedCodeHash = hashEmailCode(twoFactorToken, code);
       if (!safeEqualHex(session.emailCodeHash, submittedCodeHash)) {
-        const failureState = await recordTwoFactorFailure(twoFactorToken);
-        if (failureState.blockedUntil) {
-          await deletePendingTwoFactorSession(twoFactorToken);
-        }
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid code. Please try again.',
-        });
+        return sendFailedTwoFactorAttempt(
+          res,
+          twoFactorToken,
+          'Invalid code. Please try again.',
+        );
       }
     } else {
       return res.status(400).json({
@@ -231,6 +282,12 @@ router.post('/', async (req, res) => {
     });
 
     await activateLoginSession(loginSession);
+    await IPSecurity.logIPActivity(req, 'LOGIN_SUCCESS', userId);
+    await updateTrustScore(
+      DeviceFingerprint.ensureFingerprint(req, res),
+      'LOGIN_SUCCESS',
+      req,
+    );
     setLoginSessionCookies(req, res, loginSession);
 
     res.json({
@@ -249,8 +306,11 @@ router.post('/', async (req, res) => {
       },
     });
   } catch (err) {
+    if (err instanceof SecurityCounterUnavailableError) {
+      return sendTwoFactorCounterUnavailable(res);
+    }
     console.error('2FA verify login error:', err);
-    res.status(500).json({ success: false, message: 'Verification failed' });
+    return res.status(500).json({ success: false, message: 'Verification failed' });
   }
 });
 

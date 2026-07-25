@@ -1,8 +1,17 @@
 import { Router } from 'express';
 import { pool } from '../../../db.js';
 import { verifyPassword } from '../../services/credentialService.js';
+import {
+  clearSensitiveTwoFactorActionFailures,
+  reserveSensitiveTwoFactorActionAttempt,
+} from '../../services/authAttemptLimitService.js';
+import {
+  handleSensitiveActionSecurityError,
+  sendSensitiveActionRateLimit,
+} from './actionSecurityResponses.js';
 
 const router = Router();
+const ACTION_NAME = 'disable';
 
 // POST /api/auth/2fa/disable — Disable a 2FA method
 router.post('/', async (req, res) => {
@@ -17,6 +26,15 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const attemptState = await reserveSensitiveTwoFactorActionAttempt({
+      req,
+      userId,
+      action: ACTION_NAME,
+    });
+    if (attemptState.blocked) {
+      return sendSensitiveActionRateLimit(res, attemptState);
+    }
+
     // Verify password first
     const userResult = await pool.query(
       'SELECT password_hash FROM users WHERE id = $1',
@@ -25,11 +43,19 @@ router.post('/', async (req, res) => {
 
     const match = await verifyPassword(userResult.rows[0].password_hash, password);
     if (!match) {
+      if (attemptState.limitReached) {
+        return sendSensitiveActionRateLimit(res, attemptState);
+      }
       return res.status(401).json({
         success: false,
         message: 'Incorrect password.',
       });
     }
+    await clearSensitiveTwoFactorActionFailures({
+      req,
+      userId,
+      action: ACTION_NAME,
+    });
 
     // Disable the method
     const result = await pool.query(
@@ -62,8 +88,10 @@ router.post('/', async (req, res) => {
       message: `${method === 'totp' ? 'Authenticator app' : 'Email 2FA'} has been disabled.`,
     });
   } catch (err) {
+    const securityResponse = handleSensitiveActionSecurityError(res, err);
+    if (securityResponse) return securityResponse;
     console.error('2FA disable error:', err);
-    res.status(500).json({ success: false, message: 'Failed to disable 2FA' });
+    return res.status(500).json({ success: false, message: 'Failed to disable 2FA' });
   }
 });
 
