@@ -54,6 +54,11 @@ import type {
   MessageStreamEvent,
   MessageUpdate,
 } from '../../../Services/hooks/Chats/MessageList/messageListTypes';
+import {
+  MAX_RENDERED_NEWER_RANGE_HEIGHT,
+  shouldShowInitialMessageTimelineSkeleton,
+  shouldShowNewerHistoryLoader,
+} from './messageTimelinePresentation';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -254,7 +259,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     MESSAGE_PAGE_SIZE * estimateHistoryLogicalRowHeight(visualMessages, density)
   ), [density, visualMessages]);
   const maxPhysicalBottomSpacerHeight = Math.min(
-    MAX_PHYSICAL_HISTORY_SPACER_HEIGHT,
+    MAX_RENDERED_NEWER_RANGE_HEIGHT,
     historyLogicalSlotHeight,
   );
   const nearViewportMessageIds = useNearViewportMessages(scrollerElement, conversation.id);
@@ -298,10 +303,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const topHistorySkeletonRowCount = Math.max(
     4,
     Math.ceil(renderedTopSpacerHeight / historySkeletonRowHeight) + 1,
-  );
-  const bottomHistorySkeletonRowCount = Math.max(
-    4,
-    Math.ceil(renderedBottomSpacerHeight / historySkeletonRowHeight) + 1,
   );
 
   const {
@@ -1253,7 +1254,11 @@ const MessageViewV2 = memo(function MessageViewV2({
     user?.id,
   ]);
 
-  if (loading && messages.length === 0) {
+  if (shouldShowInitialMessageTimelineSkeleton({
+    loading,
+    initialHydrationSettled,
+    visibleMessageCount: messages.length,
+  })) {
     return <MessageViewSkeleton density={density} />;
   }
 
@@ -1280,10 +1285,11 @@ const MessageViewV2 = memo(function MessageViewV2({
         )}
         bottomLogicalRangeHeight={bottomLogicalRangeHeight}
         renderedBottomSpacerHeight={renderedBottomSpacerHeight}
-        bottomHistorySkeletonRowCount={bottomHistorySkeletonRowCount}
-        newerRangeStatus={newerRangeStatus}
         hasNewer={hasNewer}
-        loadingNewer={loadingNewer}
+        showNewerLoader={shouldShowNewerHistoryLoader({
+          loadingNewer,
+          visibleMessageCount: messages.length,
+        })}
         newerSentinelRef={newerSentinelRef}
         density={density}
       >

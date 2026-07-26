@@ -1,4 +1,5 @@
 import type { ReactNode, RefObject, UIEventHandler } from 'react';
+import { Loader2 } from 'lucide-react';
 import type { Density } from '../../../Services/hooks/Settings/useTheme';
 import type { HistoryRangeStatus } from './useMessageScrollGeometry';
 import OlderHistorySkeleton from './HistorySkeleton';
@@ -18,10 +19,8 @@ interface MessageTimelineViewportProps {
   children: ReactNode;
   bottomLogicalRangeHeight: number;
   renderedBottomSpacerHeight: number;
-  bottomHistorySkeletonRowCount: number;
-  newerRangeStatus: HistoryRangeStatus;
   hasNewer: boolean;
-  loadingNewer: boolean;
+  showNewerLoader: boolean;
   newerSentinelRef: RefObject<HTMLDivElement | null>;
   density: Density;
 }
@@ -41,10 +40,8 @@ export default function MessageTimelineViewport({
   children,
   bottomLogicalRangeHeight,
   renderedBottomSpacerHeight,
-  bottomHistorySkeletonRowCount,
-  newerRangeStatus,
   hasNewer,
-  loadingNewer,
+  showNewerLoader,
   newerSentinelRef,
   density,
 }: MessageTimelineViewportProps) {
@@ -52,6 +49,7 @@ export default function MessageTimelineViewport({
     <div
       ref={setScrollerRef}
       onScroll={onScroll}
+      data-message-timeline
       className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
       style={{ overflowAnchor: 'none', opacity: initialRestoreDone ? 1 : 0 }}
     >
@@ -77,20 +75,25 @@ export default function MessageTimelineViewport({
 
       {children}
 
-      {/* Newer logical range: real newer rows replace this skeleton area when available. */}
-      {bottomLogicalRangeHeight > 1 && (hasNewer || loadingNewer) && (
+      {/* Keep the newer boundary compact so pagination never visually replaces the timeline. */}
+      {bottomLogicalRangeHeight > 1 && (hasNewer || showNewerLoader) && (
         <div
-          className="relative flex w-full items-start justify-center"
+          data-message-newer-range
+          className="relative flex w-full items-center justify-center"
           style={{ height: `${renderedBottomSpacerHeight}px` }}
         >
           {hasNewer && <div ref={newerSentinelRef} className="absolute inset-x-0 top-0 h-px w-full" />}
-          <div className="absolute inset-0 w-full">
-            <OlderHistorySkeleton
-              density={density}
-              rowCount={bottomHistorySkeletonRowCount}
-              active={newerRangeStatus === 'loading'}
-            />
-          </div>
+          {showNewerLoader && (
+            <div
+              data-message-newer-loader
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-2 text-xs text-void-text-muted"
+            >
+              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+              <span>Loading newer messages...</span>
+            </div>
+          )}
         </div>
       )}
     </div>
