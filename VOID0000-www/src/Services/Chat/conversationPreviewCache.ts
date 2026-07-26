@@ -119,7 +119,11 @@ export async function applyLiveMessagePreview(
   currentUserId?: string | null,
 ): Promise<string | null> {
   const localMessage = toLocalMessage(message);
-  await messageSync.storeIncomingMessage(localMessage);
+  await messageSync.storeIncomingMessage(localMessage, {
+    source: message.sender_id === currentUserId
+      ? 'own_send'
+      : 'incoming_realtime',
+  });
   const preview = formatConversationPreview(localMessage, currentUserId);
   setConversationPreview([message.conversation_id, message.conversation_public_id], preview);
   return preview;

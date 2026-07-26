@@ -332,7 +332,11 @@ class MessageStore {
     });
   }
 
-  async setSyncCursor(conversationId: string, lastMessageId: string): Promise<void> {
+  async setSyncCursor(
+    conversationId: string,
+    lastMessageId: string | null,
+    lastSyncedAt = new Date().toISOString(),
+  ): Promise<void> {
     const db = await this.getDb();
 
     return new Promise((resolve, reject) => {
@@ -341,7 +345,7 @@ class MessageStore {
       store.put({
         conversation_id: conversationId,
         last_message_id: lastMessageId,
-        last_synced_at: new Date().toISOString(),
+        last_synced_at: lastSyncedAt,
       });
 
       tx.oncomplete = () => resolve();

@@ -164,7 +164,11 @@ const useMessageListRealtime = ({
           link_preview: normalizedMessage.link_preview ?? undefined,
         };
 
-        messageSync.storeIncomingMessage(localMessage).catch(console.error);
+        messageSync.storeIncomingMessage(localMessage, {
+          source: normalizedMessage.sender_id === userId
+            ? 'own_send'
+            : 'incoming_realtime',
+        }).catch(console.error);
       }
 
       const shouldApplyImmediately = shouldApplyRealtimeMessageImmediately({

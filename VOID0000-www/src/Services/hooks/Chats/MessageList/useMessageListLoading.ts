@@ -191,6 +191,8 @@ const useMessageListLoading = ({
           preferSessionCache: true,
           initialLimit: INITIAL_OPEN_LIMIT,
           syncLimit: INITIAL_OPEN_LIMIT,
+          initiator: 'message_list_open',
+          savedRuntimeExists: Boolean(savedRuntime),
         });
         if (ignore) return;
 
