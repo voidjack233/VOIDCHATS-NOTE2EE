@@ -55,6 +55,10 @@ import type {
   MessageUpdate,
 } from '../../../Services/hooks/Chats/MessageList/messageListTypes';
 import {
+  getConversationWindowSnapshot,
+  saveConversationScrollPosition,
+} from '../../../Services/hooks/Chats/MessageList/messageListWindowCache';
+import {
   MAX_RENDERED_NEWER_RANGE_HEIGHT,
   shouldShowInitialMessageTimelineSkeleton,
   shouldShowNewerHistoryLoader,
@@ -124,6 +128,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 }: MessageViewProps) {
   const { user } = useUser();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const lastMountedScrollerRef = useRef<HTMLDivElement | null>(null);
   const [scrollerElement, setScrollerElement] = useState<HTMLDivElement | null>(null);
   const olderSentinelRef = useRef<HTMLDivElement | null>(null);
   const newerSentinelRef = useRef<HTMLDivElement | null>(null);
@@ -166,6 +171,9 @@ const MessageViewV2 = memo(function MessageViewV2({
   const isMobileKeyboardOpen = useMobileKeyboardOpen();
   const setScrollerRef = useCallback((element: HTMLDivElement | null) => {
     scrollerRef.current = element;
+    if (element) {
+      lastMountedScrollerRef.current = element;
+    }
     setScrollerElement(element);
   }, []);
 
@@ -421,7 +429,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [conversation.id, mergeVisibleMessages, onSendNotice, user?.id]);
 
   // ── Reset on conversation switch ──
-  useEffect(() => {
+  useLayoutEffect(() => {
     atBottomRef.current = true;
     forceFollowOutputRef.current = false;
     initialLatestRestoreDoneRef.current = false;
@@ -950,14 +958,54 @@ const MessageViewV2 = memo(function MessageViewV2({
       return false;
     }
 
-    if (visualMessages.length > 0) {
+    const savedWindow = getConversationWindowSnapshot(conversation.id);
+    let restoredSavedPosition = false;
+    if (savedWindow?.wasAtBottom === false) {
+      restoredSavedPosition = restoreVisibleMessageAnchor(scroller, {
+        anchorMessageId: savedWindow.topVisibleMessageId || null,
+        anchorOffsetTop: savedWindow.topVisibleMessageOffset ?? null,
+      });
+
+      if (
+        !restoredSavedPosition &&
+        typeof savedWindow.scrollTop === 'number' &&
+        Number.isFinite(savedWindow.scrollTop)
+      ) {
+        const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        scroller.scrollTop = Math.min(maxScrollTop, Math.max(0, savedWindow.scrollTop));
+        restoredSavedPosition = true;
+      }
+    }
+
+    if (!restoredSavedPosition && visualMessages.length > 0) {
       scrollToBottom('auto');
     }
     syncScrollState();
     initialLatestRestoreDoneRef.current = true;
     if (scroller) scroller.style.opacity = '1';
     return true;
-  }, [initialHydrationSettled, scrollToBottom, syncScrollState, visualMessages.length]);
+  }, [
+    conversation.id,
+    initialHydrationSettled,
+    scrollToBottom,
+    syncScrollState,
+    visualMessages.length,
+  ]);
+
+  useLayoutEffect(() => () => {
+    const scroller = scrollerRef.current || lastMountedScrollerRef.current;
+    if (!scroller || !initialLatestRestoreDoneRef.current) {
+      return;
+    }
+
+    const anchor = getMessageAnchorsAroundViewport(scroller)[0] || null;
+    saveConversationScrollPosition(conversation.id, {
+      messageId: anchor?.messageId,
+      offsetTop: anchor?.offsetTop,
+      scrollTop: scroller.scrollTop,
+      wasAtBottom: atBottomRef.current,
+    });
+  }, [conversation.id]);
 
   useMessageHistorySentinels({
     scrollerRef,

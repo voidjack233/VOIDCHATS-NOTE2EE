@@ -22,7 +22,6 @@ import {
   applyAppendedPage,
   applyPrependedPage,
   applyRenderedUpdate,
-  createEmptyRuntime,
   evictTrimmedMessages,
   getRenderedMessages,
   getRuntimeStats,
@@ -37,6 +36,7 @@ import {
   type RuntimeStats,
 } from './MessageList/messageListRuntime';
 import type { MessageDelete, MessageStreamEvent, MessageUpdate } from './MessageList/messageListTypes';
+import { resolveInitialMessageRuntime } from './MessageList/messageListInitialRuntime';
 import { useMessageListLoading } from './MessageList/useMessageListLoading';
 import { useMessageListPagination } from './MessageList/useMessageListPagination';
 import { useMessageListRealtime } from './MessageList/useMessageListRealtime';
@@ -164,20 +164,33 @@ type MessageWindowAction =
       isAtPresent?: boolean;
     };
 
-const initialMessageWindowState: MessageWindowState = {
-  runtime: createEmptyRuntime('__initial__'),
-  firstItemIndex: MESSAGE_LIST_BASE_INDEX,
-  groupBreakBeforeIds: new Set(),
-  queuedNewerHasNewer: false,
-  queuedNewerIsAtPresent: true,
-  loading: true,
-  syncing: false,
-  initialHydrationSettled: false,
-  loadingOlder: false,
-  loadingNewer: false,
-  hasOlder: false,
-  hasNewer: false,
-  isAtPresent: true,
+const createInitialMessageWindowState = ({
+  conversationId,
+  historyAccessFenceSignature,
+}: {
+  conversationId: string;
+  historyAccessFenceSignature: string;
+}): MessageWindowState => {
+  const { runtime, restored } = resolveInitialMessageRuntime(
+    conversationId,
+    historyAccessFenceSignature,
+  );
+
+  return {
+    runtime,
+    firstItemIndex: MESSAGE_LIST_BASE_INDEX,
+    groupBreakBeforeIds: new Set(),
+    queuedNewerHasNewer: false,
+    queuedNewerIsAtPresent: true,
+    loading: !restored,
+    syncing: false,
+    initialHydrationSettled: restored,
+    loadingOlder: false,
+    loadingNewer: false,
+    hasOlder: restored ? runtime.hasOlder : false,
+    hasNewer: restored ? runtime.hasNewer : false,
+    isAtPresent: restored ? !runtime.hasNewer : true,
+  };
 };
 
 const resolveStateAction = <T,>(previous: T, value: SetStateAction<T>): T => (
@@ -522,7 +535,14 @@ export const useMessageList = (
     ? String(historyAccessFence.joinedAtMs)
     : 'none';
 
-  const [windowState, dispatchWindowState] = useReducer(messageWindowReducer, initialMessageWindowState);
+  const [windowState, dispatchWindowState] = useReducer(
+    messageWindowReducer,
+    {
+      conversationId,
+      historyAccessFenceSignature,
+    },
+    createInitialMessageWindowState,
+  );
 
   const messagesRef = useRef<Message[]>([]);
   const lastLoadedConversationIdRef = useRef<string | null>(null);
@@ -845,6 +865,7 @@ export const useMessageList = (
 
     const existingSnapshot = getConversationWindowSnapshot(conversationId);
     setConversationWindowSnapshot(conversationId, {
+      ...existingSnapshot,
       loadedCount: Math.min(
         MAX_CACHED_MESSAGES_PER_CONVERSATION,
         Math.max(existingSnapshot?.loadedCount ?? MESSAGE_INITIAL_PAGE_SIZE, messages.length)

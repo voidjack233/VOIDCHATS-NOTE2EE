@@ -2,6 +2,16 @@ interface ConversationWindowSnapshot {
   loadedCount: number;
   hasOlder: boolean;
   topVisibleMessageId?: string;
+  topVisibleMessageOffset?: number;
+  scrollTop?: number;
+  wasAtBottom?: boolean;
+}
+
+interface ConversationScrollPosition {
+  messageId?: string;
+  offsetTop?: number;
+  scrollTop: number;
+  wasAtBottom: boolean;
 }
 
 const conversationWindowCache = new Map<string, ConversationWindowSnapshot>();
@@ -16,12 +26,18 @@ export const setConversationWindowSnapshot = (
   conversationWindowCache.set(conversationId, snapshot);
 };
 
-export const saveConversationScrollPosition = (conversationId: string, messageId: string) => {
+export const saveConversationScrollPosition = (
+  conversationId: string,
+  position: ConversationScrollPosition,
+) => {
   const existing = getConversationWindowSnapshot(conversationId);
   setConversationWindowSnapshot(conversationId, {
     loadedCount: existing?.loadedCount ?? 0,
     hasOlder: existing?.hasOlder ?? false,
-    topVisibleMessageId: messageId,
+    topVisibleMessageId: position.messageId,
+    topVisibleMessageOffset: position.offsetTop,
+    scrollTop: position.scrollTop,
+    wasAtBottom: position.wasAtBottom,
   });
 };
 
@@ -43,4 +59,4 @@ export const resolveInitialHasOlder = ({
   );
 };
 
-export type { ConversationWindowSnapshot };
+export type { ConversationScrollPosition, ConversationWindowSnapshot };

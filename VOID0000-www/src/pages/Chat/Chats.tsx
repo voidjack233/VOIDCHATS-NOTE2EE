@@ -1,5 +1,5 @@
 // src/pages/Chat/Chats.tsx
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../../components/Chat/Conversation/ConversationSettings';
@@ -17,6 +17,10 @@ import GroupCreateModal from '../../components/Chat/Groups/GroupCreateModal';
 import FriendsView from '../../components/common/Friends/FriendsView';
 import { gateway } from '../../Services/Gateway/gateway';
 import { Message, Conversation, ConversationMember, forwardMessageToConversation } from '../../Services/Chat/chatService';
+import {
+  createDmConversationSeed,
+  isConversationDetailAuthorizationFailure,
+} from '../../Services/Chat/conversationSelectionPolicy';
 import { matchesConversationIdentifier } from '../../Services/Chat/utils/conversationUtils';
 import { useUser } from '../../Services/Auth/UserContext';
 import { ConversationPaneSkeleton } from '../../components/common/Skeleton';
@@ -110,11 +114,24 @@ const ChatDashboard = () => {
     setMessageUpdate,
     patchConversationInState,
     handleMessageSent,
+    handleSelectConversation,
     handleStartDM,
     handleBackToMe,
     openConversationByIdentifier,
+    refreshConversationByIdentifier,
     openGroupByIdentifier,
   } = useChatManager(user);
+  const backgroundDetailActionsRef = useRef({
+    handleBackToMe,
+    refreshConversationByIdentifier,
+  });
+
+  useEffect(() => {
+    backgroundDetailActionsRef.current = {
+      handleBackToMe,
+      refreshConversationByIdentifier,
+    };
+  }, [handleBackToMe, refreshConversationByIdentifier]);
 
   const showSendNotice = useCallback((message: string | null) => {
     setSendNotice(message);
@@ -157,6 +174,20 @@ const ChatDashboard = () => {
     return `/chats/${groupRouteId}`;
   };
 
+  const startDirectMessage = async (targetId: string) => {
+    const result = await handleStartDM(targetId);
+    const friend = friends.find((entry) => entry.id === targetId);
+    if (friend) {
+      handleSelectConversation(createDmConversationSeed({
+        conversationId: result.conversationId,
+        conversationPublicId: result.conversationPublicId,
+        peer: friend,
+      }));
+    }
+    navigate(`/chats/@me/${result.routeId}`);
+    setConvRefresh((count) => count + 1);
+  };
+
   useEffect(() => {
     const handleResize = () => {
       setIsMobile(window.innerWidth < 768);
@@ -197,7 +228,7 @@ const ChatDashboard = () => {
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let cancelled = false;
 
     const syncRouteState = async () => {
@@ -265,6 +296,54 @@ const ChatDashboard = () => {
     groupConversationId,
     location.pathname,
     navigate,
+  ]);
+
+  const activeDmMatchesRoute = Boolean(
+    dmConversationId &&
+    !activeGroup &&
+    activeConversation?.type === 'dm' &&
+    matchesConversationIdentifier(activeConversation, dmConversationId),
+  );
+
+  useEffect(() => {
+    if (
+      loading ||
+      !user?.id ||
+      !dmConversationId ||
+      !activeDmMatchesRoute
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    void backgroundDetailActionsRef.current
+      .refreshConversationByIdentifier(dmConversationId, { maxFreshAgeMs: 1_500 })
+      .then((conversation) => {
+        if (cancelled || conversation.type === 'dm') return;
+        backgroundDetailActionsRef.current.handleBackToMe();
+        navigate('/chats', { replace: true });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+
+        if (isConversationDetailAuthorizationFailure(error)) {
+          backgroundDetailActionsRef.current.handleBackToMe();
+          navigate('/chats', { replace: true });
+          return;
+        }
+
+        console.warn('Failed to refresh conversation details in the background:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeDmMatchesRoute,
+    dmConversationId,
+    loading,
+    navigate,
+    user?.id,
   ]);
 
   useEffect(() => {
@@ -343,8 +422,10 @@ const ChatDashboard = () => {
     !matchesConversationIdentifier(activeGroup, groupConversationId)
   );
   const isConversationRoutePending = !loading && Boolean(user?.id) && (isPendingDmRoute || isPendingGroupRoute);
-  const showConversationRoutePendingSkeleton = isConversationRoutePending && !activeConversation;
-  const showConversationRoutePendingOverlay = isConversationRoutePending && !!activeConversation;
+  const showConversationRoutePendingSkeleton =
+    isConversationRoutePending && (isPendingDmRoute || !activeConversation);
+  const showConversationRoutePendingOverlay =
+    isConversationRoutePending && !isPendingDmRoute && !!activeConversation;
   const typingParticipants = useMemo(() => {
     if (!activeConversation) return [];
 
@@ -559,12 +640,12 @@ const ChatDashboard = () => {
           {isMobile && mobileSidebarMode === 'friends' ? (
             <FriendsView
               friends={friends}
-              onStartDM={(...args) => {
-                void handleStartDM(...args).then((routeId) => {
-                  if (routeId) navigate(`/chats/@me/${routeId}`);
-                  setConvRefresh((n) => n + 1);
+              onStartDM={(targetId) => {
+                void startDirectMessage(targetId).then(() => {
                   setMobileSidebarMode('messages');
                   setIsMobileSidebarOpen(false);
+                }).catch((error) => {
+                  console.error('Failed to start direct message:', error);
                 });
               }}
             />
@@ -573,6 +654,7 @@ const ChatDashboard = () => {
               activeId={activeGroup?.id || activeConversation?.id || null}
               onSelect={(conv) => {
                 if (conv.type === 'dm') {
+                  handleSelectConversation(conv);
                   navigate(getDmRoute(conv));
                 } else {
                   navigate(getGroupRoute(conv));
@@ -675,10 +757,9 @@ const ChatDashboard = () => {
             
             <FriendsView
               friends={friends}
-              onStartDM={(...args) => {
-                void handleStartDM(...args).then((routeId) => {
-                  if (routeId) navigate(`/chats/@me/${routeId}`);
-                  setConvRefresh((n) => n + 1);
+              onStartDM={(targetId) => {
+                void startDirectMessage(targetId).catch((error) => {
+                  console.error('Failed to start direct message:', error);
                 });
               }}
             />
