@@ -19,8 +19,8 @@ import {
 import sentinel, { createSentinelKey } from '../../sentinel/index.js';
 import {
   createAttachmentObjectMetadata,
+  createProtectedAttachmentResponseHeaders,
   createAttachmentStoragePolicy,
-  resolveStoredAttachmentPolicy,
 } from '../../utils/attachmentContentPolicy.js';
 
 const router = Router({ mergeParams: true });
@@ -112,14 +112,13 @@ function statAttachmentObject(objectKey) {
 }
 
 function setAttachmentResponseHeaders(res, objectStat, objectKey) {
-  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey);
-  res.setHeader('Content-Type', policy.contentType);
-  res.setHeader('Content-Disposition', policy.contentDisposition);
+  const headers = createProtectedAttachmentResponseHeaders(objectStat, objectKey);
+  Object.entries(headers).forEach(([name, value]) => {
+    res.setHeader(name, value);
+  });
   if (Number.isFinite(objectStat.size) && objectStat.size >= 0) {
     res.setHeader('Content-Length', String(objectStat.size));
   }
-  res.setHeader('Cache-Control', 'private, max-age=300');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
 }
 
 async function readAttachmentObject(objectKey) {

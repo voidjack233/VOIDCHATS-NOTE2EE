@@ -6,6 +6,7 @@ import sharp from 'sharp';
 import { sanitizeChatAttachmentImage } from '../../../server/utils/chatImageSanitizer.js';
 import {
   createAttachmentObjectMetadata,
+  createProtectedAttachmentResponseHeaders,
   createAttachmentStoragePolicy,
   createPresignedAttachmentResponseParams,
   resolveStoredAttachmentPolicy,
@@ -98,6 +99,91 @@ test('stored and signed active content is always forced to download', () => {
   );
 });
 
+test('only the exact sanitizer marker permits approved raster images inline', () => {
+  for (const contentType of ['image/jpeg', 'image/png']) {
+    const policy = resolveStoredAttachmentPolicy({
+      metaData: {
+        'content-type': contentType,
+        'x-amz-meta-void-sanitized-image': '1',
+      },
+    }, 'conversation/image.bin');
+    assert.equal(policy.inline, true);
+    assert.equal(policy.contentType, contentType);
+    assert.match(policy.contentDisposition, /^inline;/);
+  }
+
+  for (const marker of [undefined, '0', 'unknown']) {
+    const metadata = { 'content-type': 'image/jpeg' };
+    if (marker !== undefined) {
+      metadata['x-amz-meta-void-sanitized-image'] = marker;
+    }
+    const policy = resolveStoredAttachmentPolicy(
+      { metaData: metadata },
+      'conversation/legacy.jpg',
+    );
+    assert.equal(policy.inline, false);
+    assert.equal(policy.contentType, 'application/octet-stream');
+    assert.match(policy.contentDisposition, /^attachment;/);
+  }
+});
+
+test('active image-like types never become inline regardless of marker', () => {
+  for (const contentType of ['text/html', 'image/svg+xml']) {
+    const policy = resolveStoredAttachmentPolicy({
+      metaData: {
+        'content-type': contentType,
+        'x-amz-meta-void-sanitized-image': '1',
+      },
+    }, 'conversation/active.bin');
+    assert.equal(policy.inline, false);
+    assert.equal(policy.contentType, 'application/octet-stream');
+    assert.match(policy.contentDisposition, /^attachment;/);
+  }
+});
+
+test('protected and signed delivery apply the same strict marker policy', () => {
+  const trustedImageStat = {
+    metaData: {
+      'content-type': 'image/jpeg',
+      'x-amz-meta-void-sanitized-image': '1',
+      'x-amz-meta-original-filename': 'trusted.jpg',
+    },
+  };
+  const legacyImageStat = {
+    metaData: {
+      'content-type': 'image/jpeg',
+      'x-amz-meta-original-filename': 'legacy.jpg',
+    },
+  };
+
+  const protectedTrusted = createProtectedAttachmentResponseHeaders(
+    trustedImageStat,
+    'conversation/trusted.bin',
+  );
+  const signedTrusted = createPresignedAttachmentResponseParams(
+    trustedImageStat,
+    'conversation/trusted.bin',
+  );
+  assert.equal(protectedTrusted['Content-Type'], 'image/jpeg');
+  assert.match(protectedTrusted['Content-Disposition'], /^inline;/);
+  assert.equal(protectedTrusted['X-Content-Type-Options'], 'nosniff');
+  assert.equal(signedTrusted['response-content-type'], 'image/jpeg');
+  assert.match(signedTrusted['response-content-disposition'], /^inline;/);
+
+  const protectedLegacy = createProtectedAttachmentResponseHeaders(
+    legacyImageStat,
+    'conversation/legacy.bin',
+  );
+  const signedLegacy = createPresignedAttachmentResponseParams(
+    legacyImageStat,
+    'conversation/legacy.bin',
+  );
+  assert.equal(protectedLegacy['Content-Type'], 'application/octet-stream');
+  assert.match(protectedLegacy['Content-Disposition'], /^attachment;/);
+  assert.equal(signedLegacy['response-content-type'], 'application/octet-stream');
+  assert.match(signedLegacy['response-content-disposition'], /^attachment;/);
+});
+
 test('attachment filenames cannot inject headers or retain path components', () => {
   const filename = sanitizeAttachmentFilename('../../evil"\r\nX-Evil: yes.html');
   assert.equal(filename, 'evil___X-Evil: yes.html');
@@ -126,4 +212,73 @@ test('signed-original generation is not given client-controlled descriptor metad
   }], 'conversation-id');
 
   assert.deepEqual(receivedArguments, [`conversation/${attachmentId}.bin`]);
+});
+
+test('unmarked attachments are not given VMD inline delivery URLs', async () => {
+  const attachmentId = '22222222-2222-4222-8222-222222222222';
+  let imageDeliveryCalls = 0;
+  const attachDelivery = createAttachmentDeliveryMapper({
+    async queryAttachmentObjects() {
+      return [{ id: attachmentId, object_key: `conversation/${attachmentId}.bin` }];
+    },
+    async createOriginalDelivery() {
+      return {
+        url: 'https://cdn.invalid/signed',
+        url_expires_at: Date.now() + 60_000,
+        inline: false,
+      };
+    },
+    async createImageDelivery() {
+      imageDeliveryCalls += 1;
+      return { display_url: 'https://vmd.invalid/image' };
+    },
+  });
+
+  const [message] = await attachDelivery([{
+    attachments: [JSON.stringify({
+      url: `/api/conversations/123/attachments/${attachmentId}`,
+      mime: 'image/jpeg',
+      name: 'legacy.jpg',
+    })],
+  }], 'conversation-id');
+  const [attachment] = message.attachments.map((entry) => JSON.parse(entry));
+
+  assert.equal(imageDeliveryCalls, 0);
+  assert.equal(attachment.display_url, undefined);
+});
+
+test('properly marked attachments preserve VMD inline delivery URLs', async () => {
+  const attachmentId = '33333333-3333-4333-8333-333333333333';
+  let imageDeliveryCalls = 0;
+  const attachDelivery = createAttachmentDeliveryMapper({
+    async queryAttachmentObjects() {
+      return [{ id: attachmentId, object_key: `conversation/${attachmentId}.bin` }];
+    },
+    async createOriginalDelivery() {
+      return {
+        url: 'https://cdn.invalid/signed',
+        url_expires_at: Date.now() + 60_000,
+        inline: true,
+      };
+    },
+    async createImageDelivery() {
+      imageDeliveryCalls += 1;
+      return {
+        display_url: 'https://vmd.invalid/image',
+        display_url_expires_at: Date.now() + 60_000,
+      };
+    },
+  });
+
+  const [message] = await attachDelivery([{
+    attachments: [JSON.stringify({
+      url: `/api/conversations/123/attachments/${attachmentId}`,
+      mime: 'image/jpeg',
+      name: 'trusted.jpg',
+    })],
+  }], 'conversation-id');
+  const [attachment] = message.attachments.map((entry) => JSON.parse(entry));
+
+  assert.equal(imageDeliveryCalls, 1);
+  assert.equal(attachment.display_url, 'https://vmd.invalid/image');
 });

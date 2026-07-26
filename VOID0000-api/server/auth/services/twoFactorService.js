@@ -79,6 +79,20 @@ export async function findMatchingBackupCodeId(rows, code) {
   return null;
 }
 
+export async function consumeBackupCode(queryable, backupCodeId, userId) {
+  const result = await queryable.query(
+    `UPDATE user_2fa_backup_codes
+     SET is_used = true,
+         used_at = NOW()
+     WHERE id = $1
+       AND user_id = $2
+       AND is_used = false
+     RETURNING id`,
+    [backupCodeId, userId],
+  );
+  return result.rows.length === 1;
+}
+
 export async function generateBackupCodes(userId) {
   await pool.query('DELETE FROM user_2fa_backup_codes WHERE user_id = $1', [userId]);
 

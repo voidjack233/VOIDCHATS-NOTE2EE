@@ -1,6 +1,7 @@
 import { pool } from '../db.js';
 import { ATTACH_BUCKET, minioClient } from '../minio.js';
 import sentinel, { createSentinelKey } from '../sentinel/index.js';
+import { resolveStoredAttachmentPolicy } from '../utils/attachmentContentPolicy.js';
 import { transformVmdImage, VmdMediaError } from './imageVariants.js';
 import { getVmdMetricsSnapshot, incrementVmdMetric } from './metrics.js';
 import {
@@ -145,6 +146,14 @@ async function renderStoredImage(attachmentId, variant) {
     throw new VmdMediaError('Attachment storage is unavailable', {
       code: 'VMD_STORAGE_UNAVAILABLE',
       status: 502,
+    });
+  }
+
+  const sourcePolicy = resolveStoredAttachmentPolicy(objectStat, attachment.object_key);
+  if (!sourcePolicy.inline) {
+    throw new VmdMediaError('Attachment is not an approved sanitized image', {
+      code: 'VMD_ATTACHMENT_NOT_SANITIZED',
+      status: 415,
     });
   }
 

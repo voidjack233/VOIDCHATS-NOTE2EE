@@ -26,6 +26,18 @@ written to disk, MinIO, BullMQ, or Valkey. The message API still prepares every
 file before writing any object, and it removes successful MinIO writes if a
 later object or database operation fails.
 
+## Inline Delivery Trust
+
+Stored images are eligible for inline protected, signed-CDN, and VMD delivery
+only when MinIO metadata contains the exact sanitizer marker
+`x-amz-meta-void-sanitized-image: 1` and an approved raster MIME type. Content
+type, filename, extension, object key, and message metadata are not sanitizer
+proof by themselves.
+
+Historical image objects without that trusted marker fail closed as
+`application/octet-stream` attachments. They download instead of rendering
+inline; this pass intentionally does not backfill or migrate them.
+
 ## Local IPC
 
 The sanitizer uses a versioned, length-prefixed binary protocol over a Unix

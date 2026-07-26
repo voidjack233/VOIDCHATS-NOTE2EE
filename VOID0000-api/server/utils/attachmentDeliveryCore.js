@@ -147,7 +147,11 @@ export function createAttachmentDeliveryMapper({
           const originalDelivery = await createOriginalDelivery(objectKey);
           let imageDelivery = null;
 
-          if (imageAttachmentIds.has(attachmentId) && createImageDelivery) {
+          if (
+            imageAttachmentIds.has(attachmentId) &&
+            createImageDelivery &&
+            originalDelivery.inline !== false
+          ) {
             try {
               imageDelivery = await createImageDelivery(attachmentId, 'medium');
             } catch (error) {

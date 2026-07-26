@@ -90,9 +90,7 @@ export function resolveStoredAttachmentPolicy(objectStat, objectKey = '') {
   ]);
   const fallbackFilename = String(objectKey || '').split('/').pop();
 
-  // Existing sanitized raster objects predate the marker. Restricting their
-  // response MIME to this fixed raster allowlist remains non-executable.
-  const inline = inlineMarker !== '0' &&
+  const inline = inlineMarker === '1' &&
     isInlineAttachmentImageContentType(storedContentType);
   const filename = sanitizeAttachmentFilename(storedFilename || fallbackFilename);
   const contentType = inline
@@ -104,6 +102,16 @@ export function resolveStoredAttachmentPolicy(objectStat, objectKey = '') {
     filename,
     contentType,
     contentDisposition: createAttachmentContentDisposition(filename, inline),
+  };
+}
+
+export function createProtectedAttachmentResponseHeaders(objectStat, objectKey = '') {
+  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey);
+  return {
+    'Content-Type': policy.contentType,
+    'Content-Disposition': policy.contentDisposition,
+    'Cache-Control': 'private, max-age=300',
+    'X-Content-Type-Options': 'nosniff',
   };
 }
 

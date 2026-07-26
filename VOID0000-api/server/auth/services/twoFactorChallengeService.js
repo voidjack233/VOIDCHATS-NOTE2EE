@@ -6,8 +6,11 @@ import { getClientIP } from '../../utils/securityUtils.js';
 import { getTwoFactorCodeSecret } from '../config/authSecrets.js';
 import {
   buildAllowedTwoFactorMethods,
+  isTwoFactorMethodAuthorized,
+  normalizeTwoFactorMethod,
 } from './twoFactorMethodService.js';
 import {
+  SecurityCounterUnavailableError,
   clearFixedWindowCounters,
   getFixedWindowCounterState,
   incrementFixedWindowCounters,
@@ -18,6 +21,35 @@ const TWO_FACTOR_VERIFY_MAX_ATTEMPTS = 5;
 const TWO_FACTOR_EMAIL_WINDOW_SEC = 10 * 60;
 const TWO_FACTOR_EMAIL_MAX_SENDS = 3;
 const TWO_FACTOR_SESSION_WINDOW_SEC = 5 * 60;
+
+const CONSUME_PENDING_TWO_FACTOR_SESSION_SCRIPT = `
+local session = redis.call('GET', KEYS[1])
+if not session then
+  return false
+end
+
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+return session
+`;
+
+const UPDATE_PENDING_TWO_FACTOR_SESSION_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if not current then
+  return 'missing'
+end
+if current ~= ARGV[1] then
+  return 'changed'
+end
+
+local ttlMilliseconds = redis.call('PTTL', KEYS[1])
+if ttlMilliseconds <= 0 then
+  redis.call('DEL', KEYS[1])
+  return 'missing'
+end
+
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ttlMilliseconds)
+return 'updated'
+`;
 
 function getTwoFactorSessionKey(twoFactorToken) {
   return `auth:2fa:session:${twoFactorToken}`;
@@ -63,8 +95,123 @@ export async function savePendingTwoFactorSession(twoFactorToken, session) {
   );
 }
 
+export async function updatePendingTwoFactorSession(
+  twoFactorToken,
+  expectedSession,
+  nextSession,
+  client = valkey,
+) {
+  try {
+    return String(await client.eval(
+      UPDATE_PENDING_TWO_FACTOR_SESSION_SCRIPT,
+      1,
+      getTwoFactorSessionKey(twoFactorToken),
+      JSON.stringify(expectedSession),
+      JSON.stringify(nextSession),
+    ));
+  } catch (error) {
+    if (error instanceof SecurityCounterUnavailableError) throw error;
+    throw new SecurityCounterUnavailableError(error);
+  }
+}
+
 export async function deletePendingTwoFactorSession(twoFactorToken) {
   await valkey.del(getTwoFactorSessionKey(twoFactorToken));
+}
+
+export async function consumePendingTwoFactorSession(twoFactorToken, client = valkey) {
+  let rawSession;
+  try {
+    rawSession = await client.eval(
+      CONSUME_PENDING_TWO_FACTOR_SESSION_SCRIPT,
+      3,
+      getTwoFactorSessionKey(twoFactorToken),
+      getTwoFactorVerifyKey(twoFactorToken),
+      getTwoFactorEmailKey(twoFactorToken),
+    );
+  } catch (error) {
+    if (error instanceof SecurityCounterUnavailableError) throw error;
+    throw new SecurityCounterUnavailableError(error);
+  }
+
+  if (typeof rawSession !== 'string' || !rawSession) return null;
+
+  try {
+    const session = JSON.parse(rawSession);
+    return session && typeof session === 'object' ? session : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isSameTwoFactorSessionSnapshot(expectedSession, consumedSession) {
+  if (
+    !expectedSession ||
+    typeof expectedSession !== 'object' ||
+    !consumedSession ||
+    typeof consumedSession !== 'object'
+  ) {
+    return false;
+  }
+
+  return JSON.stringify(expectedSession) === JSON.stringify(consumedSession);
+}
+
+export async function claimVerifiedTwoFactorSession({
+  twoFactorToken,
+  expectedSession,
+  method,
+  req,
+  queryable,
+  verifiedEmailCodeHash = null,
+  client = valkey,
+  now = Date.now(),
+}) {
+  const consumedSession = await consumePendingTwoFactorSession(twoFactorToken, client);
+  if (!consumedSession) {
+    return { status: 'missing', session: null };
+  }
+  const normalizedMethod = normalizeTwoFactorMethod(method);
+
+  const unchanged = isSameTwoFactorSessionSnapshot(
+    expectedSession,
+    consumedSession,
+  );
+  const sameUser = Boolean(
+    expectedSession?.userId &&
+    String(consumedSession.userId) === String(expectedSession.userId),
+  );
+  const unexpired = Number.isFinite(Number(consumedSession.expiresAt)) &&
+    now <= Number(consumedSession.expiresAt);
+  const bindingMatches = isSameRequestBinding(consumedSession, req);
+
+  if (!unchanged || !sameUser || !unexpired || !bindingMatches) {
+    return { status: 'changed', session: null };
+  }
+
+  if (
+    !normalizedMethod ||
+    !await isTwoFactorMethodAuthorized(queryable, consumedSession, normalizedMethod)
+  ) {
+    return { status: 'changed', session: null };
+  }
+
+  if (normalizedMethod === 'email') {
+    const emailCodeExpiresAt = Number(consumedSession.emailCodeExpiresAt);
+    const emailStateMatches = Boolean(
+      verifiedEmailCodeHash &&
+      consumedSession.emailCodeHash === verifiedEmailCodeHash &&
+      consumedSession.emailCodeHash === expectedSession.emailCodeHash &&
+      emailCodeExpiresAt === Number(expectedSession.emailCodeExpiresAt) &&
+      Number.isFinite(emailCodeExpiresAt) &&
+      now <= emailCodeExpiresAt,
+    );
+    if (!emailStateMatches) {
+      return { status: 'changed', session: null };
+    }
+  }
+
+  return { status: 'consumed', session: consumedSession };
 }
 
 export async function create2FASession(userId, req, allowedMethods) {

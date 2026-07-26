@@ -6,12 +6,14 @@ import { updateTrustScore } from '../../../middleware/captcha/trustScore.js';
 import { DeviceFingerprint } from '../../../utils/deviceFingerprint.js';
 import { IPSecurity } from '../../../utils/securityUtils.js';
 import {
+  consumeBackupCode,
   decrypt,
   findMatchingBackupCodeId,
   safeEqualHex,
 } from '../../services/twoFactorService.js';
 import {
   checkTwoFactorBlocked,
+  claimVerifiedTwoFactorSession,
   clearTwoFactorAttemptState,
   create2FASession,
   deletePendingTwoFactorSession,
@@ -23,7 +25,7 @@ import {
   isSameRequestBinding,
   recordTwoFactorEmailSend,
   recordTwoFactorFailure,
-  savePendingTwoFactorSession,
+  updatePendingTwoFactorSession,
 } from '../../services/twoFactorChallengeService.js';
 import {
   isTwoFactorMethodAuthorized,
@@ -124,10 +126,25 @@ router.post('/send-email', async (req, res) => {
     const email = userResult.rows[0].email;
     const code = generateEmailCode();
 
-    // Store code in session
-    session.emailCodeHash = hashEmailCode(twoFactorToken, code);
-    session.emailCodeExpiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-    await savePendingTwoFactorSession(twoFactorToken, session);
+    const nextSession = {
+      ...session,
+      emailCodeHash: hashEmailCode(twoFactorToken, code),
+      emailCodeExpiresAt: Date.now() + 10 * 60 * 1000,
+    };
+    const updateStatus = await updatePendingTwoFactorSession(
+      twoFactorToken,
+      session,
+      nextSession,
+    );
+    if (updateStatus !== 'updated') {
+      return res.status(401).json({
+        success: false,
+        message: 'Session expired or changed. Please login again.',
+        code: updateStatus === 'missing'
+          ? 'TWO_FA_SESSION_USED'
+          : 'TWO_FA_SESSION_CHANGED',
+      });
+    }
 
     await sendVerificationEmail(email, code);
 
@@ -143,6 +160,9 @@ router.post('/send-email', async (req, res) => {
 
 // POST /api/auth/2fa/verify-login — Verify 2FA code and complete login
 router.post('/', async (req, res) => {
+  let dbClient = null;
+  let transactionOpen = false;
+
   try {
     const { twoFactorToken, code } = req.body;
     const method = normalizeTwoFactorMethod(req.body.method);
@@ -198,6 +218,8 @@ router.post('/', async (req, res) => {
     }
 
     const userId = session.userId;
+    let backupCodeId = null;
+    let verifiedEmailCodeHash = null;
 
     // Check if method is backup code
     if (method === 'backup') {
@@ -206,17 +228,11 @@ router.post('/', async (req, res) => {
         [userId]
       );
 
-      const usedCodeId = await findMatchingBackupCodeId(backupCodes.rows, code);
+      backupCodeId = await findMatchingBackupCodeId(backupCodes.rows, code);
 
-      if (!usedCodeId) {
+      if (!backupCodeId) {
         return sendFailedTwoFactorAttempt(res, twoFactorToken, 'Invalid backup code.');
       }
-
-      // Mark code as used
-      await pool.query(
-        `UPDATE user_2fa_backup_codes SET is_used = true, used_at = NOW() WHERE id = $1`,
-        [usedCodeId]
-      );
     } else if (method === 'totp') {
       // Verify TOTP
       const result = await pool.query(
@@ -258,6 +274,7 @@ router.post('/', async (req, res) => {
           'Invalid code. Please try again.',
         );
       }
+      verifiedEmailCodeHash = submittedCodeHash;
     } else {
       return res.status(400).json({
         success: false,
@@ -265,21 +282,67 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // 2FA passed — complete login (issue tokens)
-    await clearTwoFactorAttemptState(twoFactorToken);
+    const challengeClaim = await claimVerifiedTwoFactorSession({
+      twoFactorToken,
+      expectedSession: session,
+      method,
+      req,
+      queryable: pool,
+      verifiedEmailCodeHash,
+    });
+    if (challengeClaim.status !== 'consumed') {
+      return res.status(401).json({
+        success: false,
+        message: challengeClaim.status === 'missing'
+          ? 'Session expired or already used. Please login again.'
+          : 'Session changed during verification. Please login again.',
+        code: challengeClaim.status === 'missing'
+          ? 'TWO_FA_SESSION_USED'
+          : 'TWO_FA_SESSION_CHANGED',
+      });
+    }
 
-    const userResult = await pool.query(
+    dbClient = await pool.connect();
+    await dbClient.query('BEGIN');
+    transactionOpen = true;
+
+    if (
+      method === 'backup' &&
+      !await consumeBackupCode(dbClient, backupCodeId, userId)
+    ) {
+      await dbClient.query('ROLLBACK');
+      transactionOpen = false;
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or already used backup code.',
+        code: 'TWO_FA_BACKUP_CODE_USED',
+      });
+    }
+
+    const userResult = await dbClient.query(
       'SELECT id, email, username, profile_id, is_verified FROM users WHERE id = $1',
       [userId]
     );
     const user = userResult.rows[0];
+    if (!user) {
+      await dbClient.query('ROLLBACK');
+      transactionOpen = false;
+      return res.status(401).json({
+        success: false,
+        message: 'Session expired. Please login again.',
+        code: 'TWO_FA_SESSION_EXPIRED',
+      });
+    }
 
     const loginSession = await createLoginSessionRecord({
-      queryable: pool,
+      queryable: dbClient,
       user,
       req,
       res,
     });
+
+    await dbClient.query('COMMIT');
+    transactionOpen = false;
 
     await activateLoginSession(loginSession);
     await IPSecurity.logIPActivity(req, 'LOGIN_SUCCESS', userId);
@@ -306,11 +369,21 @@ router.post('/', async (req, res) => {
       },
     });
   } catch (err) {
+    if (transactionOpen && dbClient) {
+      try {
+        await dbClient.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('2FA login transaction rollback error:', rollbackError);
+      }
+      transactionOpen = false;
+    }
     if (err instanceof SecurityCounterUnavailableError) {
       return sendTwoFactorCounterUnavailable(res);
     }
     console.error('2FA verify login error:', err);
     return res.status(500).json({ success: false, message: 'Verification failed' });
+  } finally {
+    dbClient?.release();
   }
 });
 

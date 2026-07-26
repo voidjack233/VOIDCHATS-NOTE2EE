@@ -5,7 +5,10 @@ import {
   createAttachmentDeliveryMapper,
   normalizeStoredAttachments,
 } from './attachmentDeliveryCore.js';
-import { createPresignedAttachmentResponseParams } from './attachmentContentPolicy.js';
+import {
+  createPresignedAttachmentResponseParams,
+  resolveStoredAttachmentPolicy,
+} from './attachmentContentPolicy.js';
 
 const DEFAULT_SIGNED_URL_TTL_SECONDS = 60 * 60;
 const MIN_SIGNED_URL_TTL_SECONDS = 30;
@@ -43,10 +46,12 @@ function presignAttachmentObject(objectKey, objectStat) {
 export async function createSignedAttachmentDelivery(objectKey) {
   const signingStartedAt = Date.now();
   const objectStat = await minioClient.statObject(ATTACH_BUCKET, objectKey);
+  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey);
   const url = await presignAttachmentObject(objectKey, objectStat);
   return {
     url,
     url_expires_at: signingStartedAt + (ATTACHMENT_SIGNED_URL_TTL_SECONDS * 1000),
+    inline: policy.inline,
   };
 }
 
