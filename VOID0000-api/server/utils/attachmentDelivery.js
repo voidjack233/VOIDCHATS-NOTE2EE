@@ -4,6 +4,7 @@ import { createVmdImageDelivery } from '../vmd/capability.js';
 import {
   createAttachmentDeliveryMapper,
   normalizeStoredAttachments,
+  resolveAttachmentDeliveryMaxConcurrency,
 } from './attachmentDeliveryCore.js';
 import {
   createPresignedAttachmentResponseParams,
@@ -26,6 +27,10 @@ function resolveSignedUrlTtlSeconds() {
 }
 
 export const ATTACHMENT_SIGNED_URL_TTL_SECONDS = resolveSignedUrlTtlSeconds();
+export const ATTACHMENT_DELIVERY_MAX_CONCURRENCY =
+  resolveAttachmentDeliveryMaxConcurrency(
+    process.env.ATTACHMENT_DELIVERY_MAX_CONCURRENCY,
+  );
 export { normalizeStoredAttachments };
 
 function presignAttachmentObject(objectKey, objectStat) {
@@ -69,6 +74,7 @@ const attachSignedAttachmentUrls = createAttachmentDeliveryMapper({
   },
   createOriginalDelivery: createSignedAttachmentDelivery,
   createImageDelivery: createVmdImageDelivery,
+  maxConcurrency: ATTACHMENT_DELIVERY_MAX_CONCURRENCY,
 });
 
 export { attachSignedAttachmentUrls };

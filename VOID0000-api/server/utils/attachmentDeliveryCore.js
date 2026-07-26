@@ -18,6 +18,60 @@ const VMD_IMAGE_MIME_TYPES = new Set([
   'image/webp',
 ]);
 const VMD_IMAGE_FILENAME_PATTERN = /\.(avif|gif|jpe?g|png|tiff?|webp)$/i;
+export const DEFAULT_ATTACHMENT_DELIVERY_MAX_CONCURRENCY = 8;
+export const MAX_ATTACHMENT_DELIVERY_MAX_CONCURRENCY = 32;
+
+export function resolveAttachmentDeliveryMaxConcurrency(value) {
+  let configured = value;
+  if (typeof configured === 'string') {
+    const normalized = configured.trim();
+    if (!/^\d+$/.test(normalized)) {
+      return DEFAULT_ATTACHMENT_DELIVERY_MAX_CONCURRENCY;
+    }
+    configured = Number(normalized);
+  }
+
+  if (
+    !Number.isSafeInteger(configured) ||
+    configured <= 0 ||
+    configured > MAX_ATTACHMENT_DELIVERY_MAX_CONCURRENCY
+  ) {
+    return DEFAULT_ATTACHMENT_DELIVERY_MAX_CONCURRENCY;
+  }
+
+  return configured;
+}
+
+async function mapWithBoundedConcurrency(items, maxConcurrency, mapper) {
+  if (items.length === 0) return [];
+
+  const results = new Array(items.length);
+  const workerCount = Math.min(maxConcurrency, items.length);
+  let nextIndex = 0;
+  let firstError;
+  let hasError = false;
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (!hasError) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) return;
+
+      try {
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      } catch (error) {
+        if (!hasError) {
+          hasError = true;
+          firstError = error;
+        }
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  if (hasError) throw firstError;
+  return results;
+}
 
 function parseAttachmentDescriptor(rawAttachment) {
   if (typeof rawAttachment !== 'string' || rawAttachment.length === 0) {
@@ -101,6 +155,7 @@ export function createAttachmentDeliveryMapper({
   createOriginalDelivery,
   createImageDelivery,
   logger = console,
+  maxConcurrency = DEFAULT_ATTACHMENT_DELIVERY_MAX_CONCURRENCY,
 }) {
   if (typeof queryAttachmentObjects !== 'function') {
     throw new TypeError('queryAttachmentObjects is required');
@@ -108,6 +163,8 @@ export function createAttachmentDeliveryMapper({
   if (typeof createOriginalDelivery !== 'function') {
     throw new TypeError('createOriginalDelivery is required');
   }
+  const deliveryMaxConcurrency =
+    resolveAttachmentDeliveryMaxConcurrency(maxConcurrency);
 
   return async function attachSignedAttachmentUrls(messages, conversationId) {
     if (!Array.isArray(messages) || messages.length === 0) return messages;
@@ -142,15 +199,17 @@ export function createAttachmentDeliveryMapper({
           ))
           .map((entry) => entry.attachmentId),
       );
-      const signedEntries = await Promise.all(
-        [...objectKeyById.entries()].map(async ([attachmentId, objectKey]) => {
+      const signedEntries = await mapWithBoundedConcurrency(
+        [...objectKeyById.entries()],
+        deliveryMaxConcurrency,
+        async ([attachmentId, objectKey]) => {
           const originalDelivery = await createOriginalDelivery(objectKey);
           let imageDelivery = null;
 
           if (
             imageAttachmentIds.has(attachmentId) &&
             createImageDelivery &&
-            originalDelivery.inline !== false
+            originalDelivery.inline === true
           ) {
             try {
               imageDelivery = await createImageDelivery(attachmentId, 'medium');
@@ -163,7 +222,7 @@ export function createAttachmentDeliveryMapper({
           }
 
           return [attachmentId, { originalDelivery, imageDelivery }];
-        }),
+        },
       );
       const deliveryById = new Map(signedEntries);
 
