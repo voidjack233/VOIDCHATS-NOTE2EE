@@ -202,8 +202,6 @@ const useMessageListPagination = ({
   onHistoryRateLimited,
   messageListBaseIndex,
 }: UseMessageListPaginationParams) => {
-  const isAtPresentRef = useRef(isAtPresent);
-  isAtPresentRef.current = isAtPresent;
   const firstItemIndexRef = useRef(firstItemIndex);
   firstItemIndexRef.current = firstItemIndex;
   const historyRequestGenerationRef = useRef(0);
@@ -686,13 +684,12 @@ const useMessageListPagination = ({
       const visibleLatestMessages = filterMessagesByHistoryFence(latestLocalMessages, historyAccessFence);
       const latestUI = sortMessages(visibleLatestMessages.map(toUIMessage));
 
-      if (latestUI.length > 0 && isAtPresentRef.current) {
+      if (latestUI.length > 0 && !hasNewer) {
         mergeVisibleMessages({
           incoming: latestUI,
           currentUserId: userId,
           trimFrom: 'old',
           hasNewer: false,
-          isAtPresent: true,
         });
         onMessagesLoaded?.(latestUI);
         return;
@@ -717,7 +714,7 @@ const useMessageListPagination = ({
       if (newerUI.length === 0) {
         setHasNewer(hasNewerAfterMerge);
         setIsAtPresent(isAtPresentAfterMerge);
-      } else if (!initialHydrationSettled || !isAtPresentRef.current) {
+      } else if (!initialHydrationSettled || hasNewer) {
         queueNewerMessages({
           hasNewerAfterFlush: hasNewerAfterMerge,
           isAtPresentAfterFlush: isAtPresentAfterMerge,
@@ -740,6 +737,7 @@ const useMessageListPagination = ({
   }, [
     clearNewerHistoryRange,
     conversationId,
+    hasNewer,
     historyAccessFence,
     initialHydrationSettled,
     mergeVisibleMessages,

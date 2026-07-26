@@ -7,6 +7,11 @@ import { messageSync } from '../../../Chat/chatSync';
 import { type LocalMessage } from '../../../Chat/chatStore';
 import { queuedSendStore } from '../../../Chat/queuedSendStore';
 import { type HistoryAccessFence, isMessageVisibleForHistoryFence } from './messageListHistory';
+import {
+  REALTIME_MESSAGE_QUEUE_RESULT,
+  isRealtimeMessageForConversation,
+  shouldApplyRealtimeMessageImmediately,
+} from './messageRealtimePolicy';
 import { getLocalClientId } from './messageListReconciliation';
 import type { MessageDelete, MessageStreamEvent, MessageUpdate } from './messageListTypes';
 
@@ -31,7 +36,7 @@ interface UseMessageListRealtimeParams {
     hasNewerAfterFlush: boolean;
     isAtPresentAfterFlush: boolean;
   }) => void;
-  isAtPresent: boolean;
+  hasNewer: boolean;
   initialHydrationSettled: boolean;
 }
 
@@ -45,7 +50,7 @@ const useMessageListRealtime = ({
   setMessages,
   mergeVisibleMessages,
   queueNewerMessages,
-  isAtPresent,
+  hasNewer,
   initialHydrationSettled,
 }: UseMessageListRealtimeParams) => {
   const lastProcessedMessageEventSequenceRef = useRef(0);
@@ -109,7 +114,7 @@ const useMessageListRealtime = ({
 
     pendingEvents.forEach(({ message: newMessage }) => {
       const normalizedConversationId = newMessage.conversation_id || conversationId;
-      if (String(normalizedConversationId) !== String(conversationId)) {
+      if (!isRealtimeMessageForConversation(normalizedConversationId, conversationId)) {
         return;
       }
 
@@ -162,13 +167,11 @@ const useMessageListRealtime = ({
         messageSync.storeIncomingMessage(localMessage).catch(console.error);
       }
 
-      const shouldApplyImmediately = (
-        !initialHydrationSettled ||
-        isAtPresent ||
-        normalizedMessage.local_status === 'sending' ||
-        normalizedMessage.local_status === 'queued' ||
-        normalizedMessage.local_status === 'failed'
-      );
+      const shouldApplyImmediately = shouldApplyRealtimeMessageImmediately({
+        hasUnloadedNewerRange: hasNewer,
+        initialHydrationSettled,
+        localStatus: normalizedMessage.local_status,
+      });
 
       if (shouldApplyImmediately) {
         mergeVisibleMessages({
@@ -183,16 +186,15 @@ const useMessageListRealtime = ({
       // it directly below old history, or the UI can create a false contiguous
       // list like "Thursday -> Today" while "Yesterday" is still unloaded.
       queueNewerMessages({
-        incoming: [],
-        hasNewerAfterFlush: true,
-        isAtPresentAfterFlush: false,
+        incoming: [normalizedMessage],
+        ...REALTIME_MESSAGE_QUEUE_RESULT,
       });
     });
   }, [
     conversationId,
+    hasNewer,
     historyAccessFence,
     initialHydrationSettled,
-    isAtPresent,
     mergeVisibleMessages,
     messageEvents,
     queueNewerMessages,

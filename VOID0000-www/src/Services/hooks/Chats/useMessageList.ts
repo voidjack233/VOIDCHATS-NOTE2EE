@@ -825,7 +825,7 @@ export const useMessageList = (
     setMessages,
     mergeVisibleMessages,
     queueNewerMessages,
-    isAtPresent,
+    hasNewer,
     initialHydrationSettled,
   });
 
