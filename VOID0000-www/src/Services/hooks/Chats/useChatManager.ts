@@ -3,16 +3,17 @@ import { useState } from 'react';
 import { Conversation, Message, getConversation, getOrCreateDM } from '../../Chat/chatService';
 import { ConversationDetails } from '../../Chat/chatTypes';
 import {
-  areConversationDetailsFresh,
   deleteScopedConversationDetails,
   getConversationDetails,
   requestConversationDetails,
+  requestConversationDetailsIfStale,
   storeConversationDetails,
-  storeConversationSummary,
 } from '../../Chat/conversationCache';
 import {
   isConversationDetailAuthorizationFailure,
+  resolveNewDmIdentifiers,
   shouldApplyConversationRefresh,
+  type OpenConversationOptions,
 } from '../../Chat/conversationSelectionPolicy';
 import { matchesConversationIdentifier } from '../../Chat/utils/conversationUtils';
 import { useTypingIndicator } from './useTypingIndicator';
@@ -33,13 +34,26 @@ export const useChatManager = (user: any) => {
     return getConversationDetails(identifier);
   };
 
-  const fetchConversationByIdentifier = async (identifier: string) => {
+  const fetchConversationByIdentifier = async (
+    identifier: string,
+    options?: { maxFreshAgeMs?: number },
+  ) => {
     let conversation: ConversationDetails;
     try {
-      conversation = await requestConversationDetails(identifier, async () => {
+      const loadConversation = async () => {
         const data = await getConversation(identifier);
         return data.conversation as ConversationDetails;
-      }, user?.id || 'anonymous');
+      };
+      conversation = options?.maxFreshAgeMs
+        ? await requestConversationDetailsIfStale(identifier, loadConversation, {
+            maxAgeMs: options.maxFreshAgeMs,
+            requestScope: user?.id || 'anonymous',
+          })
+        : await requestConversationDetails(
+            identifier,
+            loadConversation,
+            user?.id || 'anonymous',
+          );
     } catch (error) {
       if (isConversationDetailAuthorizationFailure(error)) {
         deleteScopedConversationDetails(identifier, user?.id || 'anonymous');
@@ -210,8 +224,12 @@ export const useChatManager = (user: any) => {
     return { group: hydratedGroup, conversation: hydratedGroup };
   };
 
-  const openConversationByIdentifier = async (identifier: string) => {
+  const openConversationByIdentifier = async (
+    identifier: string,
+    options?: OpenConversationOptions,
+  ) => {
     if (
+      activeConversation &&
       !activeGroup &&
       matchesConversationIdentifier(activeConversation, identifier)
     ) {
@@ -219,6 +237,10 @@ export const useChatManager = (user: any) => {
     }
 
     const conversation = (getCachedConversationDetails(identifier) || await fetchConversationByIdentifier(identifier)) as Conversation;
+    if (options?.shouldActivate && !options.shouldActivate()) {
+      return conversation;
+    }
+
     if (conversation.type === 'group') {
       const result = await openGroupByIdentifier(identifier, null, conversation);
       return result.conversation;
@@ -234,17 +256,7 @@ export const useChatManager = (user: any) => {
     identifier: string,
     options?: { maxFreshAgeMs?: number },
   ) => {
-    const maxFreshAgeMs = options?.maxFreshAgeMs ?? 0;
-    const cachedConversation = getCachedConversationDetails(identifier);
-    if (
-      cachedConversation &&
-      maxFreshAgeMs > 0 &&
-      areConversationDetailsFresh(identifier, maxFreshAgeMs, user?.id || 'anonymous')
-    ) {
-      return cachedConversation as Conversation;
-    }
-
-    const conversation = await fetchConversationByIdentifier(identifier);
+    const conversation = await fetchConversationByIdentifier(identifier, options);
     patchConversationInState(conversation);
     return conversation;
   };
@@ -277,47 +289,16 @@ export const useChatManager = (user: any) => {
     onBackToMe: handleBackToMe,
   });
 
-  // Handlers
-  const handleSelectConversation = (conv: Conversation) => {
-    if (conv.type === 'group') {
-      if (activeGroup?.id === conv.id) return;
-      void openGroupByIdentifier(conv.public_id || conv.id, null, conv).catch((err) => {
-        console.error('Failed to select group:', err);
-        setActiveGroup(null);
-        setActiveConversation(conv);
-      });
-      return;
-    }
-
-    const knownConversation = storeConversationSummary(conv) as Conversation;
-    if (matchesConversationIdentifier(activeConversation, knownConversation.public_id || knownConversation.id)) {
-      return;
-    }
-    resetLiveChatState();
-    setActiveGroup(null);
-    setActiveConversation(knownConversation);
-  };
-
-  const handleStartDM = async (targetId: string) => {
-    const {
-      conversation_public_id: conversationPublicId,
-      conversation_id: conversationId,
-      created,
-    } = await getOrCreateDM(targetId);
-    return {
-      conversationId,
-      conversationPublicId: conversationPublicId || null,
-      routeId: conversationPublicId || conversationId,
-      created,
-    };
-  };
+  const handleStartDM = (targetId: string) => (
+    resolveNewDmIdentifiers(targetId, getOrCreateDM)
+  );
 
   return {
     members, activeConversation, activeGroup,
     typingUsers,
     messageEvents, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
-    handleSelectConversation, refreshActiveGroup, patchConversationInState, handleMessageSent: pushMessageEvent,
+    refreshActiveGroup, patchConversationInState, handleMessageSent: pushMessageEvent,
     handleBackToMe, handleStartDM, openConversationByIdentifier, refreshConversationByIdentifier,
     openGroupByIdentifier,
   };

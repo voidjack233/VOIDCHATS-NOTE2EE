@@ -18,8 +18,11 @@ import FriendsView from '../../components/common/Friends/FriendsView';
 import { gateway } from '../../Services/Gateway/gateway';
 import { Message, Conversation, ConversationMember, forwardMessageToConversation } from '../../Services/Chat/chatService';
 import {
+  CONVERSATION_DETAIL_FRESHNESS_MS,
   createDmConversationSeed,
   isConversationDetailAuthorizationFailure,
+  prepareDmConversationNavigation,
+  synchronizeDmRouteSelection,
 } from '../../Services/Chat/conversationSelectionPolicy';
 import { matchesConversationIdentifier } from '../../Services/Chat/utils/conversationUtils';
 import { useUser } from '../../Services/Auth/UserContext';
@@ -114,7 +117,6 @@ const ChatDashboard = () => {
     setMessageUpdate,
     patchConversationInState,
     handleMessageSent,
-    handleSelectConversation,
     handleStartDM,
     handleBackToMe,
     openConversationByIdentifier,
@@ -178,7 +180,7 @@ const ChatDashboard = () => {
     const result = await handleStartDM(targetId);
     const friend = friends.find((entry) => entry.id === targetId);
     if (friend) {
-      handleSelectConversation(createDmConversationSeed({
+      prepareDmConversationNavigation(createDmConversationSeed({
         conversationId: result.conversationId,
         conversationPublicId: result.conversationPublicId,
         peer: friend,
@@ -236,15 +238,13 @@ const ChatDashboard = () => {
 
       try {
         if (dmConversationId) {
-          const dmAlreadyHydrated =
-            !activeGroup &&
-            activeConversation?.type === 'dm' &&
-            matchesConversationIdentifier(activeConversation, dmConversationId);
-          if (dmAlreadyHydrated) {
-            return;
-          }
-
-          const conversation = await openConversationByIdentifier(dmConversationId);
+          const conversation = await synchronizeDmRouteSelection({
+            routeIdentifier: dmConversationId,
+            activeConversation,
+            activeGroup,
+            openConversation: openConversationByIdentifier,
+            shouldActivate: () => !cancelled,
+          });
           if (!cancelled && conversation?.type !== 'dm') {
             handleBackToMe();
             navigate('/chats', { replace: true });
@@ -317,7 +317,9 @@ const ChatDashboard = () => {
 
     let cancelled = false;
     void backgroundDetailActionsRef.current
-      .refreshConversationByIdentifier(dmConversationId, { maxFreshAgeMs: 1_500 })
+      .refreshConversationByIdentifier(dmConversationId, {
+        maxFreshAgeMs: CONVERSATION_DETAIL_FRESHNESS_MS,
+      })
       .then((conversation) => {
         if (cancelled || conversation.type === 'dm') return;
         backgroundDetailActionsRef.current.handleBackToMe();
@@ -654,8 +656,8 @@ const ChatDashboard = () => {
               activeId={activeGroup?.id || activeConversation?.id || null}
               onSelect={(conv) => {
                 if (conv.type === 'dm') {
-                  handleSelectConversation(conv);
-                  navigate(getDmRoute(conv));
+                  const knownConversation = prepareDmConversationNavigation(conv);
+                  navigate(getDmRoute(knownConversation));
                 } else {
                   navigate(getGroupRoute(conv));
                 }

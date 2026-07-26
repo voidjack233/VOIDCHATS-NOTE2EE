@@ -186,3 +186,26 @@ export const requestConversationDetails = (
   detailRequests.set(requestKey, request);
   return request;
 };
+
+export const requestConversationDetailsIfStale = (
+  identifier: string,
+  load: () => Promise<ConversationDetails>,
+  {
+    maxAgeMs,
+    requestScope = DEFAULT_REQUEST_SCOPE,
+  }: {
+    maxAgeMs: number;
+    requestScope?: string;
+  },
+): Promise<ConversationDetails> => {
+  const cachedConversation = getConversationDetails(identifier);
+  if (
+    cachedConversation &&
+    maxAgeMs > 0 &&
+    areConversationDetailsFresh(identifier, maxAgeMs, requestScope)
+  ) {
+    return Promise.resolve(cachedConversation);
+  }
+
+  return requestConversationDetails(identifier, load, requestScope);
+};

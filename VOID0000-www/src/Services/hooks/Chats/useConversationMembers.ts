@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getConversation } from '../../Chat/conversationService';
-import type { Conversation, ConversationDetails, ConversationMember } from '../../Chat/chatTypes';
-import {
-  areConversationDetailsFresh,
-  getConversationDetails,
-  requestConversationDetails,
-} from '../../Chat/conversationCache';
+import type { Conversation, ConversationMember } from '../../Chat/chatTypes';
+import { getConversationDetails } from '../../Chat/conversationCache';
 import { gateway } from '../../Gateway/gateway';
 
 interface UseConversationMembersProps {
@@ -52,44 +47,9 @@ export function useConversationMembers({
     ? refreshedMembers.members
     : cachedMembers;
 
-  const refreshMembers = useCallback(async () => {
-    if (!membershipIdentifier) {
-      return;
-    }
-
-    const cached = getConversationDetails(membershipIdentifier);
-    if (cached && areConversationDetailsFresh(membershipIdentifier, 1_500, userId || 'anonymous')) {
-      return;
-    }
-
-    const requestedIdentifier = membershipIdentifier;
-    const details = await requestConversationDetails(requestedIdentifier, async () => {
-      const data = await getConversation(requestedIdentifier);
-      return data.conversation as ConversationDetails;
-    }, userId || 'anonymous');
-    const nextMembers = details.members || [];
-    setRefreshedMembers({
-      identifier: requestedIdentifier,
-      members: Object.fromEntries(nextMembers.map((member) => [member.user_id, member])),
-    });
-  }, [membershipIdentifier, userId]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void refreshMembers().catch((error) => {
-        console.warn('Failed to refresh conversation members:', error);
-      });
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [refreshMembers]);
-
   useEffect(() => {
     if (!userId || !membershipIdentifier) return;
 
-    const handleConversationUpdate = () => {
-      void refreshMembers().catch(() => {});
-    };
     const handleNicknameUpdate = (data: { user_id?: unknown; nickname?: unknown }) => {
       const targetUserId = String(data?.user_id || '');
       if (!targetUserId) return;
@@ -115,16 +75,14 @@ export function useConversationMembers({
       });
     };
 
-    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
     gateway.on('MEMBER_NICKNAME_UPDATE', handleNicknameUpdate);
     return () => {
-      gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
       gateway.off('MEMBER_NICKNAME_UPDATE', handleNicknameUpdate);
     };
-  }, [membershipIdentifier, refreshMembers, userId]);
+  }, [membershipIdentifier, userId]);
 
   const resetMembers = useCallback(() => {
     setRefreshedMembers({ identifier: null, members: {} });
   }, []);
-  return { members, refreshMembers, resetMembers };
+  return { members, resetMembers };
 }

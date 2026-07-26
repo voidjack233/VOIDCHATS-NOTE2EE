@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import type {
   Conversation,
@@ -11,13 +10,19 @@ import {
   deleteConversationDetails,
   getConversationDetails,
   requestConversationDetails,
+  requestConversationDetailsIfStale,
   storeConversationDetails,
   storeConversationSummary,
 } from '../../../src/Services/Chat/conversationCache';
 import {
+  CONVERSATION_DETAIL_FRESHNESS_MS,
   createDmConversationSeed,
   isConversationDetailAuthorizationFailure,
+  prepareDmConversationNavigation,
+  resolveNewDmIdentifiers,
   shouldApplyConversationRefresh,
+  shouldSynchronizeDmRoute,
+  synchronizeDmRouteSelection,
 } from '../../../src/Services/Chat/conversationSelectionPolicy';
 import {
   getConversationWindowSnapshot,
@@ -318,32 +323,263 @@ test('a newly resolved DM ID can seed its local shell without another creation r
   assert.equal(conversation.dm_display_name, 'New Peer');
 });
 
-test('existing sidebar selection and new-DM creation remain separate call paths', () => {
-  const chatsSource = readFileSync(
-    new URL('../../../src/pages/Chat/Chats.tsx', import.meta.url),
-    'utf8',
-  );
-  const managerSource = readFileSync(
-    new URL('../../../src/Services/hooks/Chats/useChatManager.ts', import.meta.url),
-    'utf8',
-  );
-  const sidebarSelection = chatsSource.slice(
-    chatsSource.indexOf('<ConversationList'),
-    chatsSource.indexOf('onCreateGroup=', chatsSource.indexOf('<ConversationList')),
-  );
-  const existingSelection = managerSource.slice(
-    managerSource.indexOf('const handleSelectConversation'),
-    managerSource.indexOf('const handleStartDM'),
-  );
-  const newDmSelection = managerSource.slice(
-    managerSource.indexOf('const handleStartDM'),
-    managerSource.indexOf('return {', managerSource.indexOf('const handleStartDM')),
+test('existing DM navigation keeps A active until route B becomes authoritative', async () => {
+  const conversationA = makeConversation('route-authority-a', '910000000000000011');
+  const conversationB = makeConversation('route-authority-b', '910000000000000012');
+  storeConversationSummary(conversationA);
+
+  let activeConversation: Conversation | null = conversationA;
+  let routeIdentifier = conversationA.public_id!;
+  const activeSequence = [conversationA.id];
+  const openedIdentifiers: string[] = [];
+  const openConversation = async (identifier: string, options?: { shouldActivate?: () => boolean }) => {
+    openedIdentifiers.push(identifier);
+    const conversation = getConversationDetails(identifier);
+    assert.ok(conversation);
+    if (options?.shouldActivate?.() !== false) {
+      activeConversation = conversation;
+      activeSequence.push(conversation.id);
+    }
+    return conversation;
+  };
+
+  prepareDmConversationNavigation(conversationB);
+  assert.equal(activeConversation.id, conversationA.id);
+  assert.equal(shouldSynchronizeDmRoute({
+    routeIdentifier,
+    activeConversation,
+    activeGroup: null,
+  }), false);
+
+  await synchronizeDmRouteSelection({
+    routeIdentifier,
+    activeConversation,
+    activeGroup: null,
+    openConversation,
+    shouldActivate: () => true,
+  });
+  assert.deepEqual(openedIdentifiers, []);
+
+  routeIdentifier = conversationB.public_id!;
+  const transition = synchronizeDmRouteSelection({
+    routeIdentifier,
+    activeConversation,
+    activeGroup: null,
+    openConversation,
+    shouldActivate: () => true,
+  });
+
+  assert.equal(activeConversation.id, conversationB.id);
+  await transition;
+  assert.deepEqual(activeSequence, [conversationA.id, conversationB.id]);
+  assert.deepEqual(openedIdentifiers, [conversationB.public_id]);
+});
+
+test('fresh cached B details skip background network work', async () => {
+  const conversationB = makeConversation('fresh-route-b', '910000000000000013');
+  const requestScope = 'fresh-route-user';
+  let networkRequests = 0;
+
+  await requestConversationDetails(conversationB.public_id!, async () => {
+    networkRequests += 1;
+    return makeDetails(conversationB);
+  }, requestScope);
+  networkRequests = 0;
+
+  const details = await requestConversationDetailsIfStale(
+    conversationB.public_id!,
+    async () => {
+      networkRequests += 1;
+      return makeDetails(conversationB);
+    },
+    {
+      maxAgeMs: CONVERSATION_DETAIL_FRESHNESS_MS,
+      requestScope,
+    },
   );
 
-  assert.match(sidebarSelection, /handleSelectConversation\(conv\)[\s\S]*navigate\(getDmRoute\(conv\)\)/);
-  assert.match(chatsSource, /handleSelectConversation\(createDmConversationSeed\(/);
-  assert.match(chatsSource, /useLayoutEffect\(\(\) => \{[\s\S]*const syncRouteState/);
-  assert.match(chatsSource, /isPendingDmRoute \|\| !activeConversation/);
-  assert.doesNotMatch(existingSelection, /getOrCreateDM/);
-  assert.equal(newDmSelection.match(/getOrCreateDM\(/g)?.length, 1);
+  assert.equal(details.id, conversationB.id);
+  assert.equal(networkRequests, 0);
+});
+
+test('stale B detail consumers share one B request and never request A', async () => {
+  const conversationA = makeConversation('stale-route-a', '910000000000000014');
+  const conversationB = makeConversation('stale-route-b', '910000000000000015');
+  const requestScope = 'stale-route-user';
+  storeConversationSummary(conversationA);
+  storeConversationSummary(conversationB);
+
+  const requestedIdentifiers: string[] = [];
+  let releaseRequest!: (details: ConversationDetails) => void;
+  const loadB = () => {
+    requestedIdentifiers.push(conversationB.public_id!);
+    return new Promise<ConversationDetails>((resolve) => {
+      releaseRequest = resolve;
+    });
+  };
+  const first = requestConversationDetailsIfStale(
+    conversationB.public_id!,
+    loadB,
+    {
+      maxAgeMs: CONVERSATION_DETAIL_FRESHNESS_MS,
+      requestScope,
+    },
+  );
+  const second = requestConversationDetailsIfStale(
+    conversationB.id,
+    loadB,
+    {
+      maxAgeMs: CONVERSATION_DETAIL_FRESHNESS_MS,
+      requestScope,
+    },
+  );
+
+  assert.strictEqual(second, first);
+  assert.deepEqual(requestedIdentifiers, [conversationB.public_id]);
+  releaseRequest(makeDetails(conversationB));
+  await Promise.all([first, second]);
+  assert.equal(requestedIdentifiers.includes(conversationA.public_id!), false);
+});
+
+test('rapid A to B to A ignores the cancelled B activation', async () => {
+  const conversationA = makeConversation('cancelled-route-a', '910000000000000016');
+  const conversationB = makeConversation('cancelled-route-b', '910000000000000017');
+  storeConversationSummary(conversationA);
+  storeConversationSummary(conversationB);
+
+  let activeConversation: Conversation | null = conversationA;
+  let bTransitionCurrent = true;
+  let releaseB!: () => void;
+  const requestedIdentifiers: string[] = [];
+  const activeSequence = [conversationA.id];
+  const openConversation = async (identifier: string, options?: { shouldActivate?: () => boolean }) => {
+    requestedIdentifiers.push(identifier);
+    if (identifier === conversationB.public_id) {
+      await new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+    }
+    const conversation = getConversationDetails(identifier);
+    assert.ok(conversation);
+    if (options?.shouldActivate?.() !== false) {
+      activeConversation = conversation;
+      activeSequence.push(conversation.id);
+    }
+    return conversation;
+  };
+
+  const pendingB = synchronizeDmRouteSelection({
+    routeIdentifier: conversationB.public_id!,
+    activeConversation,
+    activeGroup: null,
+    openConversation,
+    shouldActivate: () => bTransitionCurrent,
+  });
+
+  bTransitionCurrent = false;
+  await synchronizeDmRouteSelection({
+    routeIdentifier: conversationA.public_id!,
+    activeConversation,
+    activeGroup: null,
+    openConversation,
+    shouldActivate: () => true,
+  });
+  releaseB();
+  await pendingB;
+
+  assert.equal(activeConversation.id, conversationA.id);
+  assert.deepEqual(activeSequence, [conversationA.id]);
+  assert.deepEqual(requestedIdentifiers, [conversationB.public_id]);
+});
+
+test('direct DM route with missing details resolves exactly once', async () => {
+  const conversation = makeConversation('direct-route', '910000000000000018');
+  const requestScope = 'direct-route-user';
+  let activeConversation: Conversation | null = null;
+  let networkRequests = 0;
+
+  await synchronizeDmRouteSelection({
+    routeIdentifier: conversation.public_id!,
+    activeConversation,
+    activeGroup: null,
+    openConversation: async (identifier, options) => {
+      const details = await requestConversationDetails(identifier, async () => {
+        networkRequests += 1;
+        return makeDetails(conversation);
+      }, requestScope);
+      if (options?.shouldActivate?.() !== false) {
+        activeConversation = details;
+      }
+      return details;
+    },
+    shouldActivate: () => true,
+  });
+
+  assert.equal(activeConversation?.id, conversation.id);
+  assert.equal(networkRequests, 1);
+});
+
+test('browser back and forward select cached routes without fetching the conversation being left', async () => {
+  const conversationA = makeConversation('history-route-a', '910000000000000019');
+  const conversationB = makeConversation('history-route-b', '910000000000000020');
+  storeConversationDetails(makeDetails(conversationA));
+  storeConversationDetails(makeDetails(conversationB));
+
+  let activeConversation: Conversation | null = conversationB;
+  let networkRequests = 0;
+  const openConversation = async (identifier: string, options?: { shouldActivate?: () => boolean }) => {
+    const cached = getConversationDetails(identifier);
+    if (!cached) {
+      networkRequests += 1;
+      throw new Error('Unexpected cache miss');
+    }
+    if (options?.shouldActivate?.() !== false) {
+      activeConversation = cached;
+    }
+    return cached;
+  };
+
+  await synchronizeDmRouteSelection({
+    routeIdentifier: conversationA.public_id!,
+    activeConversation,
+    activeGroup: null,
+    openConversation,
+    shouldActivate: () => true,
+  });
+  assert.equal(activeConversation.id, conversationA.id);
+
+  await synchronizeDmRouteSelection({
+    routeIdentifier: conversationB.public_id!,
+    activeConversation,
+    activeGroup: null,
+    openConversation,
+    shouldActivate: () => true,
+  });
+  assert.equal(activeConversation.id, conversationB.id);
+  assert.equal(networkRequests, 0);
+});
+
+test('existing DM preparation never resolves a DM while new profile flow resolves once', async () => {
+  const existingConversation = makeConversation(
+    'existing-no-create',
+    '910000000000000021',
+  );
+  let getOrCreateCalls = 0;
+
+  const prepared = prepareDmConversationNavigation(existingConversation);
+  assert.equal(prepared.id, existingConversation.id);
+  assert.equal(getOrCreateCalls, 0);
+
+  const resolved = await resolveNewDmIdentifiers('new-peer', async (targetId) => {
+    getOrCreateCalls += 1;
+    assert.equal(targetId, 'new-peer');
+    return {
+      conversation_id: 'new-profile-dm',
+      conversation_public_id: '910000000000000022',
+      created: true,
+    };
+  });
+
+  assert.equal(getOrCreateCalls, 1);
+  assert.equal(resolved.routeId, '910000000000000022');
 });
