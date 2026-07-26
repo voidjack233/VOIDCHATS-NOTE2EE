@@ -4,13 +4,16 @@ import test, { after } from 'node:test';
 
 import valkey from '../../../server/valkey.js';
 import {
-  claimVerifiedTwoFactorSession,
   checkTwoFactorBlocked,
+  claimPendingTwoFactorSession,
   clearTwoFactorAttemptState,
-  consumePendingTwoFactorSession,
   create2FASession,
+  createTwoFactorClaimOwnerId,
+  finalizeClaimedTwoFactorSession,
   getPendingTwoFactorSession,
+  recordTwoFactorEmailSend,
   recordTwoFactorFailure,
+  releaseClaimedTwoFactorSession,
   updatePendingTwoFactorSession,
 } from '../../../server/auth/services/twoFactorChallengeService.js';
 import {
@@ -21,9 +24,9 @@ after(async () => {
   await valkey.quit();
 });
 
-function createRequest() {
+function createRequest(deviceId = `device-${crypto.randomUUID()}`) {
   return {
-    cookies: { deviceId: `device-${crypto.randomUUID()}` },
+    cookies: { deviceId },
     headers: {},
     ip: '127.0.0.1',
     get(name) {
@@ -32,39 +35,44 @@ function createRequest() {
   };
 }
 
-const enabledMethodQueryable = {
-  async query() {
-    return { rows: [{ available: true }] };
-  },
-};
+function getKeys(token) {
+  return {
+    session: `auth:2fa:session:${token}`,
+    verify: `auth:2fa:verify:${token}`,
+    email: `auth:2fa:email:${token}`,
+  };
+}
+
+async function cleanupToken(token) {
+  const keys = getKeys(token);
+  await valkey.del(keys.session, keys.verify, keys.email);
+}
 
 test('pending 2FA challenges persist only normalized authorized methods', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, [
+  const token = await create2FASession('test-user', createRequest(), [
     'totp',
     'totp',
     'attacker-controlled',
   ]);
-  t.after(() => clearTwoFactorAttemptState(token));
+  t.after(() => cleanupToken(token));
 
   const challenge = await getPendingTwoFactorSession(token);
   assert.deepEqual(challenge.allowedMethods, ['totp']);
 });
 
 test('atomic pending 2FA updates preserve the existing challenge expiry', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, ['email']);
-  const sessionKey = `auth:2fa:session:${token}`;
-  t.after(() => clearTwoFactorAttemptState(token));
+  const token = await create2FASession('test-user', createRequest(), ['email']);
+  const keys = getKeys(token);
+  t.after(() => cleanupToken(token));
   const expectedSession = await getPendingTwoFactorSession(token);
 
-  await valkey.pexpire(sessionKey, 2_000);
+  await valkey.pexpire(keys.session, 2_000);
   const updateStatus = await updatePendingTwoFactorSession(
     token,
     expectedSession,
     { ...expectedSession, emailCodeHash: 'updated-code-state' },
   );
-  const remainingTtlMs = await valkey.pttl(sessionKey);
+  const remainingTtlMs = await valkey.pttl(keys.session);
 
   assert.equal(updateStatus, 'updated');
   assert.ok(remainingTtlMs > 0);
@@ -73,7 +81,7 @@ test('atomic pending 2FA updates preserve the existing challenge expiry', async 
 
 test('twenty concurrent 2FA failures are counted without lost updates', async (t) => {
   const token = `test-${crypto.randomUUID()}`;
-  t.after(() => clearTwoFactorAttemptState(token));
+  t.after(() => cleanupToken(token));
 
   const states = await Promise.all(Array.from({ length: 20 }, () => (
     recordTwoFactorFailure(token)
@@ -86,188 +94,156 @@ test('twenty concurrent 2FA failures are counted without lost updates', async (t
   assert.ok(blocked.retryAfterSeconds > 0);
 });
 
-test('one concurrent valid TOTP challenge creates exactly one login session', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, ['totp']);
-  t.after(() => clearTwoFactorAttemptState(token));
+test('concurrent claims have exactly one owner and preserve the authoritative snapshot', async (t) => {
+  const token = await create2FASession('test-user', createRequest(), ['totp']);
+  t.after(() => cleanupToken(token));
   const expectedSession = await getPendingTwoFactorSession(token);
-  let loginSessionCount = 0;
+  const owners = [createTwoFactorClaimOwnerId(), createTwoFactorClaimOwnerId()];
 
-  const completeLogin = async () => {
-    const claim = await claimVerifiedTwoFactorSession({
+  const claims = await Promise.all(owners.map((claimOwnerId) => (
+    claimPendingTwoFactorSession({
       twoFactorToken: token,
       expectedSession,
-      method: 'totp',
-      req,
-      queryable: enabledMethodQueryable,
-    });
-    if (claim.status === 'consumed') {
-      loginSessionCount += 1;
-    }
-    return claim.status;
-  };
+      claimOwnerId,
+    })
+  )));
 
-  const statuses = await Promise.all([completeLogin(), completeLogin()]);
-  assert.equal(statuses.filter((status) => status === 'consumed').length, 1);
-  assert.equal(statuses.filter((status) => status === 'missing').length, 1);
-  assert.equal(loginSessionCount, 1);
+  assert.equal(claims.filter(({ status }) => status === 'claimed').length, 1);
+  assert.equal(claims.filter(({ status }) => status === 'busy').length, 1);
+  assert.deepEqual(claims.find(({ status }) => status === 'claimed').session, expectedSession);
+  assert.deepEqual(await getPendingTwoFactorSession(token), expectedSession);
 });
 
-test('one concurrent valid email challenge creates exactly one login session', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, ['email']);
-  t.after(() => clearTwoFactorAttemptState(token));
-  const initialSession = await getPendingTwoFactorSession(token);
-  const verifiedEmailCodeHash = crypto.randomBytes(32).toString('hex');
-  const expectedSession = {
-    ...initialSession,
-    emailCodeHash: verifiedEmailCodeHash,
-    emailCodeExpiresAt: Date.now() + 60_000,
-  };
-  assert.equal(
-    await updatePendingTwoFactorSession(token, initialSession, expectedSession),
-    'updated',
-  );
-  let loginSessionCount = 0;
-
-  const completeLogin = async () => {
-    const claim = await claimVerifiedTwoFactorSession({
-      twoFactorToken: token,
-      expectedSession,
-      method: 'email',
-      req,
-      queryable: enabledMethodQueryable,
-      verifiedEmailCodeHash,
-    });
-    if (claim.status === 'consumed') {
-      loginSessionCount += 1;
-    }
-    return claim.status;
-  };
-
-  const statuses = await Promise.all([completeLogin(), completeLogin()]);
-  assert.equal(statuses.filter((status) => status === 'consumed').length, 1);
-  assert.equal(statuses.filter((status) => status === 'missing').length, 1);
-  assert.equal(loginSessionCount, 1);
-});
-
-test('a changed challenge snapshot is consumed but cannot create credentials', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, ['totp']);
-  t.after(() => clearTwoFactorAttemptState(token));
+test('release requires the claim owner and restores the exact session with remaining TTL', async (t) => {
+  const token = await create2FASession('test-user', createRequest(), ['email']);
+  const keys = getKeys(token);
+  t.after(() => cleanupToken(token));
   const expectedSession = await getPendingTwoFactorSession(token);
-  const changedSession = { ...expectedSession, securityRevision: 2 };
-  assert.equal(
-    await updatePendingTwoFactorSession(token, expectedSession, changedSession),
-    'updated',
-  );
+  await valkey.pexpire(keys.session, 2_000);
+  await recordTwoFactorFailure(token);
+  await recordTwoFactorEmailSend(token);
 
-  const claim = await claimVerifiedTwoFactorSession({
+  const owner = createTwoFactorClaimOwnerId();
+  assert.equal((await claimPendingTwoFactorSession({
     twoFactorToken: token,
     expectedSession,
-    method: 'totp',
-    req,
-    queryable: enabledMethodQueryable,
-  });
+    claimOwnerId: owner,
+  })).status, 'claimed');
 
-  assert.equal(claim.status, 'changed');
-  assert.equal(await getPendingTwoFactorSession(token), null);
+  assert.equal(await releaseClaimedTwoFactorSession({
+    twoFactorToken: token,
+    claimOwnerId: createTwoFactorClaimOwnerId(),
+  }), 'owner_mismatch');
+  assert.equal(await finalizeClaimedTwoFactorSession({
+    twoFactorToken: token,
+    claimOwnerId: createTwoFactorClaimOwnerId(),
+  }), 'owner_mismatch');
+  assert.equal(await updatePendingTwoFactorSession(
+    token,
+    expectedSession,
+    { ...expectedSession, changed: true },
+  ), 'busy');
+  assert.equal(await clearTwoFactorAttemptState(token), 'busy');
+
+  assert.equal(await releaseClaimedTwoFactorSession({
+    twoFactorToken: token,
+    claimOwnerId: owner,
+  }), 'released');
+  assert.deepEqual(await getPendingTwoFactorSession(token), expectedSession);
+  assert.ok(await valkey.pttl(keys.session) > 0);
+  assert.ok(await valkey.pttl(keys.session) <= 2_000);
+  assert.equal(await valkey.get(keys.verify), '1');
+  assert.equal(await valkey.get(keys.email), '1');
 });
 
-test('changed email-code state is rejected after atomic challenge consumption', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, ['email']);
-  t.after(() => clearTwoFactorAttemptState(token));
-  const initialSession = await getPendingTwoFactorSession(token);
-  const verifiedEmailCodeHash = crypto.randomBytes(32).toString('hex');
-  const expectedSession = {
-    ...initialSession,
-    emailCodeHash: verifiedEmailCodeHash,
-    emailCodeExpiresAt: Date.now() + 60_000,
-  };
-  assert.equal(
-    await updatePendingTwoFactorSession(token, initialSession, expectedSession),
-    'updated',
-  );
-  const changedSession = {
-    ...expectedSession,
+test('finalization atomically deletes the challenge and both attempt counters once', async (t) => {
+  const token = await create2FASession('test-user', createRequest(), ['totp']);
+  const keys = getKeys(token);
+  t.after(() => cleanupToken(token));
+  const expectedSession = await getPendingTwoFactorSession(token);
+  await recordTwoFactorFailure(token);
+  await recordTwoFactorEmailSend(token);
+  const owner = createTwoFactorClaimOwnerId();
+
+  assert.equal((await claimPendingTwoFactorSession({
+    twoFactorToken: token,
+    expectedSession,
+    claimOwnerId: owner,
+  })).status, 'claimed');
+  assert.equal(await finalizeClaimedTwoFactorSession({
+    twoFactorToken: token,
+    claimOwnerId: owner,
+  }), 'finalized');
+  assert.deepEqual(await valkey.mget(keys.session, keys.verify, keys.email), [
+    null,
+    null,
+    null,
+  ]);
+  assert.equal(await finalizeClaimedTwoFactorSession({
+    twoFactorToken: token,
+    claimOwnerId: owner,
+  }), 'missing');
+});
+
+test('a changed email snapshot cannot be claimed and remains pending', async (t) => {
+  const token = await create2FASession('test-user', createRequest(), ['email']);
+  t.after(() => cleanupToken(token));
+  const original = await getPendingTwoFactorSession(token);
+  const current = {
+    ...original,
     emailCodeHash: crypto.randomBytes(32).toString('hex'),
+    emailCodeExpiresAt: Date.now() + 60_000,
   };
-  assert.equal(
-    await updatePendingTwoFactorSession(token, expectedSession, changedSession),
-    'updated',
-  );
+  assert.equal(await updatePendingTwoFactorSession(token, original, current), 'updated');
 
-  const claim = await claimVerifiedTwoFactorSession({
+  const claim = await claimPendingTwoFactorSession({
     twoFactorToken: token,
-    expectedSession,
-    method: 'email',
-    req,
-    queryable: enabledMethodQueryable,
-    verifiedEmailCodeHash,
+    expectedSession: original,
+    claimOwnerId: createTwoFactorClaimOwnerId(),
   });
 
   assert.equal(claim.status, 'changed');
-  assert.equal(await getPendingTwoFactorSession(token), null);
+  assert.deepEqual(await getPendingTwoFactorSession(token), current);
 });
 
-test('an invalid attempt increments counters without consuming the challenge', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, ['totp']);
-  t.after(() => clearTwoFactorAttemptState(token));
+test('an invalid attempt increments counters without claiming the challenge', async (t) => {
+  const token = await create2FASession('test-user', createRequest(), ['totp']);
+  const keys = getKeys(token);
+  t.after(() => cleanupToken(token));
 
   const failureState = await recordTwoFactorFailure(token);
+  const stored = JSON.parse(await valkey.get(keys.session));
 
   assert.equal(failureState.attempts, 1);
+  assert.equal(stored.__voidTwoFactorState, undefined);
   assert.ok(await getPendingTwoFactorSession(token));
 });
 
-test('Valkey failure during challenge consumption creates no login session', async () => {
-  const req = createRequest();
-  const expectedSession = {
-    userId: 'test-user',
-    allowedMethods: ['totp'],
-    deviceFingerprint: 'unused',
-    userAgent: 'two-factor-test',
-    expiresAt: Date.now() + 60_000,
-  };
+test('Valkey failures during claim, release, and finalization fail closed', async () => {
   const failingClient = {
     async eval() {
       throw new Error('valkey unavailable');
     },
   };
-  let loginSessionCount = 0;
+  const common = {
+    twoFactorToken: `test-${crypto.randomUUID()}`,
+    claimOwnerId: createTwoFactorClaimOwnerId(),
+    client: failingClient,
+  };
 
   await assert.rejects(
-    claimVerifiedTwoFactorSession({
-      twoFactorToken: `test-${crypto.randomUUID()}`,
-      expectedSession,
-      method: 'totp',
-      req,
-      queryable: enabledMethodQueryable,
-      client: failingClient,
-    }).then(() => {
-      loginSessionCount += 1;
+    claimPendingTwoFactorSession({
+      ...common,
+      expectedSession: { userId: 'test-user', expiresAt: Date.now() + 60_000 },
     }),
     SecurityCounterUnavailableError,
   );
-  assert.equal(loginSessionCount, 0);
-});
-
-test('email session updates cannot resurrect an already consumed challenge', async (t) => {
-  const req = createRequest();
-  const token = await create2FASession('test-user', req, ['email']);
-  t.after(() => clearTwoFactorAttemptState(token));
-  const expectedSession = await getPendingTwoFactorSession(token);
-  const consumedSession = await consumePendingTwoFactorSession(token);
-  assert.ok(consumedSession);
-
-  const updateStatus = await updatePendingTwoFactorSession(
-    token,
-    expectedSession,
-    { ...expectedSession, emailCodeHash: 'new-code-state' },
+  await assert.rejects(
+    releaseClaimedTwoFactorSession(common),
+    SecurityCounterUnavailableError,
   );
-
-  assert.equal(updateStatus, 'missing');
-  assert.equal(await getPendingTwoFactorSession(token), null);
+  await assert.rejects(
+    finalizeClaimedTwoFactorSession(common),
+    SecurityCounterUnavailableError,
+  );
 });

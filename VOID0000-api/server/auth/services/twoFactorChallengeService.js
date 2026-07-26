@@ -6,12 +6,9 @@ import { getClientIP } from '../../utils/securityUtils.js';
 import { getTwoFactorCodeSecret } from '../config/authSecrets.js';
 import {
   buildAllowedTwoFactorMethods,
-  isTwoFactorMethodAuthorized,
-  normalizeTwoFactorMethod,
 } from './twoFactorMethodService.js';
 import {
   SecurityCounterUnavailableError,
-  clearFixedWindowCounters,
   getFixedWindowCounterState,
   incrementFixedWindowCounters,
 } from './securityCounterService.js';
@@ -22,20 +19,105 @@ const TWO_FACTOR_EMAIL_WINDOW_SEC = 10 * 60;
 const TWO_FACTOR_EMAIL_MAX_SENDS = 3;
 const TWO_FACTOR_SESSION_WINDOW_SEC = 5 * 60;
 
-const CONSUME_PENDING_TWO_FACTOR_SESSION_SCRIPT = `
+// Claims retain only the challenge's original TTL. Expiry removes a stuck
+// claim instead of reopening it, so crash recovery favors safety over reuse.
+const CLAIM_PENDING_TWO_FACTOR_SESSION_SCRIPT = `
 local session = redis.call('GET', KEYS[1])
 if not session then
-  return false
+  return {'missing'}
+end
+
+local ok, decoded = pcall(cjson.decode, session)
+if not ok or type(decoded) ~= 'table' then
+  return {'changed'}
+end
+if decoded['__voidTwoFactorState'] == 'claimed' then
+  return {'busy'}
+end
+if session ~= ARGV[1] then
+  return {'changed'}
+end
+
+local nowMilliseconds = tonumber(ARGV[3])
+local expiresAt = tonumber(decoded['expiresAt'])
+local ttlMilliseconds = redis.call('PTTL', KEYS[1])
+if not nowMilliseconds or not expiresAt or ttlMilliseconds <= 0 or nowMilliseconds > expiresAt then
+  redis.call('DEL', KEYS[1])
+  return {'missing'}
+end
+
+local remainingBySnapshot = expiresAt - nowMilliseconds
+ttlMilliseconds = math.min(ttlMilliseconds, remainingBySnapshot)
+if ttlMilliseconds <= 0 then
+  redis.call('DEL', KEYS[1])
+  return {'missing'}
+end
+
+local claimedEnvelope = cjson.encode({
+  __voidTwoFactorState = 'claimed',
+  claimOwnerId = ARGV[2],
+  sessionSnapshot = session
+})
+redis.call('SET', KEYS[1], claimedEnvelope, 'PX', ttlMilliseconds)
+
+return {'claimed', session, tostring(ttlMilliseconds)}
+`;
+
+const FINALIZE_CLAIMED_TWO_FACTOR_SESSION_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if not current then
+  return 'missing'
+end
+
+local ok, envelope = pcall(cjson.decode, current)
+if not ok or type(envelope) ~= 'table' or envelope['__voidTwoFactorState'] ~= 'claimed' then
+  return 'not_claimed'
+end
+if envelope['claimOwnerId'] ~= ARGV[1] then
+  return 'owner_mismatch'
 end
 
 redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
-return session
+return 'finalized'
+`;
+
+const RELEASE_CLAIMED_TWO_FACTOR_SESSION_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if not current then
+  return 'missing'
+end
+
+local ok, envelope = pcall(cjson.decode, current)
+if not ok or type(envelope) ~= 'table' or envelope['__voidTwoFactorState'] ~= 'claimed' then
+  return 'not_claimed'
+end
+if envelope['claimOwnerId'] ~= ARGV[1] then
+  return 'owner_mismatch'
+end
+
+local ttlMilliseconds = redis.call('PTTL', KEYS[1])
+local sessionSnapshot = envelope['sessionSnapshot']
+if ttlMilliseconds <= 0 or type(sessionSnapshot) ~= 'string' then
+  redis.call('DEL', KEYS[1])
+  return 'missing'
+end
+
+redis.call('SET', KEYS[1], sessionSnapshot, 'PX', ttlMilliseconds)
+return 'released'
 `;
 
 const UPDATE_PENDING_TWO_FACTOR_SESSION_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if not current then
   return 'missing'
+end
+
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then
+  return 'changed'
+end
+if decoded['__voidTwoFactorState'] == 'claimed' then
+  return 'busy'
 end
 if current ~= ARGV[1] then
   return 'changed'
@@ -49,6 +131,40 @@ end
 
 redis.call('SET', KEYS[1], ARGV[2], 'PX', ttlMilliseconds)
 return 'updated'
+`;
+
+const DELETE_PENDING_TWO_FACTOR_SESSION_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if not current then
+  return 'missing'
+end
+
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then
+  return 'changed'
+end
+if decoded['__voidTwoFactorState'] == 'claimed' then
+  return 'busy'
+end
+
+redis.call('DEL', KEYS[1])
+return 'deleted'
+`;
+
+const CLEAR_TWO_FACTOR_ATTEMPT_STATE_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if current then
+  local ok, decoded = pcall(cjson.decode, current)
+  if not ok or type(decoded) ~= 'table' then
+    return 'changed'
+  end
+  if decoded['__voidTwoFactorState'] == 'claimed' then
+    return 'busy'
+  end
+end
+
+redis.call('DEL', KEYS[1], KEYS[2], KEYS[3])
+return 'cleared'
 `;
 
 function getTwoFactorSessionKey(twoFactorToken) {
@@ -83,7 +199,16 @@ export function hashEmailCode(twoFactorToken, code) {
 
 export async function getPendingTwoFactorSession(twoFactorToken) {
   const raw = await valkey.get(getTwoFactorSessionKey(twoFactorToken));
-  return raw ? JSON.parse(raw) : null;
+  if (!raw) return null;
+
+  const parsed = JSON.parse(raw);
+  if (
+    parsed?.__voidTwoFactorState === 'claimed' &&
+    typeof parsed.sessionSnapshot === 'string'
+  ) {
+    return JSON.parse(parsed.sessionSnapshot);
+  }
+  return parsed;
 }
 
 export async function savePendingTwoFactorSession(twoFactorToken, session) {
@@ -115,103 +240,113 @@ export async function updatePendingTwoFactorSession(
   }
 }
 
-export async function deletePendingTwoFactorSession(twoFactorToken) {
-  await valkey.del(getTwoFactorSessionKey(twoFactorToken));
+export async function deletePendingTwoFactorSession(twoFactorToken, client = valkey) {
+  try {
+    return String(await client.eval(
+      DELETE_PENDING_TWO_FACTOR_SESSION_SCRIPT,
+      1,
+      getTwoFactorSessionKey(twoFactorToken),
+    ));
+  } catch (error) {
+    throw wrapSecurityOperationError(error);
+  }
 }
 
-export async function consumePendingTwoFactorSession(twoFactorToken, client = valkey) {
-  let rawSession;
+function parseClaimResult(result) {
+  const status = String(result?.[0] || '');
+  if (status !== 'claimed') {
+    return { status, session: null, ttlMilliseconds: 0 };
+  }
+
   try {
-    rawSession = await client.eval(
-      CONSUME_PENDING_TWO_FACTOR_SESSION_SCRIPT,
+    const session = JSON.parse(String(result[1] || ''));
+    const ttlMilliseconds = Math.max(0, Number(result[2]) || 0);
+    if (!session || typeof session !== 'object' || ttlMilliseconds <= 0) {
+      return { status: 'changed', session: null, ttlMilliseconds: 0 };
+    }
+    return { status, session, ttlMilliseconds };
+  } catch {
+    return { status: 'changed', session: null, ttlMilliseconds: 0 };
+  }
+}
+
+function wrapSecurityOperationError(error) {
+  if (error instanceof SecurityCounterUnavailableError) return error;
+  return new SecurityCounterUnavailableError(error);
+}
+
+export function createTwoFactorClaimOwnerId() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+export async function claimPendingTwoFactorSession({
+  twoFactorToken,
+  expectedSession,
+  claimOwnerId,
+  client = valkey,
+  now = Date.now(),
+}) {
+  if (!twoFactorToken || !expectedSession || !claimOwnerId) {
+    throw new TypeError('Two-factor token, expected session, and claim owner are required');
+  }
+
+  try {
+    const result = await client.eval(
+      CLAIM_PENDING_TWO_FACTOR_SESSION_SCRIPT,
+      1,
+      getTwoFactorSessionKey(twoFactorToken),
+      JSON.stringify(expectedSession),
+      claimOwnerId,
+      String(now),
+    );
+    return parseClaimResult(result);
+  } catch (error) {
+    throw wrapSecurityOperationError(error);
+  }
+}
+
+export async function finalizeClaimedTwoFactorSession({
+  twoFactorToken,
+  claimOwnerId,
+  client = valkey,
+}) {
+  if (!twoFactorToken || !claimOwnerId) {
+    throw new TypeError('Two-factor token and claim owner are required');
+  }
+
+  try {
+    return String(await client.eval(
+      FINALIZE_CLAIMED_TWO_FACTOR_SESSION_SCRIPT,
       3,
       getTwoFactorSessionKey(twoFactorToken),
       getTwoFactorVerifyKey(twoFactorToken),
       getTwoFactorEmailKey(twoFactorToken),
-    );
+      claimOwnerId,
+    ));
   } catch (error) {
-    if (error instanceof SecurityCounterUnavailableError) throw error;
-    throw new SecurityCounterUnavailableError(error);
+    throw wrapSecurityOperationError(error);
   }
+}
 
-  if (typeof rawSession !== 'string' || !rawSession) return null;
+export async function releaseClaimedTwoFactorSession({
+  twoFactorToken,
+  claimOwnerId,
+  client = valkey,
+}) {
+  if (!twoFactorToken || !claimOwnerId) {
+    throw new TypeError('Two-factor token and claim owner are required');
+  }
 
   try {
-    const session = JSON.parse(rawSession);
-    return session && typeof session === 'object' ? session : null;
-  } catch {
-    return null;
+    return String(await client.eval(
+      RELEASE_CLAIMED_TWO_FACTOR_SESSION_SCRIPT,
+      1,
+      getTwoFactorSessionKey(twoFactorToken),
+      claimOwnerId,
+    ));
+  } catch (error) {
+    throw wrapSecurityOperationError(error);
   }
-}
-
-export function isSameTwoFactorSessionSnapshot(expectedSession, consumedSession) {
-  if (
-    !expectedSession ||
-    typeof expectedSession !== 'object' ||
-    !consumedSession ||
-    typeof consumedSession !== 'object'
-  ) {
-    return false;
-  }
-
-  return JSON.stringify(expectedSession) === JSON.stringify(consumedSession);
-}
-
-export async function claimVerifiedTwoFactorSession({
-  twoFactorToken,
-  expectedSession,
-  method,
-  req,
-  queryable,
-  verifiedEmailCodeHash = null,
-  client = valkey,
-  now = Date.now(),
-}) {
-  const consumedSession = await consumePendingTwoFactorSession(twoFactorToken, client);
-  if (!consumedSession) {
-    return { status: 'missing', session: null };
-  }
-  const normalizedMethod = normalizeTwoFactorMethod(method);
-
-  const unchanged = isSameTwoFactorSessionSnapshot(
-    expectedSession,
-    consumedSession,
-  );
-  const sameUser = Boolean(
-    expectedSession?.userId &&
-    String(consumedSession.userId) === String(expectedSession.userId),
-  );
-  const unexpired = Number.isFinite(Number(consumedSession.expiresAt)) &&
-    now <= Number(consumedSession.expiresAt);
-  const bindingMatches = isSameRequestBinding(consumedSession, req);
-
-  if (!unchanged || !sameUser || !unexpired || !bindingMatches) {
-    return { status: 'changed', session: null };
-  }
-
-  if (
-    !normalizedMethod ||
-    !await isTwoFactorMethodAuthorized(queryable, consumedSession, normalizedMethod)
-  ) {
-    return { status: 'changed', session: null };
-  }
-
-  if (normalizedMethod === 'email') {
-    const emailCodeExpiresAt = Number(consumedSession.emailCodeExpiresAt);
-    const emailStateMatches = Boolean(
-      verifiedEmailCodeHash &&
-      consumedSession.emailCodeHash === verifiedEmailCodeHash &&
-      consumedSession.emailCodeHash === expectedSession.emailCodeHash &&
-      emailCodeExpiresAt === Number(expectedSession.emailCodeExpiresAt) &&
-      Number.isFinite(emailCodeExpiresAt) &&
-      now <= emailCodeExpiresAt,
-    );
-    if (!emailStateMatches) {
-      return { status: 'changed', session: null };
-    }
-  }
-
-  return { status: 'consumed', session: consumedSession };
 }
 
 export async function create2FASession(userId, req, allowedMethods) {
@@ -244,12 +379,18 @@ function getTwoFactorEmailKey(twoFactorToken) {
   return `auth:2fa:email:${twoFactorToken}`;
 }
 
-export async function clearTwoFactorAttemptState(twoFactorToken) {
-  await valkey.del(getTwoFactorSessionKey(twoFactorToken));
-  await clearFixedWindowCounters([
-    getTwoFactorVerifyKey(twoFactorToken),
-    getTwoFactorEmailKey(twoFactorToken),
-  ]);
+export async function clearTwoFactorAttemptState(twoFactorToken, client = valkey) {
+  try {
+    return String(await client.eval(
+      CLEAR_TWO_FACTOR_ATTEMPT_STATE_SCRIPT,
+      3,
+      getTwoFactorSessionKey(twoFactorToken),
+      getTwoFactorVerifyKey(twoFactorToken),
+      getTwoFactorEmailKey(twoFactorToken),
+    ));
+  } catch (error) {
+    throw wrapSecurityOperationError(error);
+  }
 }
 
 export async function recordTwoFactorFailure(twoFactorToken) {
