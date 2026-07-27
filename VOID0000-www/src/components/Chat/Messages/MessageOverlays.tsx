@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import type { Message } from '../../../Services/Chat/chatService';
 import {
+  getAttachmentViewerSources,
   isAttachmentDeliveryUrlUsable,
 } from '../../../Services/Chat/attachmentService';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../../Services/Chat/reactionLimits';
@@ -119,20 +120,27 @@ function ImageViewerOverlay({
   onNext,
   onSelectIndex,
 }: ImageViewerOverlayProps) {
-  const [failedIndices, setFailedIndices] = useState<Set<number>>(() => new Set());
+  const [failedUrls, setFailedUrls] = useState<Set<string>>(() => new Set());
   const urls = imageViewer.urls;
   const currentIndex = imageViewer.index;
   const currentAttachment = imageViewer.attachments[currentIndex];
-  const currentUrl = urls[currentIndex];
-  const currentUrlUsable = Boolean(
-    currentUrl && isAttachmentDeliveryUrlUsable(
-      currentUrl,
-      currentUrl === currentAttachment?.display_url
+  const viewerSources = currentAttachment
+    ? getAttachmentViewerSources(currentAttachment)
+    : [];
+  const currentSource = viewerSources.find((source) => !failedUrls.has(source.url)) || null;
+  const legacyUrl = urls[currentIndex];
+  const legacyUrlUsable = Boolean(
+    legacyUrl &&
+    !failedUrls.has(legacyUrl) &&
+    currentAttachment &&
+    isAttachmentDeliveryUrlUsable(
+      legacyUrl,
+      legacyUrl === currentAttachment.display_url
         ? currentAttachment.display_url_expires_at
-        : currentAttachment?.url_expires_at,
+        : currentAttachment.url_expires_at,
     ),
   );
-  const currentFailed = failedIndices.has(currentIndex);
+  const currentUrl = currentSource?.url || (legacyUrlUsable ? legacyUrl : null);
   const originalDownloadUrl = currentAttachment && isAttachmentDeliveryUrlUsable(
     currentAttachment.url,
     currentAttachment.url_expires_at,
@@ -142,10 +150,11 @@ function ImageViewerOverlay({
   const downloadUrl = originalDownloadUrl || currentAttachment?.fallback_url?.trim() || null;
 
   const handleMediaError = () => {
-    setFailedIndices((current) => {
-      if (current.has(currentIndex)) return current;
+    if (!currentUrl) return;
+    setFailedUrls((current) => {
+      if (current.has(currentUrl)) return current;
       const next = new Set(current);
-      next.add(currentIndex);
+      next.add(currentUrl);
       return next;
     });
   };
@@ -200,7 +209,7 @@ function ImageViewerOverlay({
         </button>
       )}
 
-      {currentFailed || !currentUrlUsable || !currentUrl ? (
+      {!currentUrl ? (
         <div className="flex flex-col items-center gap-2 text-white/70">
           <ImageOff className="h-8 w-8" />
           <span className="text-sm">Attachment unavailable</span>
@@ -208,6 +217,8 @@ function ImageViewerOverlay({
       ) : (
         <img
           src={currentUrl}
+          srcSet={currentSource?.srcSet}
+          sizes={currentSource?.sizes}
           alt="attachment"
           className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
           onClick={(event) => event.stopPropagation()}

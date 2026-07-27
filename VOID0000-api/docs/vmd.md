@@ -6,9 +6,10 @@ downloads continue to use signed `cdn.void0000.online` URLs.
 ## Request Flow
 
 1. An authenticated message request verifies conversation membership.
-2. Image attachment metadata receives both the original `url` and a temporary
-   `display_url` capability.
-3. The browser puts `display_url` directly in the image `src` attribute.
+2. Image attachment metadata receives the original `url`, a legacy-compatible
+   `display_url`, and temporary fixed-size `display_variants` capabilities.
+3. The browser puts those capabilities directly in native `src`/`srcset`
+   attributes.
 4. VMD validates the capability, resolves the attachment UUID through
    `attachment_objects`, checks its private persistent variant cache, and
    returns WebP. Only a cache miss reads and transforms the private original.
@@ -25,7 +26,10 @@ VMD does not accept external URLs or client-provided object keys.
 | `large` | 1600 px |
 
 All variants preserve aspect ratio and use `withoutEnlargement`, so small source
-images are never upscaled. V1 issues `medium` URLs for normal message rendering.
+images are never upscaled. The timeline offers `small` and `medium` through
+native `srcset`; the expanded viewer offers `medium` and `large`. The browser
+selects the appropriate response, and the trusted signed original remains the
+direct fallback.
 
 ## Production Routing
 
@@ -49,6 +53,11 @@ capability's remaining lifetime. The URL signature binds the attachment UUID,
 fixed variant, and expiration. The signature key is domain-separated from
 `ACCESS_SECRET`, or can be isolated with an optional `VMD_SIGNING_SECRET`
 override.
+
+Capability expirations are grouped into five-minute buckets. Repeated message
+responses within one bucket therefore reuse the exact VMD URL and CDN cache
+key. Bucketing rounds expiration down, never extends the configured TTL, and
+retains at least 75 percent of shorter configured lifetimes.
 
 VMD sends `public`, matching `max-age`/`s-maxage`, `must-revalidate`,
 `no-transform`, and `immutable` directives. `CDN-Cache-Control` and

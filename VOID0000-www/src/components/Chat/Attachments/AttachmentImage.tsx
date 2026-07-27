@@ -45,6 +45,8 @@ export default function AttachmentImage({
       <BlurImage
         key={source.url}
         src={source.url}
+        srcSet={source.srcSet}
+        sizes={source.sizes}
         blurhash={attachment.blurhash}
         alt={alt}
         className={className}

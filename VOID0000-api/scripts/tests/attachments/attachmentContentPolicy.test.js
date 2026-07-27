@@ -270,6 +270,18 @@ test('properly marked attachments preserve VMD inline delivery URLs', async () =
       return {
         display_url: 'https://vmd.invalid/image',
         display_url_expires_at: Date.now() + 60_000,
+        display_variants: {
+          small: {
+            url: 'https://vmd.invalid/image/small',
+            expires_at: Date.now() + 60_000,
+            width: 480,
+          },
+          medium: {
+            url: 'https://vmd.invalid/image/medium',
+            expires_at: Date.now() + 60_000,
+            width: 960,
+          },
+        },
       };
     },
   });
@@ -286,6 +298,10 @@ test('properly marked attachments preserve VMD inline delivery URLs', async () =
   assert.equal(imageDeliveryCalls, 1);
   assert.equal(attachment.inline, true);
   assert.equal(attachment.display_url, 'https://vmd.invalid/image');
+  assert.equal(
+    attachment.display_variants.small.url,
+    'https://vmd.invalid/image/small',
+  );
 });
 
 test('server-derived inline delivery metadata is never persisted from client input', () => {
@@ -295,9 +311,17 @@ test('server-derived inline delivery metadata is never persisted from client inp
     mime: 'image/jpeg',
     inline: true,
     display_url: 'https://vmd.invalid/forged',
+    display_variants: {
+      medium: {
+        url: 'https://vmd.invalid/forged-medium',
+        expires_at: Date.now() + 60_000,
+        width: 960,
+      },
+    },
   })]);
   const descriptor = JSON.parse(stored);
 
   assert.equal(descriptor.inline, undefined);
   assert.equal(descriptor.display_url, undefined);
+  assert.equal(descriptor.display_variants, undefined);
 });

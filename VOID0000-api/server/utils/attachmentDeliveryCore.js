@@ -8,6 +8,7 @@ const TRANSIENT_ATTACHMENT_FIELDS = new Set([
   'url_expires_at',
   'display_url',
   'display_url_expires_at',
+  'display_variants',
   'inline',
 ]);
 const VMD_IMAGE_MIME_TYPES = new Set([
@@ -213,7 +214,7 @@ export function createAttachmentDeliveryMapper({
             originalDelivery.inline === true
           ) {
             try {
-              imageDelivery = await createImageDelivery(attachmentId, 'medium');
+              imageDelivery = await createImageDelivery(attachmentId);
             } catch (error) {
               logger.warn('[VMD] capability generation failed; using original delivery', {
                 attachment_id: attachmentId,
@@ -254,6 +255,13 @@ export function createAttachmentDeliveryMapper({
             deliveredDescriptor.display_url = delivery.imageDelivery.display_url;
             deliveredDescriptor.display_url_expires_at =
               delivery.imageDelivery.display_url_expires_at;
+            if (
+              delivery.imageDelivery.display_variants &&
+              typeof delivery.imageDelivery.display_variants === 'object'
+            ) {
+              deliveredDescriptor.display_variants =
+                delivery.imageDelivery.display_variants;
+            }
           }
 
           return JSON.stringify(deliveredDescriptor);

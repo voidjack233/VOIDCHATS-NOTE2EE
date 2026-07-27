@@ -6,6 +6,8 @@ import { decode } from 'blurhash';
 
 interface BlurImageProps {
   src: string;
+  srcSet?: string;
+  sizes?: string;
   blurhash?: string;
   alt?: string;
   className?: string;
@@ -57,6 +59,8 @@ export const BlurhashPlaceholder = ({
 
 const BlurImage = ({
   src,
+  srcSet,
+  sizes,
   blurhash,
   alt = '',
   className = '',
@@ -67,18 +71,19 @@ const BlurImage = ({
   const imageRef = useRef<HTMLImageElement>(null);
   const reportedLoadedSrcRef = useRef<string | null>(null);
   const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
-  const loaded = loadedSrc === src;
+  const sourceIdentity = `${src}\n${srcSet || ''}`;
+  const loaded = loadedSrc === sourceIdentity;
 
   useLayoutEffect(() => {
     const image = imageRef.current;
     if (!image?.complete || image.naturalWidth <= 0) return;
 
-    setLoadedSrc(src);
-    if (reportedLoadedSrcRef.current !== src) {
-      reportedLoadedSrcRef.current = src;
+    setLoadedSrc(sourceIdentity);
+    if (reportedLoadedSrcRef.current !== sourceIdentity) {
+      reportedLoadedSrcRef.current = sourceIdentity;
       onLoad?.(image);
     }
-  }, [onLoad, src]);
+  }, [onLoad, sourceIdentity]);
 
   return (
     <div className="relative w-full h-full">
@@ -91,19 +96,21 @@ const BlurImage = ({
       <img
         ref={imageRef}
         src={src}
+        srcSet={srcSet}
+        sizes={sizes}
         alt={alt}
         loading={loading}
         decoding="async"
         style={{ visibility: loaded ? 'visible' : 'hidden' }}
         onLoad={(event) => {
-          setLoadedSrc(src);
-          if (reportedLoadedSrcRef.current !== src) {
-            reportedLoadedSrcRef.current = src;
+          setLoadedSrc(sourceIdentity);
+          if (reportedLoadedSrcRef.current !== sourceIdentity) {
+            reportedLoadedSrcRef.current = sourceIdentity;
             onLoad?.(event.currentTarget);
           }
         }}
         onError={(event) => {
-          setLoadedSrc((current) => (current === src ? null : current));
+          setLoadedSrc((current) => (current === sourceIdentity ? null : current));
           onError?.(event.currentTarget);
         }}
         className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}

@@ -28,7 +28,7 @@ import { getMentionUsernames } from '../../../Services/Chat/messageMentions';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../../Services/Chat/reactionLimits';
 import {
   getAttachmentRenderIdentity,
-  getCachedAttachmentObjectUrl,
+  getAttachmentViewerUrl,
 } from '../../../Services/Chat/attachmentService';
 import { getMessageDateLabel } from './useMessageLayout';
 import {
@@ -622,7 +622,7 @@ const MessageItem = memo(function MessageItem({
     if (isPending) return;
 
     const attachments = parseAttachments(attachmentUrls);
-    const initialUrls = attachments.map(getCachedAttachmentObjectUrl);
+    const initialUrls = attachments.map(getAttachmentViewerUrl);
     onOpenImageViewer(attachments, initialUrls, index);
   }, [isPending, onOpenImageViewer]);
   const showSenderMeta = startsGroup;

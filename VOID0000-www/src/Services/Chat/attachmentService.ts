@@ -5,6 +5,7 @@ import type { Attachment } from './chatTypes';
 import {
   getAttachmentRenderIdentity,
   resolveAttachmentRenderSources,
+  resolveAttachmentViewerSources,
   type AttachmentRenderSource,
 } from './attachmentRenderPolicy';
 
@@ -186,6 +187,18 @@ export function getAttachmentRenderSources(
 
 export function getAttachmentRenderUrls(attachment: Attachment): string[] {
   return getAttachmentRenderSources(attachment).map(({ url }) => url);
+}
+
+export function getAttachmentViewerSources(
+  attachment: Attachment,
+): AttachmentRenderSource[] {
+  return resolveAttachmentViewerSources(attachment, {
+    isUrlUsable: isAttachmentDeliveryUrlUsable,
+  });
+}
+
+export function getAttachmentViewerUrl(attachment: Attachment): string | null {
+  return getAttachmentViewerSources(attachment)[0]?.url || null;
 }
 
 export { getAttachmentRenderIdentity };

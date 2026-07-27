@@ -6,6 +6,7 @@ const DEFAULT_CAPABILITY_TTL_SECONDS = 60 * 60;
 const MIN_CAPABILITY_TTL_SECONDS = 5 * 60;
 const MAX_CAPABILITY_TTL_SECONDS = 60 * 60;
 const SIGNING_KEY_CONTEXT = 'void:vmd:capability-signing-key:v1';
+export const VMD_CAPABILITY_EXPIRY_BUCKET_SECONDS = 5 * 60;
 
 export const VMD_IMAGE_VARIANTS = Object.freeze({
   thumb: Object.freeze({ bound: 160, quality: 72 }),
@@ -13,6 +14,12 @@ export const VMD_IMAGE_VARIANTS = Object.freeze({
   medium: Object.freeze({ bound: 960, quality: 82 }),
   large: Object.freeze({ bound: 1600, quality: 84 }),
 });
+export const VMD_RESPONSIVE_IMAGE_VARIANTS = Object.freeze([
+  'thumb',
+  'small',
+  'medium',
+  'large',
+]);
 
 function parseInteger(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) {
@@ -34,6 +41,20 @@ function resolveCapabilityTtlSeconds(value = process.env.VMD_SIGNED_URL_TTL_SECO
     MAX_CAPABILITY_TTL_SECONDS,
     Math.max(MIN_CAPABILITY_TTL_SECONDS, parsed),
   );
+}
+
+function resolveCapabilityExpiresAt(now, ttlSeconds, bucketSeconds) {
+  const nowSeconds = Math.floor(now / 1000);
+  const configuredBucket = Number.isSafeInteger(bucketSeconds) && bucketSeconds > 0
+    ? bucketSeconds
+    : VMD_CAPABILITY_EXPIRY_BUCKET_SECONDS;
+  // Keep at least 75% of short configured TTLs while retaining five-minute
+  // buckets for the normal one-hour capability.
+  const effectiveBucket = Math.max(
+    1,
+    Math.min(configuredBucket, Math.floor(ttlSeconds / 4)),
+  );
+  return Math.floor((nowSeconds + ttlSeconds) / effectiveBucket) * effectiveBucket;
 }
 
 function resolvePublicOrigin(value = process.env.VMD_PUBLIC_URL) {
@@ -90,6 +111,7 @@ export function createVmdImageDelivery(
     publicOrigin = resolvePublicOrigin(),
     signingKey = getVmdSigningKey(),
     ttlSeconds = resolveCapabilityTtlSeconds(),
+    expiryBucketSeconds = VMD_CAPABILITY_EXPIRY_BUCKET_SECONDS,
   } = {},
 ) {
   if (!UUID_PATTERN.test(attachmentId || '')) {
@@ -99,7 +121,11 @@ export function createVmdImageDelivery(
     throw new TypeError(`Unsupported VMD image variant: ${variant}`);
   }
 
-  const expiresAt = Math.floor(now / 1000) + ttlSeconds;
+  const expiresAt = resolveCapabilityExpiresAt(
+    now,
+    ttlSeconds,
+    expiryBucketSeconds,
+  );
   const signature = signCapability(attachmentId, variant, expiresAt, signingKey);
   const url = new URL(
     `/v1/images/${encodeURIComponent(attachmentId.toLowerCase())}/${variant}`,
@@ -111,6 +137,37 @@ export function createVmdImageDelivery(
   return {
     display_url: url.toString(),
     display_url_expires_at: expiresAt * 1000,
+  };
+}
+
+export function createVmdResponsiveImageDelivery(
+  attachmentId,
+  options = {},
+) {
+  const now = options.now ?? Date.now();
+  const deliveries = Object.fromEntries(
+    VMD_RESPONSIVE_IMAGE_VARIANTS.map((variant) => [
+      variant,
+      createVmdImageDelivery(attachmentId, variant, {
+        ...options,
+        now,
+      }),
+    ]),
+  );
+  const medium = deliveries.medium;
+
+  return {
+    ...medium,
+    display_variants: Object.fromEntries(
+      VMD_RESPONSIVE_IMAGE_VARIANTS.map((variant) => [
+        variant,
+        {
+          url: deliveries[variant].display_url,
+          expires_at: deliveries[variant].display_url_expires_at,
+          width: VMD_IMAGE_VARIANTS[variant].bound,
+        },
+      ]),
+    ),
   };
 }
 

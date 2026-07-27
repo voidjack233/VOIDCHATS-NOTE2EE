@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   getAttachmentRenderIdentity,
   resolveAttachmentRenderSources,
+  resolveAttachmentViewerSources,
   type AttachmentRenderSource,
 } from '../../../src/Services/Chat/attachmentRenderPolicy';
 import type { Attachment } from '../../../src/Services/Chat/chatTypes';
@@ -185,4 +186,42 @@ test('trusted delivery exposes VMD first and direct original second', () => {
     getAttachmentRenderIdentity(attachment),
     'id:11111111-1111-4111-8111-111111111111',
   );
+});
+
+test('responsive delivery gives timeline and viewer distinct native srcsets', () => {
+  const expiresAt = Date.now() + 60_000;
+  const attachment: Attachment = {
+    id: '11111111-1111-4111-8111-111111111111',
+    fallback_url: '/api/conversations/test/attachments/11111111-1111-4111-8111-111111111111',
+    display_url: 'https://vmd.invalid/medium',
+    display_url_expires_at: expiresAt,
+    display_variants: {
+      thumb: { url: 'https://vmd.invalid/thumb', expires_at: expiresAt, width: 160 },
+      small: { url: 'https://vmd.invalid/small', expires_at: expiresAt, width: 480 },
+      medium: { url: 'https://vmd.invalid/medium', expires_at: expiresAt, width: 960 },
+      large: { url: 'https://vmd.invalid/large', expires_at: expiresAt, width: 1600 },
+    },
+    url: ORIGINAL_1.url,
+    url_expires_at: expiresAt,
+    inline: true,
+  };
+  const timeline = resolveSources(attachment);
+  const viewer = resolveAttachmentViewerSources(attachment, {
+    isUrlUsable: (url, expiry) => (
+      /^https?:\/\//.test(url) &&
+      (expiry === undefined || expiry > Date.now() + 5_000)
+    ),
+  });
+
+  assert.equal(timeline[0]?.url, 'https://vmd.invalid/small');
+  assert.equal(
+    timeline[0]?.srcSet,
+    'https://vmd.invalid/small 480w, https://vmd.invalid/medium 960w',
+  );
+  assert.equal(viewer[0]?.url, 'https://vmd.invalid/medium');
+  assert.equal(
+    viewer[0]?.srcSet,
+    'https://vmd.invalid/medium 960w, https://vmd.invalid/large 1600w',
+  );
+  assert.equal(viewer[1]?.url, ORIGINAL_1.url);
 });

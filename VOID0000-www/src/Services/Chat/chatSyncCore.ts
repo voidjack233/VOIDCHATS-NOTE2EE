@@ -20,6 +20,7 @@ interface LoadConversationOptions {
 type LocalMessageMutationSource = 'incoming_realtime' | 'own_send' | 'unknown';
 type SyncRequestReason =
   | 'force_sync'
+  | 'attachment_delivery_stale'
   | 'missing_validation'
   | 'validation_ttl_expired';
 type MessageFetcher = (
@@ -56,6 +57,10 @@ type MessageSyncStore = Pick<
   | 'markDeleted'
 >;
 type MessageSyncLogger = (...args: unknown[]) => void;
+type AttachmentDeliveryRefreshPredicate = (
+  messages: LocalMessage[],
+  now: number,
+) => boolean;
 
 interface LocalMutationRecord {
   source: LocalMessageMutationSource;
@@ -94,8 +99,10 @@ function parseTimestamp(value: string | null | undefined): number {
 function getSyncRequestReason(
   forceSync: boolean,
   lastValidatedAt: number,
+  attachmentDeliveryRefreshRequired: boolean,
 ): SyncRequestReason {
   if (forceSync) return 'force_sync';
+  if (attachmentDeliveryRefreshRequired) return 'attachment_delivery_stale';
   return lastValidatedAt > 0
     ? 'validation_ttl_expired'
     : 'missing_validation';
@@ -111,6 +118,8 @@ export class MessageSync {
     private readonly fetchMessages: MessageFetcher,
     private readonly now: () => number = Date.now,
     private readonly log: MessageSyncLogger = () => {},
+    private readonly needsAttachmentDeliveryRefresh:
+      AttachmentDeliveryRefreshPredicate = () => false,
   ) {}
 
   async loadConversation(
@@ -131,11 +140,19 @@ export class MessageSync {
     const hasUsableLocalState =
       cached.messages.length > 0 ||
       Boolean(cursor && cursor.last_message_id === null);
+    const attachmentDeliveryRefreshRequired =
+      cached.messages.length > 0 &&
+      this.needsAttachmentDeliveryRefresh(cached.messages, now);
     const isFresh = hasUsableLocalState &&
+      !attachmentDeliveryRefreshRequired &&
       lastValidatedAt > 0 &&
       now - lastValidatedAt < MESSAGE_SYNC_CACHE_TTL_MS;
     const forceSync = options?.forceSync === true;
-    const requestReason = getSyncRequestReason(forceSync, lastValidatedAt);
+    const requestReason = getSyncRequestReason(
+      forceSync,
+      lastValidatedAt,
+      attachmentDeliveryRefreshRequired,
+    );
     const lastLocalMutation = this.lastLocalMutationByConversation.get(conversationId) ?? null;
 
     this.log('[MESSAGE_SYNC] loadConversation', {
@@ -143,6 +160,7 @@ export class MessageSync {
       saved_runtime_existed: options?.savedRuntimeExists === true,
       local_message_count: cached.messages.length,
       has_usable_local_state: hasUsableLocalState,
+      attachment_delivery_refresh_required: attachmentDeliveryRefreshRequired,
       force_sync: forceSync,
       prefer_session_cache: options?.preferSessionCache === true,
       session_validated_at: sessionValidatedAt || null,
@@ -169,6 +187,7 @@ export class MessageSync {
         syncLimit,
         requestReason,
         options?.initiator || 'unknown',
+        attachmentDeliveryRefreshRequired,
       )
         .finally(() => this.syncInFlightByConversation.delete(conversationId));
       this.syncInFlightByConversation.set(conversationId, syncPromise);
@@ -188,9 +207,14 @@ export class MessageSync {
     limit: number,
     reason: SyncRequestReason,
     initiator: string,
+    refreshLatestWindow: boolean,
   ): Promise<SyncResult> {
     const validatedCursorId = cursor?.last_message_id || null;
-    const requestMode = validatedCursorId ? 'delta' : 'latest';
+    const requestMode = refreshLatestWindow
+      ? 'latest_delivery_refresh'
+      : validatedCursorId
+        ? 'delta'
+        : 'latest';
     this.log('[MESSAGE_SYNC] server reconciliation started', {
       conversation_id: conversationId,
       request_initiator: initiator,
@@ -206,7 +230,7 @@ export class MessageSync {
       let hasMore = cached.has_more;
       let requestCount = 0;
 
-      if (validatedCursorId) {
+      if (validatedCursorId && !refreshLatestWindow) {
         let after = validatedCursorId;
         let hasMoreNewer = false;
 

@@ -1,6 +1,6 @@
 import { pool } from '../db.js';
 import { ATTACH_BUCKET, cdnMinioClient, minioClient } from '../minio.js';
-import { createVmdImageDelivery } from '../vmd/capability.js';
+import { createVmdResponsiveImageDelivery } from '../vmd/capability.js';
 import {
   createAttachmentDeliveryMapper,
   normalizeStoredAttachments,
@@ -73,7 +73,7 @@ const attachSignedAttachmentUrls = createAttachmentDeliveryMapper({
     return result.rows;
   },
   createOriginalDelivery: createSignedAttachmentDelivery,
-  createImageDelivery: createVmdImageDelivery,
+  createImageDelivery: createVmdResponsiveImageDelivery,
   maxConcurrency: ATTACHMENT_DELIVERY_MAX_CONCURRENCY,
 });
 

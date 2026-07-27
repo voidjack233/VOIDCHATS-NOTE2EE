@@ -233,6 +233,13 @@ test('VMD generation requires original delivery inline to be exactly true', asyn
           return {
             display_url: 'https://vmd.invalid/image',
             display_url_expires_at: Date.now() + 60_000,
+            display_variants: {
+              small: {
+                url: 'https://vmd.invalid/image/small',
+                expires_at: Date.now() + 60_000,
+                width: 480,
+              },
+            },
           };
         },
       });
@@ -251,6 +258,10 @@ test('VMD generation requires original delivery inline to be exactly true', asyn
       assert.equal(imageDeliveryCalls, testCase.expectedCalls);
       assert.equal(
         Object.hasOwn(attachment, 'display_url'),
+        testCase.expectedCalls === 1,
+      );
+      assert.equal(
+        Object.hasOwn(attachment, 'display_variants'),
         testCase.expectedCalls === 1,
       );
     });

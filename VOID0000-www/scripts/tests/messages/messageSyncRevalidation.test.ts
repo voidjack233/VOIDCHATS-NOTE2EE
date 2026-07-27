@@ -10,6 +10,7 @@ import type {
   MessageFetcher,
   MessageSyncStore,
 } from '../../../src/Services/Chat/chatSyncCore';
+import { messagesNeedAttachmentDeliveryRefresh } from '../../../src/Services/Chat/attachmentDeliveryFreshness';
 
 Object.defineProperty(globalThis, 'indexedDB', {
   configurable: true,
@@ -169,6 +170,77 @@ test('fresh cached conversation reopens without a message request', async () => 
   assert.equal(fetcher.calls.length, 0);
   assert.equal(reconciliation.didSync, false);
   assert.equal(result.cached.messages[0]?.message_id, 'message-1');
+});
+
+test('stale cached attachment delivery refreshes the latest window and merges the same message', async () => {
+  const now = BASE_TIME;
+  const store = new FakeMessageStore();
+  const stableUrl =
+    '/api/conversations/sync-conversation/attachments/11111111-1111-4111-8111-111111111111';
+  await store.putMessage(makeLocalMessage(1, {
+    attachments: [JSON.stringify({
+      id: '11111111-1111-4111-8111-111111111111',
+      fallback_url: stableUrl,
+      url: 'https://cdn.invalid/expired',
+      url_expires_at: now - 1,
+      display_url: 'https://vmd.invalid/expired',
+      display_url_expires_at: now - 1,
+      inline: true,
+      mime: 'image/jpeg',
+      width: 640,
+      height: 480,
+    })],
+  }));
+  await store.setSyncCursor(
+    CONVERSATION_ID,
+    'message-1',
+    new Date(now).toISOString(),
+  );
+  const freshDisplayUrl = 'https://vmd.invalid/fresh-small';
+  const fetcher = createFetcher(async () => ({
+    messages: [makeServerMessage(1, {
+      attachments: [JSON.stringify({
+        id: '11111111-1111-4111-8111-111111111111',
+        fallback_url: stableUrl,
+        url: 'https://cdn.invalid/fresh',
+        url_expires_at: now + 60_000,
+        inline: true,
+        mime: 'image/jpeg',
+        width: 640,
+        height: 480,
+        display_variants: {
+          small: {
+            url: freshDisplayUrl,
+            expires_at: now + 60_000,
+            width: 480,
+          },
+        },
+      })],
+    })],
+    has_more: false,
+  }));
+  const sync = new MessageSync(
+    store,
+    fetcher.fetchMessages,
+    () => now,
+    () => {},
+    messagesNeedAttachmentDeliveryRefresh,
+  );
+
+  const first = await sync.loadConversation(CONVERSATION_ID, { syncLimit: 20 });
+  const reconciliation = await first.syncPromise;
+  const refreshedAttachment = JSON.parse(
+    store.storedMessages[0]?.attachments?.[0] || '{}',
+  );
+  const second = await sync.loadConversation(CONVERSATION_ID, { syncLimit: 20 });
+
+  assert.deepEqual(fetcher.calls, [{
+    conversationId: CONVERSATION_ID,
+    options: { limit: 20 },
+  }]);
+  assert.deepEqual(reconciliation.newMessages, []);
+  assert.equal(refreshedAttachment.display_variants.small.url, freshDisplayUrl);
+  assert.equal((await second.syncPromise).didSync, false);
 });
 
 test('stale validated cursor requests only messages after that cursor', async () => {
@@ -434,6 +506,7 @@ test('load diagnostics record cursor, initiator, runtime and preceding mutation 
     saved_runtime_existed: true,
     local_message_count: 2,
     has_usable_local_state: true,
+    attachment_delivery_refresh_required: false,
     force_sync: false,
     prefer_session_cache: false,
     session_validated_at: null,

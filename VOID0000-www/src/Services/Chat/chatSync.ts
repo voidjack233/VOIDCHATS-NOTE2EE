@@ -2,6 +2,7 @@ import { debugLog } from '../utils/debugLog';
 import { getMessages } from './chatService';
 import { messageStore } from './chatStore';
 import { MessageSync } from './chatSyncCore';
+import { messagesNeedAttachmentDeliveryRefresh } from './attachmentDeliveryFreshness';
 
 export {
   MESSAGE_SYNC_CACHE_TTL_MS,
@@ -21,4 +22,5 @@ export const messageSync = new MessageSync(
   getMessages,
   Date.now,
   debugLog,
+  messagesNeedAttachmentDeliveryRefresh,
 );
