@@ -12,7 +12,10 @@ import {
   resolveStoredAttachmentPolicy,
   sanitizeAttachmentFilename,
 } from '../../../server/utils/attachmentContentPolicy.js';
-import { createAttachmentDeliveryMapper } from '../../../server/utils/attachmentDeliveryCore.js';
+import {
+  createAttachmentDeliveryMapper,
+  normalizeStoredAttachments,
+} from '../../../server/utils/attachmentDeliveryCore.js';
 import { transformVmdImage } from '../../../server/vmd/imageVariants.js';
 
 const html = Buffer.from('<!doctype html><script src="/uploaded.js"></script>');
@@ -244,6 +247,7 @@ test('unmarked attachments are not given VMD inline delivery URLs', async () => 
   const [attachment] = message.attachments.map((entry) => JSON.parse(entry));
 
   assert.equal(imageDeliveryCalls, 0);
+  assert.equal(attachment.inline, false);
   assert.equal(attachment.display_url, undefined);
 });
 
@@ -280,5 +284,20 @@ test('properly marked attachments preserve VMD inline delivery URLs', async () =
   const [attachment] = message.attachments.map((entry) => JSON.parse(entry));
 
   assert.equal(imageDeliveryCalls, 1);
+  assert.equal(attachment.inline, true);
   assert.equal(attachment.display_url, 'https://vmd.invalid/image');
+});
+
+test('server-derived inline delivery metadata is never persisted from client input', () => {
+  const attachmentId = '44444444-4444-4444-8444-444444444444';
+  const [stored] = normalizeStoredAttachments([JSON.stringify({
+    url: `/api/conversations/123/attachments/${attachmentId}`,
+    mime: 'image/jpeg',
+    inline: true,
+    display_url: 'https://vmd.invalid/forged',
+  })]);
+  const descriptor = JSON.parse(stored);
+
+  assert.equal(descriptor.inline, undefined);
+  assert.equal(descriptor.display_url, undefined);
 });

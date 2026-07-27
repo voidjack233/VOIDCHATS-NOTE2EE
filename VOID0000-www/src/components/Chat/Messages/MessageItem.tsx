@@ -26,7 +26,10 @@ import { parseAttachment, parseAttachments } from '../../../Services/Chat/chatSe
 import { CHAT_FORWARDED_MESSAGE_TYPE } from '../../../Services/Chat/chatUtils';
 import { getMentionUsernames } from '../../../Services/Chat/messageMentions';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../../Services/Chat/reactionLimits';
-import { getCachedAttachmentObjectUrl } from '../../../Services/Chat/attachmentService';
+import {
+  getAttachmentRenderIdentity,
+  getCachedAttachmentObjectUrl,
+} from '../../../Services/Chat/attachmentService';
 import { getMessageDateLabel } from './useMessageLayout';
 import {
   extractMessageTextSegments,
@@ -135,8 +138,8 @@ function getMultiAttachmentTileClass(attachmentCount: number, index: number): st
   return 'aspect-square';
 }
 
-function getAttachmentLayoutKey(attachment: { url: string; name?: string }, index: number): string {
-  return `${attachment.url}::${attachment.name || 'attachment'}::${index}`;
+function getAttachmentLayoutKey(attachment: Attachment, index: number): string {
+  return `${getAttachmentRenderIdentity(attachment)}::${index}`;
 }
 
 function isUnavailableReplyPlaceholder(message: Message): boolean {
@@ -1263,7 +1266,7 @@ const MessageItem = memo(function MessageItem({
 
                         return (
                           <button
-                            key={`${originalIndex}-${attachment.url}`}
+                            key={getAttachmentLayoutKey(attachment, originalIndex)}
                             onClick={() => {
                               if (isSpoilerCovered) {
                                 setRevealedSpoilerAttachments((current) => {

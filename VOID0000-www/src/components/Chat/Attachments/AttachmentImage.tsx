@@ -2,9 +2,16 @@ import { useState } from 'react';
 import { ImageOff, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
-  getAttachmentRenderUrls,
+  getAttachmentRenderIdentity,
+  getAttachmentRenderSources,
 } from '../../../Services/Chat/attachmentService';
 import BlurImage, { BlurhashPlaceholder } from '../../common/BlurImage';
+import {
+  createAttachmentImageAttemptState,
+  recordAttachmentImageFailure,
+  recordAttachmentImageSuccess,
+  selectAttachmentImageSource,
+} from './attachmentImageRetry';
 
 interface AttachmentImageProps {
   attachment: Attachment;
@@ -21,29 +28,40 @@ export default function AttachmentImage({
   onLoad,
   canLoad = true,
 }: AttachmentImageProps) {
-  const availableSources = canLoad ? getAttachmentRenderUrls(attachment) : [];
-  const [failedSources, setFailedSources] = useState<Set<string>>(() => new Set());
-  const src = availableSources.find((candidate) => !failedSources.has(candidate)) || null;
-  const failed = canLoad && !src;
+  const attachmentIdentity = getAttachmentRenderIdentity(attachment);
+  const availableSources = canLoad ? getAttachmentRenderSources(attachment) : [];
+  const [attemptState, setAttemptState] = useState(() => (
+    createAttachmentImageAttemptState(attachmentIdentity)
+  ));
+  const source = selectAttachmentImageSource(
+    attemptState,
+    attachmentIdentity,
+    availableSources,
+  );
+  const failed = canLoad && !source;
 
-  if (src) {
+  if (source) {
     return (
       <BlurImage
-        key={src}
-        src={src}
+        key={source.url}
+        src={source.url}
         blurhash={attachment.blurhash}
         alt={alt}
         className={className}
         onLoad={() => {
+          setAttemptState((current) => recordAttachmentImageSuccess(
+            current,
+            attachmentIdentity,
+            source,
+          ));
           onLoad?.();
         }}
         onError={() => {
-          setFailedSources((current) => {
-            if (current.has(src)) return current;
-            const next = new Set(current);
-            next.add(src);
-            return next;
-          });
+          setAttemptState((current) => recordAttachmentImageFailure(
+            current,
+            attachmentIdentity,
+            source,
+          ));
         }}
         loading="eager"
       />

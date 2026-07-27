@@ -8,6 +8,7 @@ const TRANSIENT_ATTACHMENT_FIELDS = new Set([
   'url_expires_at',
   'display_url',
   'display_url_expires_at',
+  'inline',
 ]);
 const VMD_IMAGE_MIME_TYPES = new Set([
   'image/avif',
@@ -244,6 +245,7 @@ export function createAttachmentDeliveryMapper({
             url: delivery.originalDelivery.url,
             fallback_url: entry.stableUrl,
             url_expires_at: delivery.originalDelivery.url_expires_at,
+            inline: delivery.originalDelivery.inline === true,
           };
           if (
             delivery.imageDelivery &&

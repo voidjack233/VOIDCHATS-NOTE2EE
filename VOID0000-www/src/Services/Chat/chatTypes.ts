@@ -50,6 +50,7 @@ export interface Attachment {
   url_expires_at?: number;
   display_url?: string;
   display_url_expires_at?: number;
+  inline?: boolean;
   spoiler?: boolean;
   blurhash?: string;
   width?: number;

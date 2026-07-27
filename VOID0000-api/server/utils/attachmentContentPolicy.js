@@ -77,13 +77,17 @@ export function createAttachmentObjectMetadata(policy) {
   };
 }
 
-export function resolveStoredAttachmentPolicy(objectStat, objectKey = '') {
-  const metadata = objectStat?.metaData || {};
-  const storedContentType = getMetadataValue(metadata, ['content-type']);
-  const inlineMarker = getMetadataValue(metadata, [
+export function getStoredAttachmentSanitizerMarker(objectStat) {
+  return getMetadataValue(objectStat?.metaData, [
     'void-sanitized-image',
     'x-amz-meta-void-sanitized-image',
   ]);
+}
+
+export function resolveStoredAttachmentPolicy(objectStat, objectKey = '') {
+  const metadata = objectStat?.metaData || {};
+  const storedContentType = getMetadataValue(metadata, ['content-type']);
+  const inlineMarker = getStoredAttachmentSanitizerMarker(objectStat);
   const storedFilename = getMetadataValue(metadata, [
     'original-filename',
     'x-amz-meta-original-filename',

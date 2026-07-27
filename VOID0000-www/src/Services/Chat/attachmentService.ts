@@ -2,6 +2,11 @@ import { encode } from 'blurhash';
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { API_URL } from '../config';
 import type { Attachment } from './chatTypes';
+import {
+  getAttachmentRenderIdentity,
+  resolveAttachmentRenderSources,
+  type AttachmentRenderSource,
+} from './attachmentRenderPolicy';
 
 const BASE64_CHUNK_SIZE = 0x8000;
 const BLURHASH_MAX_DIMENSION = 32;
@@ -124,17 +129,6 @@ function isPrimaryAttachmentUrlUsable(attachment: Attachment): boolean {
   return isAttachmentDeliveryUrlUsable(attachment.url, attachment.url_expires_at);
 }
 
-function getDisplayAttachmentUrl(attachment: Attachment): string | null {
-  const displayUrl = attachment.display_url?.trim();
-  if (!displayUrl) return null;
-  return isAttachmentDeliveryUrlUsable(
-    displayUrl,
-    attachment.display_url_expires_at,
-  )
-    ? displayUrl
-    : null;
-}
-
 async function fetchAttachmentResource(url: string, isExpiringCapability: boolean): Promise<Response> {
   const options: RequestInit = {
     cache: isExpiringCapability ? 'no-store' : 'force-cache',
@@ -182,18 +176,17 @@ export function getCachedAttachmentObjectUrl(attachment: Attachment): string | n
   return getAttachmentRenderUrls(attachment)[0] || null;
 }
 
-export function getAttachmentRenderUrls(attachment: Attachment): string[] {
-  const urls: string[] = [];
-  const displayUrl = getDisplayAttachmentUrl(attachment);
-  if (displayUrl) urls.push(displayUrl);
-
-  if (
-    isDirectAttachmentDeliveryUrl(attachment.url) &&
-    isPrimaryAttachmentUrlUsable(attachment) &&
-    attachment.url !== displayUrl
-  ) {
-    urls.push(attachment.url);
-  }
-
-  return urls;
+export function getAttachmentRenderSources(
+  attachment: Attachment,
+): AttachmentRenderSource[] {
+  return resolveAttachmentRenderSources(attachment, {
+    isUrlUsable: isAttachmentDeliveryUrlUsable,
+  });
 }
+
+export function getAttachmentRenderUrls(attachment: Attachment): string[] {
+  return getAttachmentRenderSources(attachment).map(({ url }) => url);
+}
+
+export { getAttachmentRenderIdentity };
+export type { AttachmentRenderSource };
