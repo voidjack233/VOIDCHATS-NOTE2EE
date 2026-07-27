@@ -26,10 +26,12 @@ VMD does not accept external URLs or client-provided object keys.
 | `large` | 1600 px |
 
 All variants preserve aspect ratio and use `withoutEnlargement`, so small source
-images are never upscaled. The timeline offers `small` and `medium` through
-native `srcset`; the expanded viewer offers `medium` and `large`. The browser
-selects the appropriate response, and the trusted signed original remains the
-direct fallback.
+images are never upscaled. Message descriptors include only `small`, `medium`,
+and `large`: the timeline offers `small` and `medium` through native `srcset`,
+while the expanded viewer offers `medium` and `large`. `thumb` remains a
+supported VMD endpoint variant but is not sent until a UI actually needs it.
+The browser selects the appropriate response, and the trusted signed original
+remains the direct fallback.
 
 ## Production Routing
 

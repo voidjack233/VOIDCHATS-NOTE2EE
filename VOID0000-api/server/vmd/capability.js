@@ -15,7 +15,6 @@ export const VMD_IMAGE_VARIANTS = Object.freeze({
   large: Object.freeze({ bound: 1600, quality: 84 }),
 });
 export const VMD_RESPONSIVE_IMAGE_VARIANTS = Object.freeze([
-  'thumb',
   'small',
   'medium',
   'large',

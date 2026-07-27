@@ -71,6 +71,7 @@ test('responsive delivery signs fixed variants with one bucketed expiration', ()
   const variants = delivery.display_variants;
 
   assert.deepEqual(Object.keys(variants), VMD_RESPONSIVE_IMAGE_VARIANTS);
+  assert.equal(variants.thumb, undefined);
   assert.equal(delivery.display_url, variants.medium.url);
   assert.equal(delivery.display_url_expires_at, variants.medium.expires_at);
 
