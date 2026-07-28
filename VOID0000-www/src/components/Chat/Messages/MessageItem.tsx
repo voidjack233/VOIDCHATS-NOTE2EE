@@ -112,6 +112,7 @@ interface MessageItemProps {
   canLoadAttachments?: boolean;
   onOpenLink?: (url: string) => void;
   isHighlighted?: boolean;
+  animateArrival?: boolean;
 }
 
 function getMultiAttachmentGridClass(attachmentCount: number): string {
@@ -430,6 +431,7 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
   prev.getSenderAvatarUrl === next.getSenderAvatarUrl &&
   prev.onJumpToMessage === next.onJumpToMessage &&
   prev.isHighlighted === next.isHighlighted &&
+  prev.animateArrival === next.animateArrival &&
   prev.canLoadAttachments === next.canLoadAttachments &&
   prev.onAttachmentLoad === next.onAttachmentLoad
 );
@@ -467,6 +469,7 @@ const MessageItem = memo(function MessageItem({
   canLoadAttachments = true,
   onOpenLink,
   isHighlighted = false,
+  animateArrival = false,
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [revealedEmbedSpoilers, setRevealedEmbedSpoilers] = useState<{
@@ -1093,7 +1096,7 @@ const MessageItem = memo(function MessageItem({
     return (
       <div
         data-message-id={message.message_id}
-        className={`px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
+        className={`px-2 transition-colors duration-300 ${animateArrival ? 'message-live-arrival' : ''} ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
         style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
       >
         {showDateSeparator && (
@@ -1121,7 +1124,7 @@ const MessageItem = memo(function MessageItem({
   return (
     <div
       data-message-id={message.message_id}
-      className={`px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
+      className={`px-2 transition-colors duration-300 ${animateArrival ? 'message-live-arrival' : ''} ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
       style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
     >
       {showDateSeparator && (

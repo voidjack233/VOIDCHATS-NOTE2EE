@@ -63,6 +63,7 @@ import {
   shouldShowInitialMessageTimelineSkeleton,
   shouldShowNewerHistoryLoader,
 } from './messageTimelinePresentation';
+import { selectLiveMessageArrivals } from './liveMessageArrival';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -96,6 +97,7 @@ const emptyReactions: Record<string, unknown> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
 const JUMP_TO_PRESENT_REVEAL_DISTANCE = 180;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
+const LIVE_MESSAGE_ARRIVAL_ACTIVE_MS = 420;
 const HISTORY_RATE_LIMIT_FALLBACK_MS = 6_000;
 const HISTORY_RATE_LIMIT_MAX_MS = 30_000;
 const ENABLE_SCROLL_GEOMETRY_COMPACTION = true;
@@ -138,6 +140,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   const previousListCountRef = useRef(0);
   const previousLastVisualMessageIdRef = useRef<string | undefined>(undefined);
   const lastFollowedMessageEventSequenceRef = useRef(0);
+  const seenLiveMessageArrivalIdentitiesRef = useRef<Set<string>>(new Set());
+  const liveMessageArrivalTimeoutsRef = useRef<Map<string, number>>(new Map());
   const lastOwnSendJumpRequestRef = useRef(ownSendJumpRequest);
   const pendingOlderLoadScrollSnapshotRef = useRef<HistoryLoadScrollSnapshot | null>(null);
   const pendingNewerLoadScrollSnapshotRef = useRef<NewerHistoryLoadScrollSnapshot | null>(null);
@@ -168,6 +172,9 @@ const MessageViewV2 = memo(function MessageViewV2({
   const [olderRangeError, setOlderRangeError] = useState(false);
   const [newerRangeError, setNewerRangeError] = useState(false);
   const [historyLoadPausedUntil, setHistoryLoadPausedUntil] = useState(0);
+  const [liveArrivalMessageIds, setLiveArrivalMessageIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const isMobileKeyboardOpen = useMobileKeyboardOpen();
   const setScrollerRef = useCallback((element: HTMLDivElement | null) => {
     scrollerRef.current = element;
@@ -436,6 +443,11 @@ const MessageViewV2 = memo(function MessageViewV2({
     previousListCountRef.current = 0;
     previousLastVisualMessageIdRef.current = undefined;
     lastFollowedMessageEventSequenceRef.current = 0;
+    seenLiveMessageArrivalIdentitiesRef.current.clear();
+    liveMessageArrivalTimeoutsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    liveMessageArrivalTimeoutsRef.current.clear();
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
     historyScrollTransactionActiveRef.current = false;
@@ -472,6 +484,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     setMessageJumpNotice(null);
     setOlderRangeError(false);
     setNewerRangeError(false);
+    setLiveArrivalMessageIds(new Set());
     if (scrollerRef.current) scrollerRef.current.style.opacity = '0';
   }, [conversation.id]);
 
@@ -485,6 +498,10 @@ const MessageViewV2 = memo(function MessageViewV2({
     if (messageJumpFallbackTimeoutRef.current) {
       window.clearTimeout(messageJumpFallbackTimeoutRef.current);
     }
+    liveMessageArrivalTimeoutsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    liveMessageArrivalTimeoutsRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -499,29 +516,51 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
   }, [bottomLogicalRangeHeight, hasNewer]);
 
-  // ── Track unseen messages from others ──
+  // ── Track confirmed live messages without animating history ──
   useEffect(() => {
-    const pendingEvents = messageEvents.filter(
-      (event) => event.sequence > lastFollowedMessageEventSequenceRef.current
-    );
-    if (pendingEvents.length === 0) {
+    const selection = selectLiveMessageArrivals({
+      events: messageEvents,
+      lastSequence: lastFollowedMessageEventSequenceRef.current,
+      conversationId: conversation.id,
+      currentUserId: user?.id,
+      visibleMessages: visualMessages,
+      seenIdentities: seenLiveMessageArrivalIdentitiesRef.current,
+    });
+    if (selection.lastSequence === lastFollowedMessageEventSequenceRef.current) {
       return;
     }
 
-    lastFollowedMessageEventSequenceRef.current = Math.max(
-      ...pendingEvents.map((event) => event.sequence),
-      lastFollowedMessageEventSequenceRef.current,
-    );
+    lastFollowedMessageEventSequenceRef.current = selection.lastSequence;
 
-    const hasOwnMessageEvent = pendingEvents.some(({ message }) => (
-      String(message.conversation_id || conversation.id) === String(conversation.id) &&
-      message.sender_id === user?.id
-    ));
-
-    if (hasOwnMessageEvent) {
+    if (selection.hasOwnMessageEvent) {
       forceFollowOutputRef.current = true;
     }
-  }, [conversation.id, messageEvents, user?.id]);
+
+    if (selection.arrivalMessageIds.length === 0) {
+      return;
+    }
+
+    setLiveArrivalMessageIds((current) => {
+      const next = new Set(current);
+      selection.arrivalMessageIds.forEach((messageId) => next.add(messageId));
+      return next;
+    });
+
+    selection.arrivalMessageIds.forEach((messageId) => {
+      const timeoutId = window.setTimeout(() => {
+        setLiveArrivalMessageIds((current) => {
+          if (!current.has(messageId)) {
+            return current;
+          }
+          const next = new Set(current);
+          next.delete(messageId);
+          return next;
+        });
+        liveMessageArrivalTimeoutsRef.current.delete(messageId);
+      }, LIVE_MESSAGE_ARRIVAL_ACTIVE_MS);
+      liveMessageArrivalTimeoutsRef.current.set(messageId, timeoutId);
+    });
+  }, [conversation.id, messageEvents, user?.id, visualMessages]);
 
   // ── Stable refs for callbacks ──
   const friendsRef = useRef(friends);
@@ -1244,6 +1283,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         replyParentLoading={message.reply_to ? isReplyParentLoading(message.reply_to) : false}
         messageReactions={reactions[message.message_id] || message.reactions || emptyReactions}
         isHighlighted={highlightedMessageId === message.message_id}
+        animateArrival={liveArrivalMessageIds.has(String(message.message_id))}
         formatTime={formatTime}
         getSenderName={getSmartDisplayName}
         getSenderUsername={getSmartUsername}
@@ -1287,6 +1327,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     handleToggleReaction,
     highlightedMessageId,
     layoutTraitsById,
+    liveArrivalMessageIds,
     messageGroupSpacing,
     metaFontSize,
     nearViewportMessageIds,
