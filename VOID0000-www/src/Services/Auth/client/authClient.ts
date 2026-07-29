@@ -1,7 +1,8 @@
 import { API_URL } from '../../config';
 import type { RefreshResult } from '../types';
+import { createSingleFlightValue } from './singleFlightValue';
 
-let csrfToken: string | null = null;
+const csrfTokenState = createSingleFlightValue<string>();
 let isLoggingOut = false;
 let refreshPromise: Promise<RefreshResult> | null = null;
 let sessionInvalidationDispatched = false;
@@ -161,34 +162,32 @@ async function isLikelyCSRFError(response: Response): Promise<boolean> {
   }
 }
 
-export async function requestCSRFToken(): Promise<string | null> {
-  try {
-    const response = await fetch(`${API_URL}/api/csrf/csrf-token`, {
-      method: 'GET',
-      credentials: 'include',
-    });
-    const data = await response.json();
+export function requestCSRFToken(): Promise<string | null> {
+  return csrfTokenState.getOrLoad(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/csrf/csrf-token`, {
+        method: 'GET',
+        credentials: 'include',
+      });
+      const data = await response.json();
 
-    if (data.success && data.csrfToken) {
-      csrfToken = data.csrfToken;
-      return csrfToken;
+      if (data.success && typeof data.csrfToken === 'string' && data.csrfToken) {
+        return data.csrfToken;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to fetch CSRF token:', error);
+      return null;
     }
-    return null;
-  } catch (error) {
-    console.error('Failed to fetch CSRF token:', error);
-    return null;
-  }
+  });
 }
 
 export async function ensureCSRFToken(): Promise<string | null> {
-  if (!csrfToken) {
-    return await requestCSRFToken();
-  }
-  return csrfToken;
+  return csrfTokenState.getCached() ?? requestCSRFToken();
 }
 
 export function clearCSRFToken(): void {
-  csrfToken = null;
+  csrfTokenState.clear();
 }
 
 export function setAuthLogoutInProgress(value: boolean): void {
@@ -241,6 +240,7 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
         }
 
         if (response.ok) {
+          clearCSRFToken();
           markAuthSessionEstablished();
           return { success: true, status: response.status };
         }
@@ -321,10 +321,11 @@ export async function fetchWithAuth(
     const refreshResult = await refreshAuthSession();
 
     if (refreshResult.success) {
-      clearCSRFToken();
-      const newCsrfToken = await requestCSRFToken();
-      if (newCsrfToken && needsCSRFToken) {
-        headers['X-CSRF-Token'] = newCsrfToken;
+      if (needsCSRFToken) {
+        const newCsrfToken = await ensureCSRFToken();
+        if (newCsrfToken) {
+          headers['X-CSRF-Token'] = newCsrfToken;
+        }
       }
 
       response = await performRequest();

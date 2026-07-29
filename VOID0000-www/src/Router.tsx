@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ErrorBoundary } from './components/Auth/ErrorBoundary';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
-import { UserProvider } from './Services/Auth/UserContext';
+import { UserProvider, useUser } from './Services/Auth/UserContext';
+import { canStartAuthenticatedProviders } from './Services/Auth/services/authStartupPolicy';
 import { FriendProvider } from './Services/hooks/Friends/useFriendRequests';
 import { PresenceProvider } from './Services/hooks/Friends/usePresence';
 import { FriendsProvider } from './Services/hooks/Friends';
@@ -36,8 +37,40 @@ const ROUTE_CONFIG = {
 
 // Simplified ThemeWrapper to prevent context nesting issues
 function ThemeWrapper({ children }: { children: React.ReactNode }) {
-  const theme = useThemeProvider();
+  const { user, loading, authUnavailable } = useUser();
+  const authenticated = canStartAuthenticatedProviders({
+    user,
+    loading,
+    authUnavailable,
+  });
+  const theme = useThemeProvider(authenticated);
   return <ThemeProvider value={theme}>{children}</ThemeProvider>;
+}
+
+function AuthenticatedProviders({ children }: { children: React.ReactNode }) {
+  const { user, loading, authUnavailable } = useUser();
+  const authenticated = canStartAuthenticatedProviders({
+    user,
+    loading,
+    authUnavailable,
+  });
+
+  if (!authenticated) {
+    return children;
+  }
+
+  return (
+    <>
+      <QueuedSendRecoveryAgent />
+      <FriendsProvider>
+        <FriendProvider>
+          <PresenceProvider>
+            {children}
+          </PresenceProvider>
+        </FriendProvider>
+      </FriendsProvider>
+    </>
+  );
 }
 
 const PageLoader = () => <AppBootScreen />;
@@ -56,33 +89,28 @@ export default function Router() {
 
   return (
     <ErrorBoundary>
-      <ThemeWrapper>
-        <UserProvider>
-          <QueuedSendRecoveryAgent />
-          <FriendsProvider>
-            <FriendProvider>
-              <PresenceProvider>
-                <Suspense fallback={<PageLoader />}>
-                  <Routes>
-                    {/* Public routes */}
-                    {ROUTE_CONFIG.public.map(({ path, component: Component }) => (
-                      <Route key={path} path={path} element={<Component />} />
-                    ))}
+      <UserProvider>
+        <ThemeWrapper>
+          <AuthenticatedProviders>
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
+                {/* Public routes */}
+                {ROUTE_CONFIG.public.map(({ path, component: Component }) => (
+                  <Route key={path} path={path} element={<Component />} />
+                ))}
 
-                    {/* Protected routes */}
-                    {filteredProtectedRoutes()}
+                {/* Protected routes */}
+                {filteredProtectedRoutes()}
 
-                    {/* Redirects */}
-                    <Route path="/" element={<Navigate to="/chats" replace />} />
-                    <Route path="/home" element={<Navigate to="/chats" replace />} />
-                    <Route path="*" element={<Navigate to="/chats" replace />} />
-                  </Routes>
-                </Suspense>
-              </PresenceProvider>
-            </FriendProvider>
-          </FriendsProvider> 
-        </UserProvider>
-      </ThemeWrapper>
+                {/* Redirects */}
+                <Route path="/" element={<Navigate to="/chats" replace />} />
+                <Route path="/home" element={<Navigate to="/chats" replace />} />
+                <Route path="*" element={<Navigate to="/chats" replace />} />
+              </Routes>
+            </Suspense>
+          </AuthenticatedProviders>
+        </ThemeWrapper>
+      </UserProvider>
     </ErrorBoundary>
   );
 }

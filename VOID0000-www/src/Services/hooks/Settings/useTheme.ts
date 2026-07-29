@@ -137,7 +137,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export const ThemeProvider = ThemeContext.Provider;
 
-export function useThemeProvider(): ThemeContextValue {
+export function useThemeProvider(remotePreferencesEnabled = false): ThemeContextValue {
   const [loading, setLoading] = useState(true);
   const [currentTheme, setCurrentTheme] = useState<Theme>(DEFAULT_THEME);
   const [accentColor, setAccentColor] = useState(DEFAULT_ACCENT);
@@ -243,78 +243,77 @@ export function useThemeProvider(): ThemeContextValue {
         applyColorsToDOM(accent, bg, text, hover);
       }
 
-      try {
-        const res = await fetchWithAuth('/api/users/preferences');
-        const data = await res.json();
+      if (remotePreferencesEnabled) {
+        try {
+          const res = await fetchWithAuth('/api/users/preferences');
+          const data = await res.json();
 
-        if (data.success && data.preferences) {
-          const {
-            accent_color,
-            bg_color,
-            text_color,
-            hover_color,
-            theme,
-            density: serverDensityRaw,
-            message_group_spacing: serverMessageGroupSpacingRaw,
-            chat_font_scale: serverChatFontScaleRaw,
-          } = data.preferences;
-          const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
-          const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
-          const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;
-          const serverText = text_color || THEME_PRESETS[serverTheme].text;
-          const serverHover = hover_color || THEME_PRESETS[serverTheme].hover;
-          const serverDensity: Density = (serverDensityRaw === 'comfortable' || serverDensityRaw === 'compact') ? serverDensityRaw : 'compact';
-          const serverMessageGroupSpacing = parseMessageGroupSpacing(
-            serverMessageGroupSpacingRaw != null ? String(serverMessageGroupSpacingRaw) : localStorage.getItem('void_message_group_spacing')
-          );
-          const serverChatFontScale = parseChatFontScale(
-            serverChatFontScaleRaw != null ? String(serverChatFontScaleRaw) : localStorage.getItem('void_chat_font_scale')
-          );
+          if (data.success && data.preferences) {
+            const {
+              accent_color,
+              bg_color,
+              text_color,
+              hover_color,
+              theme,
+              density: serverDensityRaw,
+              message_group_spacing: serverMessageGroupSpacingRaw,
+              chat_font_scale: serverChatFontScaleRaw,
+            } = data.preferences;
+            const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
+            const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
+            const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;
+            const serverText = text_color || THEME_PRESETS[serverTheme].text;
+            const serverHover = hover_color || THEME_PRESETS[serverTheme].hover;
+            const serverDensity: Density = (serverDensityRaw === 'comfortable' || serverDensityRaw === 'compact') ? serverDensityRaw : 'compact';
+            const serverMessageGroupSpacing = parseMessageGroupSpacing(
+              serverMessageGroupSpacingRaw != null ? String(serverMessageGroupSpacingRaw) : localStorage.getItem('void_message_group_spacing')
+            );
+            const serverChatFontScale = parseChatFontScale(
+              serverChatFontScaleRaw != null ? String(serverChatFontScaleRaw) : localStorage.getItem('void_chat_font_scale')
+            );
 
-          setCurrentTheme(serverTheme);
-          setAccentColor(serverAccent);
-          setBgColor(serverBg);
-          setTextColor(serverText);
-          setHoverColor(serverHover);
-          setDensityState(serverDensity);
+            setCurrentTheme(serverTheme);
+            setAccentColor(serverAccent);
+            setBgColor(serverBg);
+            setTextColor(serverText);
+            setHoverColor(serverHover);
+            setDensityState(serverDensity);
 
-          setSavedTheme(serverTheme);
-          setSavedAccent(serverAccent);
-          setSavedBg(serverBg);
-          setSavedText(serverText);
-          setSavedHover(serverHover);
-          setSavedDensity(serverDensity);
-          setMessageGroupSpacingState(serverMessageGroupSpacing);
-          setSavedMessageGroupSpacing(serverMessageGroupSpacing);
-          setChatFontScaleState(serverChatFontScale);
-          setSavedChatFontScale(serverChatFontScale);
+            setSavedTheme(serverTheme);
+            setSavedAccent(serverAccent);
+            setSavedBg(serverBg);
+            setSavedText(serverText);
+            setSavedHover(serverHover);
+            setSavedDensity(serverDensity);
+            setMessageGroupSpacingState(serverMessageGroupSpacing);
+            setSavedMessageGroupSpacing(serverMessageGroupSpacing);
+            setChatFontScaleState(serverChatFontScale);
+            setSavedChatFontScale(serverChatFontScale);
 
-          applyColorsToDOM(serverAccent, serverBg, serverText, serverHover);
+            applyColorsToDOM(serverAccent, serverBg, serverText, serverHover);
 
-          localStorage.setItem('void_theme', serverTheme);
-          localStorage.setItem('void_accent', serverAccent);
-          localStorage.setItem('void_bg', serverBg);
-          localStorage.setItem('void_text', serverText);
-          localStorage.setItem('void_hover', serverHover);
-          localStorage.setItem('void_density', serverDensity);
-          localStorage.setItem('void_message_group_spacing', String(serverMessageGroupSpacing));
-          localStorage.setItem('void_chat_font_scale', String(serverChatFontScale));
+            localStorage.setItem('void_theme', serverTheme);
+            localStorage.setItem('void_accent', serverAccent);
+            localStorage.setItem('void_bg', serverBg);
+            localStorage.setItem('void_text', serverText);
+            localStorage.setItem('void_hover', serverHover);
+            localStorage.setItem('void_density', serverDensity);
+            localStorage.setItem('void_message_group_spacing', String(serverMessageGroupSpacing));
+            localStorage.setItem('void_chat_font_scale', String(serverChatFontScale));
+          }
+        } catch {
+          // Server down, rely on localStorage
         }
-      } catch {
-        // Server down, rely on localStorage
       }
     } catch (err) {
       console.error('Error loading preferences', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [remotePreferencesEnabled]);
 
   useEffect(() => {
-    loadPreferences();
-
-    window.addEventListener('user-login', loadPreferences);
-    return () => window.removeEventListener('user-login', loadPreferences);
+    void loadPreferences();
   }, [loadPreferences]);
 
   const setTheme = useCallback((newTheme: Theme) => {

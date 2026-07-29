@@ -24,7 +24,7 @@ function getInviteInitial(name: string | null | undefined) {
 export default function InvitePage() {
   const { code = '' } = useParams<{ code: string }>();
   const navigate = useNavigate();
-  const { user, loading } = useUser();
+  const { user, loading, authUnavailable } = useUser();
   const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [status, setStatus] = useState<'none' | 'pending' | 'declined' | 'approved' | 'member'>('none');
   const [statusConversationPublicId, setStatusConversationPublicId] = useState<string | null>(null);
@@ -38,6 +38,8 @@ export default function InvitePage() {
     let ignore = false;
 
     const load = async () => {
+      if (loading) return;
+
       setPageLoading(true);
       setError('');
       setNotice('');
@@ -47,7 +49,7 @@ export default function InvitePage() {
         if (ignore) return;
         setPreview(nextPreview);
 
-        if (user) {
+        if (user && !authUnavailable) {
           const nextStatus = await getInviteRequestStatus(code);
           if (ignore) return;
           setStatus(nextStatus.status);
@@ -71,7 +73,7 @@ export default function InvitePage() {
     return () => {
       ignore = true;
     };
-  }, [code, user?.id]);
+  }, [authUnavailable, code, loading, user?.id]);
 
   const title = useMemo(() => {
     if (!preview?.conversation_name) return 'Group Invite';

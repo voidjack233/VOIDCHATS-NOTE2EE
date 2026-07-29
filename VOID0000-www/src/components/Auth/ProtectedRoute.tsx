@@ -48,9 +48,10 @@ export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
     return null;
   }
 
-  return (
-    <>
-      {authUnavailable ? (
+  if (authUnavailable) {
+    return (
+      <>
+        <AppBootScreen />
         <div className="fixed inset-x-0 top-3 z-[100] flex justify-center px-4">
           <div className="flex max-w-xl items-center gap-3 rounded-xl border border-orange-400/30 bg-gray-950/95 px-4 py-3 text-sm text-orange-100 shadow-xl backdrop-blur">
             <AlertCircle className="h-4 w-4 shrink-0 text-orange-300" />
@@ -68,10 +69,11 @@ export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
             </button>
           </div>
         </div>
-      ) : null}
-      {children}
-    </>
-  );
+      </>
+    );
+  }
+
+  return children;
 };
 
 export default ProtectedRoute;

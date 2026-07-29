@@ -13,13 +13,18 @@ const AUTH_CHECK_COOLDOWN_MS = 5 * 60 * 1000;
  */
 export const useCheckAuth = () => {
   const navigate = useNavigate();
-  const { verifySession } = useUser();
+  const { user, loading, verifySession } = useUser();
 
   const isCheckingRef = useRef(false);
   const isMountedRef = useRef(false);
   const lastCheckRef = useRef(0);
+  const canVerifyRef = useRef(!loading && Boolean(user));
   const verifySessionRef = useRef(verifySession);
-  verifySessionRef.current = verifySession;
+
+  useEffect(() => {
+    canVerifyRef.current = !loading && Boolean(user);
+    verifySessionRef.current = verifySession;
+  }, [loading, user, verifySession]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -30,6 +35,7 @@ export const useCheckAuth = () => {
       // Browser background throttling can leave a half-dead WebSocket marked
       // OPEN. Always probe it when the tab wakes, independent of auth checks.
       gateway.resetReconnect();
+      if (!canVerifyRef.current) return;
 
       const now = Date.now();
       if (now - lastCheckRef.current < AUTH_CHECK_COOLDOWN_MS) return;
