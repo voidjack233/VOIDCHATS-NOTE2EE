@@ -525,6 +525,11 @@ const MessageItem = memo(function MessageItem({
   const pendingStatusLabel = isQueued ? 'queued' : 'sending...';
   const failedStatusLabel = 'failed to send';
   const isRightAligned = isOwn && density === 'comfortable';
+  const liveArrivalClassName = animateArrival && !isSystem
+    ? `message-live-arrival message-live-arrival-${density} ${
+        isRightAligned ? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'
+      }`
+    : '';
   const canSwipeReply = Boolean(onReply && !isFailed);
   const canSwipeEdit = Boolean(isOwn && onEdit && !isFailed);
   const reachedReactionLimit = getUniqueReactionCount(messageReactions as Record<string, unknown>) >= MAX_UNIQUE_REACTIONS_PER_MESSAGE;
@@ -1096,7 +1101,7 @@ const MessageItem = memo(function MessageItem({
     return (
       <div
         data-message-id={message.message_id}
-        className={`px-2 transition-colors duration-300 ${animateArrival ? 'message-live-arrival' : ''} ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
+        className={`px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
         style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
       >
         {showDateSeparator && (
@@ -1124,7 +1129,7 @@ const MessageItem = memo(function MessageItem({
   return (
     <div
       data-message-id={message.message_id}
-      className={`px-2 transition-colors duration-300 ${animateArrival ? 'message-live-arrival' : ''} ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
+      className={`overflow-x-clip px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
       style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
     >
       {showDateSeparator && (
@@ -1221,6 +1226,11 @@ const MessageItem = memo(function MessageItem({
             touchAction: 'pan-y',
           }}
         >
+          <div
+            className={`flex min-w-0 max-w-full flex-col ${
+              isRightAligned ? 'items-end' : 'items-start'
+            } ${liveArrivalClassName}`}
+          >
           {replyPreviewElement}
 
           {isForwardedMessage ? (
@@ -1435,6 +1445,7 @@ const MessageItem = memo(function MessageItem({
             </div>
           )}
           {failedSendControls}
+          </div>
         </div>
         {desktopActionRail}
       </div>

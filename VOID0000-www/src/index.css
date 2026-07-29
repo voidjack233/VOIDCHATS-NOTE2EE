@@ -150,22 +150,49 @@
 
 @keyframes message-live-arrival {
   0% {
-    opacity: 0;
-    transform: translate3d(0, 7px, 0) scale(0.985);
+    opacity: 0.82;
+    transform: translate3d(var(--message-live-arrival-start-x), 0, 0);
   }
   70% {
     opacity: 1;
-    transform: translate3d(0, -1px, 0) scale(1.002);
+    transform: translate3d(var(--message-live-arrival-overshoot-x), 0, 0);
   }
   100% {
     opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0);
   }
 }
 
 .message-live-arrival {
-  animation: message-live-arrival 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
-  transform-origin: center bottom;
+  animation: message-live-arrival var(--message-live-arrival-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.message-live-arrival-compact {
+  --message-live-arrival-duration: 220ms;
+}
+
+.message-live-arrival-comfortable {
+  --message-live-arrival-duration: 250ms;
+}
+
+.message-live-arrival-compact.message-live-arrival-from-left {
+  --message-live-arrival-start-x: -18px;
+  --message-live-arrival-overshoot-x: 2px;
+}
+
+.message-live-arrival-compact.message-live-arrival-from-right {
+  --message-live-arrival-start-x: 18px;
+  --message-live-arrival-overshoot-x: -2px;
+}
+
+.message-live-arrival-comfortable.message-live-arrival-from-left {
+  --message-live-arrival-start-x: -24px;
+  --message-live-arrival-overshoot-x: 3px;
+}
+
+.message-live-arrival-comfortable.message-live-arrival-from-right {
+  --message-live-arrival-start-x: 24px;
+  --message-live-arrival-overshoot-x: -3px;
 }
 
 @media (prefers-reduced-motion: reduce) {
