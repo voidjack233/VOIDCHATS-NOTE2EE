@@ -122,13 +122,20 @@ export async function sendTypingStart(conversationId: string): Promise<void> {
 
 export async function uploadAttachments(conversationId: string, files: File[]): Promise<string[]> {
   const prepared = await Promise.all(files.map(prepareAttachmentFile));
+  const formData = new FormData();
+  prepared.forEach(({ file }) => {
+    formData.append('files', file, file.name || 'attachment');
+  });
+  formData.append(
+    'metadata',
+    JSON.stringify(prepared.map(({ attachment }) => attachment)),
+  );
+
   const { response, data } = await withRequestTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS, 'Attachment upload', async (signal) => {
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
       method: 'POST',
       signal,
-      body: JSON.stringify({
-        files: prepared.map(({ data, attachment }) => ({ data, ...attachment })),
-      }),
+      body: formData,
     });
     return { response, data: await response.json() };
   });

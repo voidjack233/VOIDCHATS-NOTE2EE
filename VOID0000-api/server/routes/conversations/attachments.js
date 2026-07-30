@@ -3,11 +3,17 @@
 // Uploads private attachment objects and returns authenticated download URLs.
 
 import { Router } from 'express';
-import { randomUUID } from 'crypto';
 import {
   AttachmentLifecycleError,
   attachmentLifecycle,
 } from '../../attachments/lifecycle.js';
+import {
+  AttachmentMultipartError,
+  parseAttachmentMultipartRequest,
+} from '../../attachments/multipart.js';
+import {
+  createAttachmentUploadProcessor,
+} from '../../attachments/uploadProcessor.js';
 import { pool } from '../../db.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
 import { attachmentUploadLimiter } from '../../middleware/rate_limit.js';
@@ -30,7 +36,6 @@ import {
 
 const router = Router({ mergeParams: true });
 
-const MAX_FILES = 5;
 const MAX_FILE_BYTES = MAX_CHAT_ATTACHMENT_BYTES;
 const DEFAULT_MAX_COALESCED_ATTACHMENT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_TOTAL_COALESCED_ATTACHMENT_BYTES = 32 * 1024 * 1024;
@@ -68,6 +73,15 @@ function getConversationDownloadIdentifier(conversation) {
 function buildPrivateAttachmentUrl(conversation, attachmentId) {
   return `/api/conversations/${encodeURIComponent(getConversationDownloadIdentifier(conversation))}/attachments/${attachmentId}`;
 }
+
+const processAttachmentUpload = createAttachmentUploadProcessor({
+  sanitizeImage: sanitizeChatAttachmentImageInWorker,
+  createStoragePolicy: createAttachmentStoragePolicy,
+  createObjectMetadata: createAttachmentObjectMetadata,
+  objectStore: minioClient,
+  lifecycle: attachmentLifecycle,
+  bucket: ATTACH_BUCKET,
+});
 
 async function resolveConversationForMember(conversationIdentifier, userId) {
   const conversation = await findConversationByIdentifier(conversationIdentifier);
@@ -220,20 +234,11 @@ async function streamAttachmentObject(res, objectKey) {
 }
 
 // POST /api/conversations/:conversationId/attachments
-// Body: { files: [{ data: '<base64 file bytes>', mime?: 'image/png' }] }
+// multipart/form-data: repeated `files` parts plus one bounded `metadata` JSON field.
 // Returns: { urls: ['/api/conversations/:id/attachments/:attachmentId'] }
 router.post('/', attachmentUploadLimiter, async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier } = req.params;
-  const { files } = req.body;
-
-  if (!Array.isArray(files) || files.length === 0) {
-    return res.status(400).json({ error: 'files array required' });
-  }
-
-  if (files.length > MAX_FILES) {
-    return res.status(400).json({ error: `Maximum ${MAX_FILES} files per message` });
-  }
 
   let conversation;
 
@@ -265,151 +270,48 @@ router.post('/', attachmentUploadLimiter, async (req, res) => {
     return res.status(500).json({ error: 'Membership check failed' });
   }
 
-  const decodedFiles = [];
-
-  for (const file of files) {
-    const { data } = file;
-
-    if (!data || typeof data !== 'string') {
-      return res.status(400).json({ error: 'Each file must have a data field' });
+  let parsedUpload;
+  try {
+    parsedUpload = await parseAttachmentMultipartRequest(req);
+  } catch (error) {
+    if (error instanceof AttachmentMultipartError) {
+      return res.status(error.status).json(error.body);
     }
-
-    const fileBuffer = Buffer.from(data, 'base64');
-    if (!fileBuffer.length) {
-      return res.status(400).json({ error: 'Attachment payload was empty' });
-    }
-
-    if (fileBuffer.length > MAX_FILE_BYTES) {
-      return res.status(400).json({
-        error: 'File too large. Maximum 10MB per attachment.',
-        code: 'ATTACHMENT_TOO_LARGE',
-      });
-    }
-
-    decodedFiles.push({ file, fileBuffer });
+    console.error('Attachment multipart parsing error:', error);
+    return res.status(400).json({
+      error: 'Attachment multipart payload is malformed',
+      code: 'ATTACHMENT_MULTIPART_INVALID',
+    });
   }
 
   try {
-    await attachmentLifecycle.assertUploadAllowed({
+    const response = await processAttachmentUpload({
       userId,
-      incomingCount: decodedFiles.length,
-      incomingBytes: decodedFiles.reduce((total, entry) => total + entry.fileBuffer.length, 0),
+      conversation,
+      files: parsedUpload.files,
+      buildPrivateUrl: buildPrivateAttachmentUrl,
     });
+    return res.json(response);
   } catch (error) {
+    if (error instanceof ChatImageSanitizationError) {
+      return res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+      });
+    }
+    if (error instanceof AttachmentSanitizerTransportError) {
+      return res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+        retryable: error.retryable,
+      });
+    }
     if (error instanceof AttachmentLifecycleError) {
       return res.status(error.status).json(error.body);
     }
-    console.error('Attachment quota check error:', error);
-    return res.status(500).json({ error: 'Failed to validate attachment quota' });
-  }
-
-  const preparedFiles = [];
-
-  for (const { file, fileBuffer } of decodedFiles) {
-    try {
-      const requestedContentType = typeof file?.mime === 'string' && file.mime.trim()
-        ? file.mime.trim().slice(0, 255)
-        : 'application/octet-stream';
-      const sanitizedImage = await sanitizeChatAttachmentImageInWorker(
-        fileBuffer,
-        requestedContentType,
-      );
-      const contentPolicy = createAttachmentStoragePolicy({
-        sanitizedImage,
-        originalName: file?.name,
-      });
-
-      preparedFiles.push({
-        buffer: sanitizedImage?.buffer || fileBuffer,
-        ...contentPolicy,
-        width: sanitizedImage?.width,
-        height: sanitizedImage?.height,
-      });
-    } catch (err) {
-      if (err instanceof ChatImageSanitizationError) {
-        return res.status(err.status).json({
-          error: err.message,
-          code: err.code,
-        });
-      }
-      if (err instanceof AttachmentSanitizerTransportError) {
-        return res.status(err.status).json({
-          error: err.message,
-          code: err.code,
-          retryable: err.retryable,
-        });
-      }
-      console.error('Attachment sanitization error:', err);
-      return res.status(500).json({ error: 'Failed to process attachment' });
-    }
-  }
-
-  const storedAttachments = [];
-
-  try {
-    for (const prepared of preparedFiles) {
-      const attachmentId = randomUUID();
-      const filename = `${conversation.id}/${attachmentId}.bin`;
-
-      await minioClient.putObject(
-        ATTACH_BUCKET,
-        filename,
-        prepared.buffer,
-        prepared.buffer.length,
-        createAttachmentObjectMetadata(prepared),
-      );
-
-      storedAttachments.push({
-        ...prepared,
-        attachmentId,
-        filename,
-      });
-    }
-
-    await attachmentLifecycle.stageUploadedAttachments({
-      userId,
-      conversationId: conversation.id,
-      attachments: storedAttachments.map((attachment) => ({
-        id: attachment.attachmentId,
-        objectKey: attachment.filename,
-        sizeBytes: attachment.buffer.length,
-      })),
-    });
-  } catch (err) {
-    const cleanupResults = await Promise.allSettled(
-      storedAttachments.map((attachment) => (
-        minioClient.removeObject(ATTACH_BUCKET, attachment.filename)
-      )),
-    );
-    cleanupResults.forEach((result) => {
-      if (result.status === 'rejected') {
-        console.error('Attachment object cleanup error:', result.reason);
-      }
-    });
-
-    console.error('Attachment upload error:', err);
-    if (err instanceof AttachmentLifecycleError) {
-      return res.status(err.status).json(err.body);
-    }
+    console.error('Attachment upload error:', error);
     return res.status(500).json({ error: 'Failed to process attachment' });
   }
-
-  const attachments = storedAttachments.map((attachment) => ({
-    url: buildPrivateAttachmentUrl(conversation, attachment.attachmentId),
-    mime: attachment.contentType,
-    size: attachment.buffer.length,
-    ...(attachment.width ? { width: attachment.width } : {}),
-    ...(attachment.height ? { height: attachment.height } : {}),
-  }));
-
-  res.json({
-    success: true,
-    conversation_id: conversation.id,
-    conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
-    urls: attachments.map((attachment) => attachment.url),
-    blurhashes: attachments.map(() => ''),
-    attachments,
-  });
 });
 
 // DELETE /api/conversations/:conversationId/attachments/:attachmentId

@@ -28,6 +28,7 @@
     "bcryptjs": "^3.0.3",
     "blurhash": "^2.0.5",
     "bullmq": "^5.80.2",
+    "busboy": "^1.6.0",
     "canvas": "^3.2.1",
     "cassandra-driver": "^4.8.0",
     "cookie-parser": "^1.4.7",

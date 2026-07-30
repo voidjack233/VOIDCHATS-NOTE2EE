@@ -296,16 +296,17 @@ export async function fetchWithAuth(
   const fullUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
   const method = options.method?.toUpperCase() || 'GET';
   const needsCSRFToken = isMutationMethod(method);
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string>),
-  };
+  const isFormDataRequest =
+    typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const headers = new Headers(options.headers);
+  if (!isFormDataRequest && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   if (needsCSRFToken) {
     const token = await ensureCSRFToken();
     if (token) {
-      headers['X-CSRF-Token'] = token;
+      headers.set('X-CSRF-Token', token);
     }
   }
 
@@ -324,7 +325,7 @@ export async function fetchWithAuth(
       if (needsCSRFToken) {
         const newCsrfToken = await ensureCSRFToken();
         if (newCsrfToken) {
-          headers['X-CSRF-Token'] = newCsrfToken;
+          headers.set('X-CSRF-Token', newCsrfToken);
         }
       }
 
@@ -342,7 +343,7 @@ export async function fetchWithAuth(
     clearCSRFToken();
     const newCsrfToken = await requestCSRFToken();
     if (newCsrfToken) {
-      headers['X-CSRF-Token'] = newCsrfToken;
+      headers.set('X-CSRF-Token', newCsrfToken);
       response = await performRequest();
     }
   }

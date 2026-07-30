@@ -9,7 +9,6 @@ import {
   type AttachmentRenderSource,
 } from './attachmentRenderPolicy';
 
-const BASE64_CHUNK_SIZE = 0x8000;
 const BLURHASH_MAX_DIMENSION = 32;
 const SIGNED_URL_EXPIRY_SAFETY_MS = 5_000;
 
@@ -18,17 +17,8 @@ interface AttachmentResolveOptions {
 }
 
 interface PreparedAttachment {
-  data: string;
+  file: File;
   attachment: Omit<Attachment, 'url'>;
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_SIZE) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + BASE64_CHUNK_SIZE));
-  }
-  return btoa(binary);
 }
 
 function getPreviewDimensions(width: number, height: number) {
@@ -78,7 +68,7 @@ async function getImagePreview(file: File) {
 export async function prepareAttachmentFile(file: File): Promise<PreparedAttachment> {
   const preview = await getImagePreview(file).catch(() => ({}));
   return {
-    data: arrayBufferToBase64(await file.arrayBuffer()),
+    file,
     attachment: {
       mime: file.type || 'application/octet-stream',
       name: file.name || undefined,
