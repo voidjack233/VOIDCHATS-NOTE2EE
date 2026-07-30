@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  deleteStagedAttachment,
   editMessage,
   sendImageOnlyMessage,
   sendMessage,
@@ -97,6 +98,8 @@ function getQueuedSendNotice(error: any): string {
 function getAttachmentUploadErrorLabel(error: any): string {
   const status = Number(error?.status ?? error?.statusCode);
   const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
+  if (error?.code === 'ATTACHMENT_STAGED_QUOTA_EXCEEDED') return 'Too many unsent attachments';
+  if (error?.code === 'ATTACHMENT_UPLOAD_RATE_LIMITED' || status === 429) return 'Upload limit reached';
   if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError' || message.includes('timed out')) return 'Upload timed out';
   if (status >= 500) return 'Service unavailable';
   if (message.includes('failed to fetch') || message.includes('network')) return 'Waiting for network';
@@ -139,6 +142,9 @@ export const useMessageInput = ({
   const [attachmentAlert, setAttachmentAlert] = useState<AttachmentAlertState | null>(null);
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
+  const removedUploadingAttachmentIdsRef = useRef<Set<string>>(new Set());
+  const attachmentsRef = useRef<PendingAttachment[]>([]);
+  const conversationIdRef = useRef(conversation.id);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -148,6 +154,7 @@ export const useMessageInput = ({
   const attachmentsRestrictionLabel = attachmentAccess.required === 'everyone'
     ? null
     : attachmentAccess.required === 'admins' ? 'Admins' : 'Owner';
+  attachmentsRef.current = attachments;
   const resolveDraftMentions = useCallback((draftText: string): MessageMentionMetadata[] => (
     conversation.type === 'group' ? resolveMessageMentions(draftText, members || []) : []
   ), [conversation.type, members]);
@@ -167,6 +174,17 @@ export const useMessageInput = ({
   }, [editingMessage]);
 
   useEffect(() => {
+    const previousConversationId = conversationIdRef.current;
+    if (previousConversationId !== conversation.id) {
+      for (const attachment of attachmentsRef.current) {
+        if (attachment.uploading) {
+          removedUploadingAttachmentIdsRef.current.add(attachment.id);
+        } else if (attachment.url) {
+          void deleteStagedAttachment(previousConversationId, attachment.url).catch(() => {});
+        }
+      }
+    }
+    conversationIdRef.current = conversation.id;
     inputRef.current?.focus();
     setAttachments([]);
     setLinkPreview(null);
@@ -231,12 +249,21 @@ export const useMessageInput = ({
 
     try {
       const [url] = await uploadAttachments(conversation.id, [file]);
+      if (removedUploadingAttachmentIdsRef.current.delete(id)) {
+        if (url) {
+          void deleteStagedAttachment(conversation.id, url).catch(() => {});
+        }
+        return;
+      }
       setAttachments((previous) => previous.map((attachment) => (
         attachment.id === id
           ? { ...attachment, url: url ?? null, uploading: false, error: undefined, file: undefined }
           : attachment
       )));
     } catch (error) {
+      if (removedUploadingAttachmentIdsRef.current.delete(id)) {
+        return;
+      }
       setAttachments((previous) => previous.map((attachment) => (
         attachment.id === id
           ? { ...attachment, uploading: false, error: getAttachmentUploadErrorLabel(error) }
@@ -279,8 +306,14 @@ export const useMessageInput = ({
   }, [attachments.length, attachmentsAllowed, uploadFile]);
 
   const removeAttachment = useCallback((id: string) => {
+    const target = attachments.find((attachment) => attachment.id === id);
+    if (target?.uploading) {
+      removedUploadingAttachmentIdsRef.current.add(id);
+    } else if (target?.url) {
+      void deleteStagedAttachment(conversation.id, target.url).catch(() => {});
+    }
     setAttachments((previous) => previous.filter((attachment) => attachment.id !== id));
-  }, []);
+  }, [attachments, conversation.id]);
   const toggleAttachmentSpoiler = useCallback((id: string) => {
     setAttachments((previous) => previous.map((attachment) => (
       attachment.id === id && attachment.preview

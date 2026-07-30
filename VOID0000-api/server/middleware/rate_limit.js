@@ -17,6 +17,7 @@ export const authCheckLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.auth
 export const refreshTokenLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.refreshToken);
 export const profileUpdateLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.profileUpdate);
 export const avatarUploadLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.avatarUpload);
+export const attachmentUploadLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.attachmentUpload);
 export const captchaGenerateLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.captchaGenerate);
 export const captchaCheckLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.captchaCheck);
 export const friendsListLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.friendsList);

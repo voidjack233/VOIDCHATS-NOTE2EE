@@ -1,4 +1,10 @@
 import { sendLiveEventToUser } from '../../../gateway/client.js';
+import {
+  AttachmentLifecycleError,
+  attachmentLifecycle,
+  createAttachmentReservationId,
+  extractProtectedAttachmentIds,
+} from '../../../attachments/lifecycle.js';
 import { dispatchMessagePushNotifications } from '../../../notifications/webPush.js';
 import { messageEventId } from '../../../utils/eventIdentity.js';
 import { debugLog } from '../../../utils/debugLog.js';
@@ -44,6 +50,31 @@ function getClientMessageIdempotencyKey(userId, conversationId, clientMessageId)
   return `message:idempotency:${userId}:${conversationId}:${clientMessageId}`;
 }
 
+async function loadStoredMessage({
+  conversationId,
+  conversationPublic,
+  storageConversationId,
+  messageId,
+}) {
+  const result = await scylla.execute(
+    `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
+    [
+      cassandra.types.Uuid.fromString(String(storageConversationId)),
+      cassandra.types.TimeUuid.fromString(String(messageId)),
+    ],
+    { prepare: true }
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  const storedMessage = mapStoredMessageRow(row, conversationPublic);
+  const [message] = await attachSignedAttachmentUrls([storedMessage], conversationId);
+  return message;
+}
+
 async function restoreIdempotentMessage({
   userId,
   conversationId,
@@ -70,25 +101,19 @@ async function restoreIdempotentMessage({
       return null;
     }
 
-    const result = await scylla.execute(
-      `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
-      [
-        cassandra.types.Uuid.fromString(String(storedConversationId)),
-        cassandra.types.TimeUuid.fromString(String(storedMessageId)),
-      ],
-      { prepare: true }
-    );
-
-    const row = result.rows[0];
-    if (!row) {
+    const message = await loadStoredMessage({
+      conversationId,
+      conversationPublic,
+      storageConversationId: storedConversationId,
+      messageId: storedMessageId,
+    });
+    if (!message) {
       await valkey.del(
         getClientMessageIdempotencyKey(userId, conversationId, clientMessageId)
       ).catch(() => {});
       return null;
     }
 
-    const storedMessage = mapStoredMessageRow(row, conversationPublic);
-    const [message] = await attachSignedAttachmentUrls([storedMessage], conversationId);
     return message;
   } catch (error) {
     console.warn('[MESSAGE_IDEMPOTENCY] failed to restore cached message', {
@@ -113,7 +138,12 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
   } = body || {};
   let storageConversationUuid = null;
   let messageId = null;
+  let attachmentReservation = null;
+  let ownsAttachmentReservation = false;
+  let messageWriteAttempted = false;
   let messagePersistedToScylla = false;
+  let postgresCommitAttempted = false;
+  let messageAccepted = false;
 
   const normalizedContent = typeof content === 'string' ? content.trim() : '';
   const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
@@ -186,35 +216,95 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       fail(400, { error: metadataError.message || 'Invalid message metadata' });
     }
 
-    messageId = cassandra.types.TimeUuid.now();
-    const messageIdString = messageId.toString();
-    const now = new Date();
     const normalizedAttachments = normalizeStoredAttachments(attachments);
+    const attachmentIds = hasAttachments
+      ? extractProtectedAttachmentIds(attachments)
+      : [];
+    if (normalizedAttachments.length !== attachmentIds.length) {
+      fail(400, {
+        error: 'One or more attachment descriptors are invalid',
+        code: 'ATTACHMENT_REFERENCE_INVALID',
+      });
+    }
     const attachList = normalizedAttachments.length > 0 ? normalizedAttachments : null;
     const storedForwarded = serializeStoredMessageMetadata(normalizedForwarded);
     const storedMentions = serializeStoredMessageMetadata(normalizedMentions);
     const storedLinkPreview = serializeStoredMessageMetadata(link_preview);
 
-    storageConversationUuid = cassandra.types.Uuid.fromString(storageConversationId);
+    messageId = cassandra.types.TimeUuid.now();
+    let messageIdString = messageId.toString();
+    const reservationId = createAttachmentReservationId(normalizedClientMessageId);
 
+    attachmentReservation = await attachmentLifecycle.reserveForMessage({
+      attachmentIds,
+      userId,
+      conversationId,
+      reservationId,
+      messageId: messageIdString,
+    });
+
+    if (attachmentReservation.state === 'committed') {
+      const existingMessage = await loadStoredMessage({
+        conversationId,
+        conversationPublic,
+        storageConversationId,
+        messageId: attachmentReservation.messageId,
+      });
+      if (!existingMessage) {
+        fail(409, {
+          error: 'The committed attachment message could not be recovered',
+          code: 'ATTACHMENT_COMMIT_RECOVERY_REQUIRED',
+        });
+      }
+      return { message: existingMessage };
+    }
+
+    if (attachmentReservation.state === 'reserved') {
+      if (attachmentReservation.reservationExpired) {
+        fail(409, {
+          error: 'This attachment is held for safe message reconciliation. Upload it again to retry.',
+          code: 'ATTACHMENT_RESERVATION_RECOVERY_REQUIRED',
+        });
+      }
+      fail(425, {
+        error: 'This attachment message is already being processed',
+        code: 'ATTACHMENT_RESERVATION_IN_PROGRESS',
+        retryAfterMs: 500,
+      });
+    }
+
+    ownsAttachmentReservation = attachmentReservation.state === 'reserved_new';
+    messageIdString = attachmentReservation.messageId;
+    messageId = cassandra.types.TimeUuid.fromString(messageIdString);
+    const now = new Date();
+    storageConversationUuid = cassandra.types.Uuid.fromString(storageConversationId);
+    let replyToUuid = null;
+    try {
+      replyToUuid = reply_to ? cassandra.types.TimeUuid.fromString(reply_to) : null;
+    } catch {
+      fail(400, { error: 'Invalid reply_to message id' });
+    }
+
+    const messageInsertParams = [
+      storageConversationUuid,
+      messageId,
+      cassandra.types.Uuid.fromString(userId),
+      normalizedContent,
+      message_type || 'text',
+      replyToUuid,
+      attachList,
+      storedForwarded,
+      storedMentions,
+      storedLinkPreview,
+      now,
+    ];
+    messageWriteAttempted = true;
     await scylla.execute(
       `INSERT INTO messages (
         conversation_id, message_id, sender_id, content,
         message_type, reply_to, attachments, forwarded, mentions, link_preview, is_edited, is_deleted, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
-      [
-        storageConversationUuid,
-        messageId,
-        cassandra.types.Uuid.fromString(userId),
-        normalizedContent,
-        message_type || 'text',
-        reply_to ? cassandra.types.TimeUuid.fromString(reply_to) : null,
-        attachList,
-        storedForwarded,
-        storedMentions,
-        storedLinkPreview,
-        now,
-      ],
+      messageInsertParams,
       { prepare: true }
     );
     messagePersistedToScylla = true;
@@ -251,8 +341,11 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
          WHERE conversation_id = $1`,
         [membershipConversationId, userId, messageIdString]
       );
+      await attachmentLifecycle.commitReservation(pgClient, attachmentReservation);
 
+      postgresCommitAttempted = true;
       await pgClient.query('COMMIT');
+      messageAccepted = true;
     } catch (pgErr) {
       await pgClient.query('ROLLBACK');
       throw pgErr;
@@ -317,18 +410,43 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
 
     return { message: messageForDelivery };
   } catch (err) {
-    if (messagePersistedToScylla && storageConversationUuid && messageId) {
+    let scyllaRollbackConfirmed = false;
+    if (
+      !messageAccepted &&
+      messagePersistedToScylla &&
+      storageConversationUuid &&
+      messageId &&
+      (!postgresCommitAttempted || !ownsAttachmentReservation)
+    ) {
       try {
         await scylla.execute(
           'DELETE FROM messages WHERE conversation_id = ? AND message_id = ?',
           [storageConversationUuid, messageId],
           { prepare: true }
         );
+        scyllaRollbackConfirmed = true;
       } catch (cleanupErr) {
         console.error('Failed to roll back Scylla message after send error:', cleanupErr);
       }
     }
 
+    const canReleaseReservation =
+      ownsAttachmentReservation &&
+      attachmentReservation &&
+      !messageAccepted &&
+      (
+        !messageWriteAttempted ||
+        scyllaRollbackConfirmed
+      );
+    if (canReleaseReservation) {
+      await attachmentLifecycle.releaseReservation(attachmentReservation).catch((releaseError) => {
+        console.error('Failed to release attachment reservation after send error:', releaseError);
+      });
+    }
+
+    if (err instanceof AttachmentLifecycleError) {
+      throw new MessageSendError(err.status, err.body);
+    }
     throw err;
   }
 }

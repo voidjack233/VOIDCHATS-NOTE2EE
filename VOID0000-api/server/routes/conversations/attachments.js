@@ -4,8 +4,13 @@
 
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
+import {
+  AttachmentLifecycleError,
+  attachmentLifecycle,
+} from '../../attachments/lifecycle.js';
 import { pool } from '../../db.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
+import { attachmentUploadLimiter } from '../../middleware/rate_limit.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 import {
@@ -217,7 +222,7 @@ async function streamAttachmentObject(res, objectKey) {
 // POST /api/conversations/:conversationId/attachments
 // Body: { files: [{ data: '<base64 file bytes>', mime?: 'image/png' }] }
 // Returns: { urls: ['/api/conversations/:id/attachments/:attachmentId'] }
-router.post('/', async (req, res) => {
+router.post('/', attachmentUploadLimiter, async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier } = req.params;
   const { files } = req.body;
@@ -260,7 +265,7 @@ router.post('/', async (req, res) => {
     return res.status(500).json({ error: 'Membership check failed' });
   }
 
-  const preparedFiles = [];
+  const decodedFiles = [];
 
   for (const file of files) {
     const { data } = file;
@@ -281,6 +286,26 @@ router.post('/', async (req, res) => {
       });
     }
 
+    decodedFiles.push({ file, fileBuffer });
+  }
+
+  try {
+    await attachmentLifecycle.assertUploadAllowed({
+      userId,
+      incomingCount: decodedFiles.length,
+      incomingBytes: decodedFiles.reduce((total, entry) => total + entry.fileBuffer.length, 0),
+    });
+  } catch (error) {
+    if (error instanceof AttachmentLifecycleError) {
+      return res.status(error.status).json(error.body);
+    }
+    console.error('Attachment quota check error:', error);
+    return res.status(500).json({ error: 'Failed to validate attachment quota' });
+  }
+
+  const preparedFiles = [];
+
+  for (const { file, fileBuffer } of decodedFiles) {
     try {
       const requestedContentType = typeof file?.mime === 'string' && file.mime.trim()
         ? file.mime.trim().slice(0, 255)
@@ -320,7 +345,6 @@ router.post('/', async (req, res) => {
   }
 
   const storedAttachments = [];
-  let dbClient = null;
 
   try {
     for (const prepared of preparedFiles) {
@@ -342,31 +366,16 @@ router.post('/', async (req, res) => {
       });
     }
 
-    dbClient = await pool.connect();
-    await dbClient.query('BEGIN');
-    for (const attachment of storedAttachments) {
-      await dbClient.query(
-        `INSERT INTO attachment_objects (id, conversation_id, uploader_id, bucket, object_key)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          attachment.attachmentId,
-          conversation.id,
-          userId,
-          ATTACH_BUCKET,
-          attachment.filename,
-        ],
-      );
-    }
-    await dbClient.query('COMMIT');
+    await attachmentLifecycle.stageUploadedAttachments({
+      userId,
+      conversationId: conversation.id,
+      attachments: storedAttachments.map((attachment) => ({
+        id: attachment.attachmentId,
+        objectKey: attachment.filename,
+        sizeBytes: attachment.buffer.length,
+      })),
+    });
   } catch (err) {
-    if (dbClient) {
-      try {
-        await dbClient.query('ROLLBACK');
-      } catch (rollbackError) {
-        console.error('Attachment database rollback error:', rollbackError);
-      }
-    }
-
     const cleanupResults = await Promise.allSettled(
       storedAttachments.map((attachment) => (
         minioClient.removeObject(ATTACH_BUCKET, attachment.filename)
@@ -379,9 +388,10 @@ router.post('/', async (req, res) => {
     });
 
     console.error('Attachment upload error:', err);
+    if (err instanceof AttachmentLifecycleError) {
+      return res.status(err.status).json(err.body);
+    }
     return res.status(500).json({ error: 'Failed to process attachment' });
-  } finally {
-    dbClient?.release();
   }
 
   const attachments = storedAttachments.map((attachment) => ({
@@ -400,6 +410,37 @@ router.post('/', async (req, res) => {
     blurhashes: attachments.map(() => ''),
     attachments,
   });
+});
+
+// DELETE /api/conversations/:conversationId/attachments/:attachmentId
+// Best-effort composer cleanup for an attachment that has not been sent.
+router.delete('/:attachmentId', async (req, res) => {
+  const userId = req.user.id;
+  const { conversationId: conversationIdentifier, attachmentId } = req.params;
+
+  if (!UUID_PATTERN.test(attachmentId || '')) {
+    return res.status(400).json({ error: 'Invalid attachment id' });
+  }
+
+  try {
+    const resolved = await resolveConversationForMember(conversationIdentifier, userId);
+    if (!resolved.conversation) {
+      return res.status(resolved.status).json(resolved.body);
+    }
+
+    await attachmentLifecycle.deleteStagedAttachment({
+      attachmentId,
+      userId,
+      conversationId: resolved.conversation.id,
+    });
+    return res.status(204).end();
+  } catch (error) {
+    if (error instanceof AttachmentLifecycleError) {
+      return res.status(error.status).json(error.body);
+    }
+    console.error('Attachment staged deletion error:', error);
+    return res.status(500).json({ error: 'Failed to remove staged attachment' });
+  }
 });
 
 // GET /api/conversations/:conversationId/attachments/:attachmentId

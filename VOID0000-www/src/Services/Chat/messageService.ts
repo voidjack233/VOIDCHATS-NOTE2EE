@@ -161,6 +161,44 @@ export async function uploadAttachments(conversationId: string, files: File[]): 
   });
 }
 
+export async function deleteStagedAttachment(
+  conversationId: string,
+  rawAttachment: string,
+): Promise<void> {
+  const attachment = parseAttachment(rawAttachment);
+  const stableUrl = attachment.fallback_url?.trim() || attachment.url.trim();
+  let attachmentId = attachment.id?.trim() || '';
+
+  if (!attachmentId) {
+    try {
+      const pathname = new URL(stableUrl, window.location.origin).pathname;
+      const match = pathname.match(
+        /\/api\/conversations\/[^/]+\/attachments\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
+      );
+      attachmentId = match?.[1] || '';
+    } catch {
+      return;
+    }
+  }
+  if (!attachmentId) {
+    return;
+  }
+
+  const response = await fetchWithAuth(
+    `${CHAT_API_PREFIX}/${conversationId}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: 'DELETE' },
+  );
+  if (response.ok || response.status === 404) {
+    return;
+  }
+
+  const data = await response.json().catch(() => ({}));
+  throw createApiError(data, {
+    status: response.status,
+    statusCode: response.status,
+  });
+}
+
 export async function getMessages(
   conversationId: string,
   options?: { before?: string; after?: string; limit?: number },
@@ -271,10 +309,11 @@ export async function forwardMessageToConversation(
     throw new Error('Only messages with text or attachments can be forwarded right now.');
   }
   const sourceConversationId = sourceMessage.conversation_public_id || sourceMessage.conversation_id;
-  const attachments = sourceAttachments.length > 0 && String(targetConversation.id) !== String(sourceConversationId)
+  const attachments = sourceAttachments.length > 0
     ? await cloneAttachmentsForForward(targetConversation.id, sourceAttachments, sourceConversationId)
-    : sourceAttachments;
+    : [];
   return sendMessage(targetConversation.id, content, {
+    client_message_id: `forward-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     message_type: 'forwarded',
     attachments,
     forwarded: options.forwarded,

@@ -189,6 +189,15 @@ export const RATE_LIMIT_POLICIES = Object.freeze({
     bucketSize: 3,
   }),
 
+  attachmentUpload: userTokenBucket({
+    keyPrefix: 'attachments:upload',
+    refillWindowSec: 10 * 60,
+    bucketSize: 30,
+    code: 'ATTACHMENT_UPLOAD_RATE_LIMITED',
+    message: 'Too many attachment uploads. Please wait before uploading more.',
+    logAction: 'ATTACHMENT_UPLOAD_RATE_LIMIT_HIT',
+  }),
+
   captchaGenerate: multiBucket({
     keyPrefix: 'captcha:generate',
     dimensions: [

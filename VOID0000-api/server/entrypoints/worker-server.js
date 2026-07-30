@@ -13,6 +13,13 @@ const { startImageWorker } = await import('../queues/imageQueue.js');
 const {
   startAttachmentSanitizerServer,
 } = await import('../attachmentSanitizer/server.js');
+const {
+  createStagedAttachmentCleanupRunner,
+} = await import('../attachments/cleanup.js');
+const {
+  attachmentLifecycle,
+} = await import('../attachments/lifecycle.js');
+const { default: valkey } = await import('../valkey.js');
 const { cleanupAllExpired } = await import('../utils/cleanUpExpired.js');
 
 initPublisher();
@@ -20,6 +27,10 @@ initPresenceFanout();
 
 const attachmentSanitizerServer = await startAttachmentSanitizerServer();
 const imageWorker = startImageWorker();
+const stagedAttachmentCleanup = createStagedAttachmentCleanupRunner({
+  lifecycle: attachmentLifecycle,
+  lockClient: valkey,
+});
 
 async function runCleanup() {
   try {
@@ -32,10 +43,15 @@ async function runCleanup() {
 
 await runCleanup();
 const cleanupInterval = setInterval(runCleanup, 6 * 60 * 60 * 1000);
+await stagedAttachmentCleanup.runOnce().catch((error) => {
+  console.error('❌ Initial staged attachment cleanup failed:', error);
+});
+stagedAttachmentCleanup.start();
 
 async function shutdown(signal) {
   console.log(`Worker service received ${signal}, shutting down...`);
   clearInterval(cleanupInterval);
+  stagedAttachmentCleanup.stop();
   await Promise.allSettled([
     attachmentSanitizerServer.close(),
     imageWorker.close(),
