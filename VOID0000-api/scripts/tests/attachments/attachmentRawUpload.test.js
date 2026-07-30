@@ -3,9 +3,9 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 
 import {
-  ATTACHMENT_MULTIPART_LIMITS,
-  parseAttachmentMultipartRequest,
-} from '../../../server/attachments/multipart.js';
+  ATTACHMENT_RAW_UPLOAD_LIMITS,
+  parseAttachmentRawRequest,
+} from '../../../server/attachments/rawUpload.js';
 import { createAttachmentUploadProcessor } from '../../../server/attachments/uploadProcessor.js';
 import {
   createAttachmentObjectMetadata,
@@ -20,58 +20,14 @@ const CONVERSATION_ID = '11111111-1111-4111-8111-111111111111';
 const ATTACHMENT_ID = '22222222-2222-4222-8222-222222222222';
 const USER_ID = '33333333-3333-4333-8333-333333333333';
 
-function buildMultipartBody({
-  files = [],
-  metadata = files.map((file) => ({
-    name: file.filename,
-    mime: file.mimeType,
-    size: file.bytes.length,
-  })),
-  fields = [],
-  boundary = 'void-attachment-test-boundary',
-  includeClosingBoundary = true,
-} = {}) {
-  const chunks = [];
-  for (const file of files) {
-    chunks.push(Buffer.from(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="${file.fieldName || 'files'}"; filename="${file.filename || 'attachment'}"\r\n` +
-      `Content-Type: ${file.mimeType || 'application/octet-stream'}\r\n\r\n`,
-    ));
-    chunks.push(file.bytes);
-    chunks.push(Buffer.from('\r\n'));
-  }
-  for (const field of fields) {
-    chunks.push(Buffer.from(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="${field.name}"\r\n\r\n` +
-      `${field.value}\r\n`,
-    ));
-  }
-  if (metadata !== undefined) {
-    chunks.push(Buffer.from(
-      `--${boundary}\r\n` +
-      'Content-Disposition: form-data; name="metadata"\r\n\r\n' +
-      `${typeof metadata === 'string' ? metadata : JSON.stringify(metadata)}\r\n`,
-    ));
-  }
-  if (includeClosingBoundary) {
-    chunks.push(Buffer.from(`--${boundary}--\r\n`));
-  }
-  return {
-    body: Buffer.concat(chunks),
-    boundary,
-  };
-}
-
-function createMultipartRequest(options = {}) {
-  const { body, boundary } = buildMultipartBody(options);
-  const request = Readable.from([body]);
+function createRawRequest(bytes, headers = {}) {
+  const request = Readable.from([bytes]);
   request.headers = {
-    'content-type': options.contentType || `multipart/form-data; boundary=${boundary}`,
-    'content-length': String(body.length),
+    'content-type': 'application/octet-stream',
+    'content-length': String(bytes.length),
+    ...headers,
   };
-  return { request, body };
+  return request;
 }
 
 function createUploadHarness({ sanitizeImage } = {}) {
@@ -115,8 +71,6 @@ function createUploadHarness({ sanitizeImage } = {}) {
   });
 
   return {
-    lifecycle,
-    objectStore,
     processor,
     quotaCalls,
     stagedRows,
@@ -124,28 +78,21 @@ function createUploadHarness({ sanitizeImage } = {}) {
   };
 }
 
-test('multipart parser preserves exact image bytes and bounded client metadata', async () => {
+test('raw parser preserves exact bytes and validates bounded metadata headers', async () => {
   const bytes = Buffer.from([0x00, 0xff, 0x10, 0x0d, 0x0a, 0x80, 0x01]);
-  const { request } = createMultipartRequest({
-    files: [{
-      filename: 'photo.jpg',
-      mimeType: 'image/jpeg',
-      bytes,
-    }],
-    metadata: [{
-      name: 'photo.jpg',
-      mime: 'image/jpeg',
-      size: bytes.length,
-      width: 640,
-      height: 480,
-      blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj',
-    }],
+  const request = createRawRequest(bytes, {
+    'x-attachment-filename': encodeURIComponent('photo.jpg'),
+    'x-attachment-mime': 'image/jpeg',
+    'x-attachment-width': '640',
+    'x-attachment-height': '480',
+    'x-attachment-blurhash': 'LEHV6nWB2yk8pyo0adR*.7kCMdnj',
   });
 
-  const result = await parseAttachmentMultipartRequest(request);
-  assert.equal(result.files.length, 1);
-  assert.deepEqual(result.files[0].buffer, bytes);
-  assert.deepEqual(result.files[0].metadata, {
+  const result = await parseAttachmentRawRequest(request);
+  assert.deepEqual(result.file.buffer, bytes);
+  assert.equal(result.file.clientFilename, 'photo.jpg');
+  assert.equal(result.file.clientMimeType, 'image/jpeg');
+  assert.deepEqual(result.file.metadata, {
     name: 'photo.jpg',
     mime: 'image/jpeg',
     size: bytes.length,
@@ -155,7 +102,7 @@ test('multipart parser preserves exact image bytes and bounded client metadata',
   });
 });
 
-test('successful multipart image upload sanitizes, marks, stages, and preserves response shape', async () => {
+test('raw image upload sanitizes, marks, stages, and preserves response shape', async () => {
   const originalBytes = Buffer.from('original-image-bytes');
   const sanitizedBytes = Buffer.from('sanitized-image-bytes');
   let sanitizerInput;
@@ -202,6 +149,11 @@ test('successful multipart image upload sanitizes, marks, stages, and preserves 
     harness.storedObjects[0].metadata['X-Amz-Meta-Void-Sanitized-Image'],
     '1',
   );
+  assert.deepEqual(harness.quotaCalls, [{
+    userId: USER_ID,
+    incomingCount: 1,
+    incomingBytes: originalBytes.length,
+  }]);
   assert.deepEqual(harness.stagedRows, [{
     id: ATTACHMENT_ID,
     objectKey: `${CONVERSATION_ID}/${ATTACHMENT_ID}.bin`,
@@ -228,7 +180,7 @@ test('successful multipart image upload sanitizes, marks, stages, and preserves 
   });
 });
 
-test('permitted non-image upload keeps exact bytes and cannot receive the trusted marker', async () => {
+test('permitted non-image raw upload preserves exact bytes and remains non-inline', async () => {
   const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff]);
   let sanitizerBytes;
   const harness = createUploadHarness({
@@ -266,160 +218,101 @@ test('permitted non-image upload keeps exact bytes and cannot receive the truste
   assert.equal(harness.stagedRows[0].status, 'staged');
 });
 
-test('multipart parser accepts five files and rejects a sixth', async () => {
-  const fiveFiles = Array.from({ length: 5 }, (_, index) => ({
-    filename: `file-${index}.bin`,
-    mimeType: 'application/octet-stream',
-    bytes: Buffer.from([index + 1]),
-  }));
-  const accepted = createMultipartRequest({ files: fiveFiles });
-  assert.equal(
-    (await parseAttachmentMultipartRequest(accepted.request)).files.length,
-    5,
-  );
-
-  const rejected = createMultipartRequest({
-    files: [...fiveFiles, {
-      filename: 'file-6.bin',
-      mimeType: 'application/octet-stream',
-      bytes: Buffer.from([6]),
-    }],
-  });
-  await assert.rejects(
-    parseAttachmentMultipartRequest(rejected.request),
-    { code: 'ATTACHMENT_FILE_LIMIT_EXCEEDED' },
-  );
-});
-
-test('multipart parser enforces the per-file byte limit while streaming', async () => {
-  const { request } = createMultipartRequest({
-    files: [{
-      filename: 'too-large.bin',
-      mimeType: 'application/octet-stream',
-      bytes: Buffer.alloc(ATTACHMENT_MULTIPART_LIMITS.maxFileBytes + 1, 0x61),
-    }],
+test('raw parser enforces the 10 MiB limit before and during streaming', async (t) => {
+  await t.test('declared length is too large', async () => {
+    const request = createRawRequest(Buffer.from('small'), {
+      'content-length': String(ATTACHMENT_RAW_UPLOAD_LIMITS.maxFileBytes + 1),
+    });
+    await assert.rejects(
+      parseAttachmentRawRequest(request),
+      { code: 'ATTACHMENT_TOO_LARGE', status: 413 },
+    );
   });
 
-  await assert.rejects(
-    parseAttachmentMultipartRequest(request),
-    { code: 'ATTACHMENT_TOO_LARGE', status: 413 },
-  );
-});
-
-test('multipart parser enforces a total request byte limit independent of content length', async () => {
-  const { body, boundary } = buildMultipartBody({
-    files: [{
-      filename: 'bounded.bin',
-      mimeType: 'application/octet-stream',
-      bytes: Buffer.alloc(128, 0x62),
-    }],
+  await t.test('chunked body crosses the streaming limit', async () => {
+    const request = createRawRequest(Buffer.alloc(65, 0x61));
+    delete request.headers['content-length'];
+    await assert.rejects(
+      parseAttachmentRawRequest(request, {
+        limits: {
+          ...ATTACHMENT_RAW_UPLOAD_LIMITS,
+          maxFileBytes: 64,
+        },
+      }),
+      { code: 'ATTACHMENT_TOO_LARGE', status: 413 },
+    );
   });
-  const request = Readable.from([
-    body.subarray(0, 48),
-    body.subarray(48),
-  ]);
-  request.headers = {
-    'content-type': `multipart/form-data; boundary=${boundary}`,
-  };
-
-  await assert.rejects(
-    parseAttachmentMultipartRequest(request, {
-      limits: {
-        ...ATTACHMENT_MULTIPART_LIMITS,
-        maxTotalBytes: 64,
-      },
-    }),
-    { code: 'ATTACHMENT_REQUEST_TOO_LARGE', status: 413 },
-  );
 });
 
-test('multipart parser rejects malformed requests, missing files, and unexpected file fields', async (t) => {
-  await t.test('obsolete JSON upload body', async () => {
-    const body = Buffer.from(JSON.stringify({
-      files: [{ data: Buffer.from('legacy').toString('base64') }],
-    }));
-    const request = Readable.from([body]);
-    request.headers = {
+test('raw parser rejects non-binary, empty, and inconsistent request bodies', async (t) => {
+  await t.test('non-binary content type', async () => {
+    const request = createRawRequest(Buffer.from('{}'), {
       'content-type': 'application/json',
-      'content-length': String(body.length),
-    };
+    });
     await assert.rejects(
-      parseAttachmentMultipartRequest(request),
-      { code: 'ATTACHMENT_MULTIPART_INVALID' },
+      parseAttachmentRawRequest(request),
+      { code: 'ATTACHMENT_BINARY_CONTENT_TYPE_REQUIRED', status: 415 },
     );
   });
 
-  await t.test('malformed closing boundary', async () => {
-    const { request } = createMultipartRequest({
-      files: [{
-        filename: 'broken.bin',
-        mimeType: 'application/octet-stream',
-        bytes: Buffer.from('broken'),
-      }],
-      includeClosingBoundary: false,
-    });
+  await t.test('empty body', async () => {
+    const request = createRawRequest(Buffer.alloc(0));
     await assert.rejects(
-      parseAttachmentMultipartRequest(request),
-      { code: 'ATTACHMENT_MULTIPART_INVALID' },
+      parseAttachmentRawRequest(request),
+      { code: 'ATTACHMENT_EMPTY' },
     );
   });
 
-  await t.test('missing file field', async () => {
-    const { request } = createMultipartRequest({
-      files: [],
-      metadata: [],
+  await t.test('declared length mismatch', async () => {
+    const request = createRawRequest(Buffer.from('bytes'), {
+      'content-length': '10',
     });
     await assert.rejects(
-      parseAttachmentMultipartRequest(request),
-      { code: 'ATTACHMENT_FILES_REQUIRED' },
-    );
-  });
-
-  await t.test('unexpected file field', async () => {
-    const { request } = createMultipartRequest({
-      files: [{
-        fieldName: 'avatar',
-        filename: 'unexpected.bin',
-        mimeType: 'application/octet-stream',
-        bytes: Buffer.from('unexpected'),
-      }],
-    });
-    await assert.rejects(
-      parseAttachmentMultipartRequest(request),
-      { code: 'ATTACHMENT_FILE_FIELD_INVALID' },
+      parseAttachmentRawRequest(request),
+      { code: 'ATTACHMENT_LENGTH_MISMATCH' },
     );
   });
 });
 
-test('multipart parser rejects oversized and structurally invalid metadata', async (t) => {
-  await t.test('oversized metadata field', async () => {
-    const { request } = createMultipartRequest({
-      files: [{
-        filename: 'file.bin',
-        mimeType: 'application/octet-stream',
-        bytes: Buffer.from('file'),
-      }],
-      metadata: JSON.stringify([{
-        name: 'x'.repeat(ATTACHMENT_MULTIPART_LIMITS.maxMetadataBytes),
-      }]),
+test('raw parser rejects malformed or oversized client metadata', async (t) => {
+  await t.test('malformed encoded filename', async () => {
+    const request = createRawRequest(Buffer.from('file'), {
+      'x-attachment-filename': '%E0%A4%A',
     });
     await assert.rejects(
-      parseAttachmentMultipartRequest(request),
-      { code: 'ATTACHMENT_METADATA_TOO_LARGE' },
+      parseAttachmentRawRequest(request),
+      { code: 'ATTACHMENT_METADATA_INVALID' },
     );
   });
 
-  await t.test('metadata count mismatch', async () => {
-    const { request } = createMultipartRequest({
-      files: [{
-        filename: 'file.bin',
-        mimeType: 'application/octet-stream',
-        bytes: Buffer.from('file'),
-      }],
-      metadata: [],
+  await t.test('oversized filename header', async () => {
+    const request = createRawRequest(Buffer.from('file'), {
+      'x-attachment-filename': 'x'.repeat(
+        ATTACHMENT_RAW_UPLOAD_LIMITS.maxFilenameHeaderBytes + 1,
+      ),
     });
     await assert.rejects(
-      parseAttachmentMultipartRequest(request),
+      parseAttachmentRawRequest(request),
+      { code: 'ATTACHMENT_METADATA_TOO_LARGE', status: 413 },
+    );
+  });
+
+  await t.test('invalid dimensions', async () => {
+    const request = createRawRequest(Buffer.from('file'), {
+      'x-attachment-width': '-1',
+    });
+    await assert.rejects(
+      parseAttachmentRawRequest(request),
+      { code: 'ATTACHMENT_METADATA_INVALID' },
+    );
+  });
+
+  await t.test('invalid MIME header', async () => {
+    const request = createRawRequest(Buffer.from('file'), {
+      'x-attachment-mime': 'image/jpeg\ntext/html',
+    });
+    await assert.rejects(
+      parseAttachmentRawRequest(request),
       { code: 'ATTACHMENT_METADATA_INVALID' },
     );
   });

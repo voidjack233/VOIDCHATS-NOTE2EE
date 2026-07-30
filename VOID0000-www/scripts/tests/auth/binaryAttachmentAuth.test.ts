@@ -45,10 +45,10 @@ test.after(() => {
   globalThis.fetch = nativeFetch;
 });
 
-test('attachment upload sends original File bytes as authenticated multipart data', async () => {
+test('attachment upload sends the original File as authenticated raw binary', async () => {
   resetAuthClientState();
   const originalBytes = new Uint8Array([0x00, 0xff, 0x10, 0x80, 0x01]);
-  const file = new File([originalBytes], 'sample.bin', {
+  const file = new File([originalBytes], 'sample file.bin', {
     type: 'application/octet-stream',
   });
   let uploadRequest: RequestInit | undefined;
@@ -75,34 +75,67 @@ test('attachment upload sends original File bytes as authenticated multipart dat
   };
 
   const [serialized] = await uploadAttachments('conversation-1', [file]);
-  assert.ok(uploadRequest?.body instanceof FormData);
+  assert.strictEqual(uploadRequest?.body, file);
   assert.equal(uploadRequest?.credentials, 'include');
-
-  const headers = new Headers(uploadRequest?.headers);
-  assert.equal(headers.has('Content-Type'), false);
-  assert.equal(headers.get('X-CSRF-Token'), 'csrf-one');
-
-  const formData = uploadRequest!.body as FormData;
-  const uploadedFiles = formData.getAll('files');
-  assert.equal(uploadedFiles.length, 1);
-  assert.ok(uploadedFiles[0] instanceof File);
   assert.deepEqual(
-    new Uint8Array(await (uploadedFiles[0] as File).arrayBuffer()),
+    new Uint8Array(await (uploadRequest!.body as File).arrayBuffer()),
     originalBytes,
   );
-  assert.deepEqual(JSON.parse(String(formData.get('metadata'))), [{
-    mime: 'application/octet-stream',
-    name: 'sample.bin',
-    size: originalBytes.length,
-  }]);
+
+  const headers = new Headers(uploadRequest?.headers);
+  assert.equal(headers.get('Content-Type'), 'application/octet-stream');
+  assert.equal(headers.get('X-CSRF-Token'), 'csrf-one');
+  assert.equal(headers.get('X-Attachment-Mime'), 'application/octet-stream');
+  assert.equal(
+    decodeURIComponent(headers.get('X-Attachment-Filename') || ''),
+    'sample file.bin',
+  );
 
   const descriptor = parseAttachment(serialized);
   assert.equal(
     descriptor.url,
     '/api/conversations/conversation-1/attachments/11111111-1111-4111-8111-111111111111',
   );
-  assert.equal(descriptor.name, 'sample.bin');
+  assert.equal(descriptor.name, 'sample file.bin');
   assert.equal(descriptor.size, originalBytes.length);
+});
+
+test('multiple files use separate raw requests and preserve result order', async () => {
+  resetAuthClientState();
+  const files = [
+    new File(['first'], 'first.bin'),
+    new File(['second'], 'second.bin'),
+  ];
+  const uploadBodies: BodyInit[] = [];
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/api/csrf/csrf-token')) {
+      return jsonResponse({ success: true, csrfToken: 'csrf-many' });
+    }
+    if (url.endsWith('/attachments')) {
+      uploadBodies.push(init!.body!);
+      const index = uploadBodies.length;
+      return jsonResponse({
+        success: true,
+        urls: [
+          `/api/conversations/conversation-1/attachments/11111111-1111-4111-8111-11111111111${index}`,
+        ],
+        attachments: [{
+          mime: 'application/octet-stream',
+          size: files[index - 1]!.size,
+        }],
+      });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  const results = await uploadAttachments('conversation-1', files);
+  assert.equal(uploadBodies.length, 2);
+  assert.strictEqual(uploadBodies[0], files[0]);
+  assert.strictEqual(uploadBodies[1], files[1]);
+  assert.match(results[0]!, /11111111-1111-4111-8111-111111111111/);
+  assert.match(results[1]!, /11111111-1111-4111-8111-111111111112/);
 });
 
 test('ordinary JSON mutations retain the application/json content type', async () => {
@@ -128,16 +161,11 @@ test('ordinary JSON mutations retain the application/json content type', async (
   assert.equal(headers.get('X-CSRF-Token'), 'csrf-json');
 });
 
-test('a 401 refresh retries the same reusable FormData with a fresh CSRF token', async () => {
+test('a 401 refresh retries the same reusable File with binary headers intact', async () => {
   resetAuthClientState();
-  const formData = new FormData();
-  formData.append('files', new File(['retry-bytes'], 'retry.bin'), 'retry.bin');
-  formData.append('metadata', JSON.stringify([{
-    name: 'retry.bin',
-    mime: 'application/octet-stream',
-    size: 11,
-  }]));
-
+  const file = new File(['retry-bytes'], 'retry.bin', {
+    type: 'application/octet-stream',
+  });
   let csrfRequests = 0;
   let refreshRequests = 0;
   const uploadRequests: Array<{
@@ -177,7 +205,11 @@ test('a 401 refresh retries the same reusable FormData with a fresh CSRF token',
     '/api/conversations/conversation-1/attachments',
     {
       method: 'POST',
-      body: formData,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Attachment-Filename': encodeURIComponent(file.name),
+      },
+      body: file,
     },
   );
 
@@ -185,11 +217,10 @@ test('a 401 refresh retries the same reusable FormData with a fresh CSRF token',
   assert.equal(refreshRequests, 1);
   assert.equal(csrfRequests, 2);
   assert.equal(uploadRequests.length, 2);
-  assert.strictEqual(uploadRequests[0].body, formData);
-  assert.strictEqual(uploadRequests[1].body, formData);
-  assert.equal(uploadRequests[0].contentType, null);
-  assert.equal(uploadRequests[1].contentType, null);
+  assert.strictEqual(uploadRequests[0].body, file);
+  assert.strictEqual(uploadRequests[1].body, file);
+  assert.equal(uploadRequests[0].contentType, 'application/octet-stream');
+  assert.equal(uploadRequests[1].contentType, 'application/octet-stream');
   assert.equal(uploadRequests[0].csrfToken, 'csrf-1');
   assert.equal(uploadRequests[1].csrfToken, 'csrf-2');
-  assert.equal((uploadRequests[1].body as FormData).getAll('files').length, 1);
 });

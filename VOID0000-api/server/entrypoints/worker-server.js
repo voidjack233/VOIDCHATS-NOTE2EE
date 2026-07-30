@@ -19,6 +19,20 @@ const {
 const {
   attachmentLifecycle,
 } = await import('../attachments/lifecycle.js');
+const {
+  createAttachmentReservationReconciler,
+  createAttachmentReservationReconciliationRunner,
+  createPostgresAttachmentReservationStore,
+  createScyllaAttachmentMessageReader,
+} = await import('../attachments/reservationReconciliation.js');
+const { pool } = await import('../db.js');
+const {
+  cassandra,
+  default: scylla,
+} = await import('../scylla.js');
+const {
+  resolveMessageStorageConversation,
+} = await import('../utils/messageConversation.js');
 const { default: valkey } = await import('../valkey.js');
 const { cleanupAllExpired } = await import('../utils/cleanUpExpired.js');
 
@@ -31,6 +45,27 @@ const stagedAttachmentCleanup = createStagedAttachmentCleanupRunner({
   lifecycle: attachmentLifecycle,
   lockClient: valkey,
 });
+const attachmentReservationStore = createPostgresAttachmentReservationStore({
+  dbPool: pool,
+  freshStagedTtlSeconds: attachmentLifecycle.config.reservationTtlSeconds,
+});
+const attachmentMessageReader = createScyllaAttachmentMessageReader({
+  dbPool: pool,
+  scyllaClient: scylla,
+  cassandraDriver: cassandra,
+  resolveStorageConversation: resolveMessageStorageConversation,
+});
+const attachmentReservationReconciler = createAttachmentReservationReconciler({
+  ...attachmentReservationStore,
+  loadStoredMessage: attachmentMessageReader,
+  batchSize: attachmentLifecycle.config.reconciliationBatchSize,
+});
+const attachmentReservationReconciliation =
+  createAttachmentReservationReconciliationRunner({
+    reconciler: attachmentReservationReconciler,
+    lockClient: valkey,
+    intervalSeconds: attachmentLifecycle.config.cleanupIntervalSeconds,
+  });
 
 async function runCleanup() {
   try {
@@ -43,14 +78,19 @@ async function runCleanup() {
 
 await runCleanup();
 const cleanupInterval = setInterval(runCleanup, 6 * 60 * 60 * 1000);
+await attachmentReservationReconciliation.runOnce().catch((error) => {
+  console.error('❌ Initial attachment reservation reconciliation failed:', error);
+});
 await stagedAttachmentCleanup.runOnce().catch((error) => {
   console.error('❌ Initial staged attachment cleanup failed:', error);
 });
+attachmentReservationReconciliation.start();
 stagedAttachmentCleanup.start();
 
 async function shutdown(signal) {
   console.log(`Worker service received ${signal}, shutting down...`);
   clearInterval(cleanupInterval);
+  attachmentReservationReconciliation.stop();
   stagedAttachmentCleanup.stop();
   await Promise.allSettled([
     attachmentSanitizerServer.close(),

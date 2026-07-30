@@ -120,37 +120,74 @@ export async function sendTypingStart(conversationId: string): Promise<void> {
   if (!data.success) throw createApiError(data);
 }
 
+function encodeAttachmentFilename(filename?: string): string | null {
+  if (!filename) return null;
+  const characters = Array.from(filename).slice(0, 255);
+  while (characters.length > 0) {
+    try {
+      const encoded = encodeURIComponent(characters.join(''));
+      if (encoded.length <= 2048) return encoded;
+    } catch {
+      return null;
+    }
+    characters.pop();
+  }
+  return null;
+}
+
+function normalizeAttachmentMime(value?: string): string {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return normalized.length > 0 &&
+    normalized.length <= 255 &&
+    /^[\x21-\x7e]+$/.test(normalized)
+    ? normalized
+    : 'application/octet-stream';
+}
+
+function createAttachmentUploadHeaders(
+  attachment: Awaited<ReturnType<typeof prepareAttachmentFile>>['attachment'],
+): Headers {
+  const headers = new Headers({
+    'Content-Type': 'application/octet-stream',
+    'X-Attachment-Mime': normalizeAttachmentMime(attachment.mime),
+  });
+  const encodedFilename = encodeAttachmentFilename(attachment.name);
+  if (encodedFilename) headers.set('X-Attachment-Filename', encodedFilename);
+  if (attachment.width) headers.set('X-Attachment-Width', String(attachment.width));
+  if (attachment.height) headers.set('X-Attachment-Height', String(attachment.height));
+  if (attachment.blurhash) {
+    headers.set('X-Attachment-Blurhash', attachment.blurhash.slice(0, 256));
+  }
+  return headers;
+}
+
 export async function uploadAttachments(conversationId: string, files: File[]): Promise<string[]> {
   const prepared = await Promise.all(files.map(prepareAttachmentFile));
-  const formData = new FormData();
-  prepared.forEach(({ file }) => {
-    formData.append('files', file, file.name || 'attachment');
-  });
-  formData.append(
-    'metadata',
-    JSON.stringify(prepared.map(({ attachment }) => attachment)),
-  );
 
-  const { response, data } = await withRequestTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS, 'Attachment upload', async (signal) => {
-    const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
-      method: 'POST',
-      signal,
-      body: formData,
+  const uploadedAttachments: string[] = [];
+  for (const preparedAttachment of prepared) {
+    const { file, attachment } = preparedAttachment;
+    const { response, data } = await withRequestTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS, 'Attachment upload', async (signal) => {
+      const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
+        method: 'POST',
+        signal,
+        headers: createAttachmentUploadHeaders(attachment),
+        body: file,
+      });
+      return { response, data: await response.json() };
     });
-    return { response, data: await response.json() };
-  });
-  if (!response.ok || !data.success) {
-    throw createApiError(data, {
-      status: response.status,
-      statusCode: response.status,
-      retryAfterMs: getRetryAfterMsFromResponse(response),
-    });
-  }
-  const urls = Array.isArray(data.urls) ? data.urls as string[] : [];
-  if (urls.length !== prepared.length) throw new Error('Attachment upload response was incomplete');
-  const storedAttachments = Array.isArray(data.attachments) ? data.attachments : [];
-  return urls.map((url, index) => {
-    const stored = storedAttachments[index];
+    if (!response.ok || !data.success) {
+      throw createApiError(data, {
+        status: response.status,
+        statusCode: response.status,
+        retryAfterMs: getRetryAfterMsFromResponse(response),
+      });
+    }
+
+    const urls = Array.isArray(data.urls) ? data.urls as string[] : [];
+    if (urls.length !== 1) throw new Error('Attachment upload response was incomplete');
+    const storedAttachments = Array.isArray(data.attachments) ? data.attachments : [];
+    const stored = storedAttachments[0];
     const storedMetadata = stored && typeof stored === 'object'
       ? {
           ...(typeof stored.mime === 'string' ? { mime: stored.mime } : {}),
@@ -160,12 +197,14 @@ export async function uploadAttachments(conversationId: string, files: File[]): 
         }
       : {};
 
-    return serializeAttachment({
-      ...prepared[index]!.attachment,
+    uploadedAttachments.push(serializeAttachment({
+      ...attachment,
       ...storedMetadata,
-      url,
-    });
-  });
+      url: urls[0]!,
+    }));
+  }
+
+  return uploadedAttachments;
 }
 
 export async function deleteStagedAttachment(

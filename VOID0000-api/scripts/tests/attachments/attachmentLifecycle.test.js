@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   AttachmentLifecycleError,
   DEFAULT_ATTACHMENT_CLEANUP_BATCH_SIZE,
+  DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE,
   DEFAULT_STAGED_ATTACHMENT_MAX_BYTES,
   DEFAULT_STAGED_ATTACHMENT_MAX_COUNT,
   assertStagedUploadQuota,
@@ -41,6 +42,7 @@ function lifecycleConfig(overrides = {}) {
     stagedMaxBytes: 100 * 1024 * 1024,
     cleanupIntervalSeconds: 900,
     cleanupBatchSize: 50,
+    reconciliationBatchSize: 25,
     ...overrides,
   };
 }
@@ -337,11 +339,16 @@ test('attachment lifecycle configuration and upload limiter use bounded safe def
     ATTACHMENT_STAGED_MAX_COUNT: '0',
     ATTACHMENT_STAGED_MAX_BYTES: '-1',
     ATTACHMENT_CLEANUP_BATCH_SIZE: '999999',
+    ATTACHMENT_RESERVATION_RECONCILIATION_BATCH_SIZE: '999999',
   });
 
   assert.equal(config.stagedMaxCount, DEFAULT_STAGED_ATTACHMENT_MAX_COUNT);
   assert.equal(config.stagedMaxBytes, DEFAULT_STAGED_ATTACHMENT_MAX_BYTES);
   assert.equal(config.cleanupBatchSize, DEFAULT_ATTACHMENT_CLEANUP_BATCH_SIZE);
+  assert.equal(
+    config.reconciliationBatchSize,
+    DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE,
+  );
   assert.equal(RATE_LIMIT_POLICIES.attachmentUpload.scope, 'user');
   assert.equal(RATE_LIMIT_POLICIES.attachmentUpload.bucketSize, 30);
 });

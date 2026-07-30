@@ -8,9 +8,9 @@ import {
   attachmentLifecycle,
 } from '../../attachments/lifecycle.js';
 import {
-  AttachmentMultipartError,
-  parseAttachmentMultipartRequest,
-} from '../../attachments/multipart.js';
+  AttachmentRawUploadError,
+  parseAttachmentRawRequest,
+} from '../../attachments/rawUpload.js';
 import {
   createAttachmentUploadProcessor,
 } from '../../attachments/uploadProcessor.js';
@@ -234,7 +234,7 @@ async function streamAttachmentObject(res, objectKey) {
 }
 
 // POST /api/conversations/:conversationId/attachments
-// multipart/form-data: repeated `files` parts plus one bounded `metadata` JSON field.
+// application/octet-stream: one raw file plus bounded untrusted metadata headers.
 // Returns: { urls: ['/api/conversations/:id/attachments/:attachmentId'] }
 router.post('/', attachmentUploadLimiter, async (req, res) => {
   const userId = req.user.id;
@@ -272,15 +272,15 @@ router.post('/', attachmentUploadLimiter, async (req, res) => {
 
   let parsedUpload;
   try {
-    parsedUpload = await parseAttachmentMultipartRequest(req);
+    parsedUpload = await parseAttachmentRawRequest(req);
   } catch (error) {
-    if (error instanceof AttachmentMultipartError) {
+    if (error instanceof AttachmentRawUploadError) {
       return res.status(error.status).json(error.body);
     }
-    console.error('Attachment multipart parsing error:', error);
+    console.error('Attachment binary parsing error:', error);
     return res.status(400).json({
-      error: 'Attachment multipart payload is malformed',
-      code: 'ATTACHMENT_MULTIPART_INVALID',
+      error: 'Attachment binary payload is malformed',
+      code: 'ATTACHMENT_UPLOAD_INVALID',
     });
   }
 
@@ -288,7 +288,7 @@ router.post('/', attachmentUploadLimiter, async (req, res) => {
     const response = await processAttachmentUpload({
       userId,
       conversation,
-      files: parsedUpload.files,
+      files: [parsedUpload.file],
       buildPrivateUrl: buildPrivateAttachmentUrl,
     });
     return res.json(response);

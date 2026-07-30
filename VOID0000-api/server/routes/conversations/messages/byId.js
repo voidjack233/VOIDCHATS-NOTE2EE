@@ -1,9 +1,12 @@
 import { Router } from 'express';
+import {
+  MessageEditAttachmentError,
+  preserveMessageEditAttachments,
+} from '../../../attachments/editPolicy.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { debugLog } from '../../../utils/debugLog.js';
 import {
   attachSignedAttachmentUrls,
-  normalizeStoredAttachments,
 } from '../../../utils/attachmentDelivery.js';
 import {
   batchFetchReactions,
@@ -291,8 +294,8 @@ router.put('/:messageId', async (req, res) => {
   const { conversationId: conversationIdentifier, messageId } = req.params;
   const { content, message_type, attachments, forwarded, mentions, link_preview } = req.body;
 
-  if (typeof content !== 'string' || (!content.trim() && (!Array.isArray(attachments) || attachments.length === 0))) {
-    return res.status(400).json({ error: 'Message content or attachments required' });
+  if (typeof content !== 'string') {
+    return res.status(400).json({ error: 'Message content is required' });
   }
 
   try {
@@ -318,7 +321,8 @@ router.put('/:messageId', async (req, res) => {
     }
 
     const messageResult = await scylla.execute(
-      `SELECT sender_id, is_deleted, message_type FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      `SELECT sender_id, is_deleted, message_type, attachments
+       FROM messages WHERE conversation_id = ? AND message_id = ?`,
       [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
@@ -330,26 +334,41 @@ router.put('/:messageId', async (req, res) => {
       return res.status(403).json({ error: 'Can only edit your own messages' });
     }
     if (messageRow.is_deleted) return res.status(400).json({ error: 'Cannot edit a deleted message' });
+
+    let storedAttachments;
+    try {
+      storedAttachments = preserveMessageEditAttachments(
+        messageRow.attachments,
+        attachments,
+      );
+    } catch (error) {
+      if (error instanceof MessageEditAttachmentError) {
+        return res.status(error.status).json(error.body);
+      }
+      throw error;
+    }
+
+    const normalizedContent = content.trim();
+    if (!normalizedContent && storedAttachments.length === 0) {
+      return res.status(400).json({ error: 'Message content or attachments required' });
+    }
+
     const nextMessageType = typeof message_type === 'string' && message_type.trim()
       ? message_type.trim()
       : (messageRow.message_type || 'text');
     const storedForwarded = serializeStoredMessageMetadata(normalizedForwarded);
     const storedMentions = serializeStoredMessageMetadata(normalizedMentions);
     const storedLinkPreview = serializeStoredMessageMetadata(link_preview);
-    const normalizedAttachments = normalizeStoredAttachments(attachments);
-    const attachList = normalizedAttachments.length > 0 ? normalizedAttachments : null;
-    const normalizedContent = content.trim();
 
     const now = new Date();
 
     await scylla.execute(
-      `UPDATE messages SET content = ?, message_type = ?, attachments = ?, forwarded = ?, mentions = ?, link_preview = ?,
+      `UPDATE messages SET content = ?, message_type = ?, forwarded = ?, mentions = ?, link_preview = ?,
          is_edited = true, edited_at = ?
        WHERE conversation_id = ? AND message_id = ?`,
       [
         normalizedContent,
         nextMessageType,
-        attachList,
         storedForwarded,
         storedMentions,
         storedLinkPreview,
@@ -366,7 +385,7 @@ router.put('/:messageId', async (req, res) => {
       message_id: messageId,
       content: normalizedContent,
       message_type: nextMessageType,
-      attachments: attachList || [],
+      attachments: storedAttachments,
       forwarded: normalizedForwarded || null,
       mentions: normalizedMentions,
       link_preview: link_preview || null,
