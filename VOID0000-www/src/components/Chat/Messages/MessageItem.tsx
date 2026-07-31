@@ -527,7 +527,7 @@ const MessageItem = memo(function MessageItem({
   const isRightAligned = isOwn && density === 'comfortable';
   const liveArrivalClassName = animateArrival && !isSystem
     ? `message-live-arrival ${
-        isOwn ? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'
+        isRightAligned ? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'
       }`
     : '';
   const canSwipeReply = Boolean(onReply && !isFailed);

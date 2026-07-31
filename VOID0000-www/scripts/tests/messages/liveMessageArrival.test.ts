@@ -215,7 +215,11 @@ test('message entrance uses one subtle transform and opacity animation', async (
   );
   assert.match(
     messageItem,
-    /isOwn \? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'/,
+    /const isRightAligned = isOwn && density === 'comfortable'/,
+  );
+  assert.match(
+    messageItem,
+    /isRightAligned \? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'/,
   );
   assert.match(
     messageItem,
