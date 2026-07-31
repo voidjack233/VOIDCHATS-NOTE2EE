@@ -526,8 +526,8 @@ const MessageItem = memo(function MessageItem({
   const failedStatusLabel = 'failed to send';
   const isRightAligned = isOwn && density === 'comfortable';
   const liveArrivalClassName = animateArrival && !isSystem
-    ? `message-live-arrival message-live-arrival-${density} ${
-        isRightAligned ? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'
+    ? `message-live-arrival ${
+        isOwn ? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'
       }`
     : '';
   const canSwipeReply = Boolean(onReply && !isFailed);

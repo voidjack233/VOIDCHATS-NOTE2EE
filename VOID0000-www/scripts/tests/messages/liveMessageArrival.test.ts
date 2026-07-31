@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import type { Message } from '../../../src/Services/Chat/chatService';
 import type { MessageStreamEvent } from '../../../src/Services/hooks/Chats/MessageList/messageListTypes';
@@ -146,4 +147,78 @@ test('history events and events for another conversation are ignored', () => {
 
   assert.deepEqual(result.arrivalMessageIds, []);
   assert.equal(result.lastSequence, 2);
+});
+
+test('reaction, edit, preview, and attachment updates do not reanimate an existing identity', () => {
+  const seenIdentities = new Set<string>();
+  const initialMessage = makeMessage();
+  const first = selectLiveMessageArrivals({
+    events: [makeEvent(1, initialMessage)],
+    lastSequence: 0,
+    conversationId: 'conversation-a',
+    currentUserId: 'user-a',
+    visibleMessages: [],
+    seenIdentities,
+  });
+  assert.deepEqual(first.arrivalMessageIds, ['message-1']);
+
+  const updatedMessage = makeMessage({
+    content: 'edited',
+    is_edited: true,
+    reactions: { wave: ['user-a'] },
+    attachments: ['updated-attachment'],
+    link_preview: { url: 'https://example.com' },
+  });
+  const updated = selectLiveMessageArrivals({
+    events: [makeEvent(2, updatedMessage)],
+    lastSequence: first.lastSequence,
+    conversationId: 'conversation-a',
+    currentUserId: 'user-a',
+    visibleMessages: [updatedMessage],
+    seenIdentities,
+  });
+
+  assert.deepEqual(updated.arrivalMessageIds, []);
+});
+
+test('message entrance uses one subtle transform and opacity animation', async () => {
+  const css = await readFile(
+    new URL('../../../src/index.css', import.meta.url),
+    'utf8',
+  );
+  const start = css.indexOf('@keyframes message-live-arrival');
+  const end = css.indexOf('@media (prefers-reduced-motion: reduce)', start);
+  assert.ok(start >= 0 && end > start);
+  const animationCss = css.slice(start, end);
+
+  assert.match(animationCss, /opacity:\s*0[\s\S]+opacity:\s*1/);
+  assert.match(animationCss, /translate3d\(var\(--message-live-arrival-start-x\), 0, 0\)/);
+  assert.match(animationCss, /translate3d\(0, 0, 0\)/);
+  assert.match(animationCss, /180ms cubic-bezier\(0\.2, 0\.8, 0\.2, 1\)/);
+  assert.match(animationCss, /message-live-arrival-from-left[\s\S]+-10px/);
+  assert.match(animationCss, /message-live-arrival-from-right[\s\S]+10px/);
+  assert.doesNotMatch(
+    animationCss,
+    /overshoot|70%|scale|rotate|translateY|height|width|margin|padding/,
+  );
+  assert.match(
+    css,
+    /@media \(prefers-reduced-motion: reduce\)[\s\S]+\.message-live-arrival\s*\{[\s\S]+animation:\s*none/,
+  );
+
+  const messageItem = await readFile(
+    new URL(
+      '../../../src/components/Chat/Messages/MessageItem.tsx',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  assert.match(
+    messageItem,
+    /isOwn \? 'message-live-arrival-from-right' : 'message-live-arrival-from-left'/,
+  );
+  assert.match(
+    messageItem,
+    /className=\{`flex min-w-0 max-w-full flex-col[\s\S]+liveArrivalClassName/,
+  );
 });
