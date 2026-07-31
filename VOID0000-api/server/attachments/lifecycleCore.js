@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { ATTACHMENT_MESSAGE_WRITE_POLICY } from './messageConsistency.js';
+
 const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const PROTECTED_ATTACHMENT_PATH_PATTERN = new RegExp(
   `^/api/conversations/[^/?#]+/attachments/(${UUID_SOURCE})/?$`,
@@ -477,7 +479,8 @@ export function createAttachmentLifecycle({
              reserved_at = NOW(),
              reserved_until = NOW() + ($4 * INTERVAL '1 second'),
              reservation_id = $2,
-             message_id = $3
+             message_id = $3,
+             scylla_write_policy = $5
          WHERE id = ANY($1::uuid[])
            AND status = 'staged'
            AND expires_at > NOW()
@@ -487,6 +490,7 @@ export function createAttachmentLifecycle({
           reservationId,
           messageId,
           config.reservationTtlSeconds,
+          ATTACHMENT_MESSAGE_WRITE_POLICY,
         ],
       );
       if (updateResult.rowCount !== attachmentIds.length) {
@@ -544,7 +548,8 @@ export function createAttachmentLifecycle({
            reserved_at = NULL,
            reserved_until = NULL,
            reservation_id = NULL,
-           message_id = NULL
+           message_id = NULL,
+           scylla_write_policy = NULL
        WHERE id = ANY($1::uuid[])
          AND status = 'reserved'
          AND reservation_id = $2

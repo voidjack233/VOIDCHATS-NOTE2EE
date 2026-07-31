@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   deleteStagedAttachment,
   editMessage,
@@ -21,6 +21,11 @@ import {
 import { resolveMessageMentions } from '../../Chat/messageMentions';
 import { fetchLinkPreview, getFirstPreviewableUrl } from '../../Chat/linkPreviewService';
 import { parseAttachment, serializeAttachment } from '../../Chat/messageAttachments';
+import {
+  canStartComposerAttachmentUpload,
+  cleanupPendingComposerAttachmentsForEdit,
+  discardCompletedComposerUpload,
+} from './composerAttachmentPolicy';
 
 export interface PendingAttachment {
   id: string;
@@ -145,6 +150,7 @@ export const useMessageInput = ({
   const removedUploadingAttachmentIdsRef = useRef<Set<string>>(new Set());
   const attachmentsRef = useRef<PendingAttachment[]>([]);
   const conversationIdRef = useRef(conversation.id);
+  const editingMessageRef = useRef(editingMessage);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -154,7 +160,12 @@ export const useMessageInput = ({
   const attachmentsRestrictionLabel = attachmentAccess.required === 'everyone'
     ? null
     : attachmentAccess.required === 'admins' ? 'Admins' : 'Owner';
+  const attachmentsEnabled = canStartComposerAttachmentUpload({
+    attachmentsAllowed,
+    editingMessageActive: Boolean(editingMessage),
+  });
   attachmentsRef.current = attachments;
+  editingMessageRef.current = editingMessage;
   const resolveDraftMentions = useCallback((draftText: string): MessageMentionMetadata[] => (
     conversation.type === 'group' ? resolveMessageMentions(draftText, members || []) : []
   ), [conversation.type, members]);
@@ -172,6 +183,24 @@ export const useMessageInput = ({
     setDismissedLinkPreviewUrl(null);
     inputRef.current?.focus();
   }, [editingMessage]);
+
+  const editingMessageId = editingMessage?.message_id || null;
+  useLayoutEffect(() => {
+    const activeEdit = editingMessageRef.current;
+    if (!activeEdit) return;
+
+    const pendingAttachments = attachmentsRef.current;
+    const draftConversationId = conversationIdRef.current;
+    attachmentsRef.current = [];
+    setAttachments([]);
+    void cleanupPendingComposerAttachmentsForEdit({
+      conversationId: draftConversationId,
+      deleteStaged: deleteStagedAttachment,
+      pendingAttachments,
+      removedUploadingIds: removedUploadingAttachmentIdsRef.current,
+      storedMessageAttachments: activeEdit.attachments || [],
+    });
+  }, [editingMessageId]);
 
   useEffect(() => {
     const previousConversationId = conversationIdRef.current;
@@ -247,12 +276,24 @@ export const useMessageInput = ({
       }
     }
 
+    if (editingMessageRef.current) {
+      removedUploadingAttachmentIdsRef.current.delete(id);
+      return;
+    }
+
     try {
       const [url] = await uploadAttachments(conversation.id, [file]);
-      if (removedUploadingAttachmentIdsRef.current.delete(id)) {
-        if (url) {
-          void deleteStagedAttachment(conversation.id, url).catch(() => {});
-        }
+      const activeEdit = editingMessageRef.current as Message | null | undefined;
+      const discarded = await discardCompletedComposerUpload({
+        attachmentId: id,
+        conversationId: conversation.id,
+        deleteStaged: deleteStagedAttachment,
+        editModeActive: Boolean(activeEdit),
+        removedUploadingIds: removedUploadingAttachmentIdsRef.current,
+        storedMessageAttachments: activeEdit?.attachments || [],
+        uploadedUrl: url,
+      });
+      if (discarded) {
         return;
       }
       setAttachments((previous) => previous.map((attachment) => (
@@ -261,7 +302,10 @@ export const useMessageInput = ({
           : attachment
       )));
     } catch (error) {
-      if (removedUploadingAttachmentIdsRef.current.delete(id)) {
+      if (
+        editingMessageRef.current ||
+        removedUploadingAttachmentIdsRef.current.delete(id)
+      ) {
         return;
       }
       setAttachments((previous) => previous.map((attachment) => (
@@ -273,7 +317,7 @@ export const useMessageInput = ({
   }, [conversation.id]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
-    if (!attachmentsAllowed) return;
+    if (!attachmentsEnabled) return;
     let oversizedCount = 0;
     const accepted = Array.from(files).filter((file) => {
       if (file.size <= MAX_ATTACHMENT_FILE_SIZE) return true;
@@ -303,7 +347,7 @@ export const useMessageInput = ({
     if (filesToAdd.length === 0) return;
     setAttachments((previous) => [...previous, ...filesToAdd]);
     filesToAdd.forEach(({ id, file }) => void uploadFile(file, id));
-  }, [attachments.length, attachmentsAllowed, uploadFile]);
+  }, [attachments.length, attachmentsEnabled, uploadFile]);
 
   const removeAttachment = useCallback((id: string) => {
     const target = attachments.find((attachment) => attachment.id === id);
@@ -322,16 +366,17 @@ export const useMessageInput = ({
     )));
   }, []);
   const retryAttachment = useCallback((id: string) => {
+    if (!attachmentsEnabled) return;
     const target = attachments.find((attachment) => attachment.id === id);
     if (!target?.file || target.uploading) return;
     setAttachments((previous) => previous.map((attachment) => (
       attachment.id === id ? { ...attachment, uploading: true, error: undefined, url: null } : attachment
     )));
     void uploadFile(target.file, id);
-  }, [attachments, uploadFile]);
+  }, [attachments, attachmentsEnabled, uploadFile]);
 
   const handlePaste = useCallback((event: React.ClipboardEvent) => {
-    if (!attachmentsAllowed) return;
+    if (!attachmentsEnabled) return;
     const files = Array.from(event.clipboardData.items)
       .filter((item) => item.kind === 'file')
       .map((item) => item.getAsFile())
@@ -339,12 +384,12 @@ export const useMessageInput = ({
     if (files.length === 0) return;
     event.preventDefault();
     addFiles(files);
-  }, [addFiles, attachmentsAllowed]);
+  }, [addFiles, attachmentsEnabled]);
 
   const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    if (attachmentsAllowed && event.target.files) addFiles(event.target.files);
+    if (attachmentsEnabled && event.target.files) addFiles(event.target.files);
     event.target.value = '';
-  }, [addFiles, attachmentsAllowed]);
+  }, [addFiles, attachmentsEnabled]);
 
   const getPlaceholder = () => {
     if (!editingMessage && slowmodeRemaining > 0) return `Slowmode active: wait ${slowmodeRemaining}s`;
@@ -354,8 +399,13 @@ export const useMessageInput = ({
   };
 
   const isSlowmodeBlocked = !editingMessage && slowmodeRemaining > 0 && !['owner', 'admin'].includes(conversation.role);
+  const hasStoredEditAttachments = Boolean(editingMessage?.attachments?.length);
   const canSend = !sending && !isSlowmodeBlocked &&
-    (text.trim().length > 0 || attachments.some((attachment) => attachment.url)) &&
+    (
+      text.trim().length > 0 ||
+      hasStoredEditAttachments ||
+      attachments.some((attachment) => attachment.url)
+    ) &&
     !attachments.some((attachment) => attachment.uploading);
 
   useEffect(() => {
@@ -577,6 +627,7 @@ export const useMessageInput = ({
     linkPreviewLoading,
     attachmentAlert,
     attachmentsAllowed,
+    attachmentsEnabled,
     attachmentsRestrictionLabel,
     inputRef,
     mediaInputRef,
@@ -587,8 +638,8 @@ export const useMessageInput = ({
     handleKeyDown,
     handleCancelAction,
     handlePaste,
-    openMediaPicker: () => attachmentsAllowed && mediaInputRef.current?.click(),
-    openFilePicker: () => attachmentsAllowed && fileInputRef.current?.click(),
+    openMediaPicker: () => attachmentsEnabled && mediaInputRef.current?.click(),
+    openFilePicker: () => attachmentsEnabled && fileInputRef.current?.click(),
     handleFileChange,
     removeAttachment,
     toggleAttachmentSpoiler,

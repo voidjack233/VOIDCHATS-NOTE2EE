@@ -13,6 +13,9 @@ import {
   extractProtectedAttachmentIds,
   resolveAttachmentLifecycleConfig,
 } from '../../../server/attachments/lifecycleCore.js';
+import {
+  ATTACHMENT_MESSAGE_WRITE_POLICY,
+} from '../../../server/attachments/messageConsistency.js';
 import { createStagedAttachmentCleanupRunner } from '../../../server/attachments/cleanup.js';
 import { RATE_LIMIT_POLICIES } from '../../../server/middleware/rateLimits/policies.js';
 
@@ -76,6 +79,7 @@ function createMemoryInfrastructure(initialRows = []) {
       reservation_id: null,
       committed_at: null,
       message_id: null,
+      scylla_write_policy: null,
       ...row,
       id: String(row.id).toLowerCase(),
     },
@@ -126,6 +130,7 @@ function createMemoryInfrastructure(initialRows = []) {
         reservation_id: null,
         committed_at: null,
         message_id: null,
+        scylla_write_policy: null,
       });
       return { rows: [], rowCount: 1 };
     }
@@ -171,7 +176,7 @@ function createMemoryInfrastructure(initialRows = []) {
       query.startsWith('UPDATE attachment_objects') &&
       query.includes("SET status = 'reserved'")
     ) {
-      const [ids, reservationId, messageId, ttlSeconds] = params;
+      const [ids, reservationId, messageId, ttlSeconds, scyllaWritePolicy] = params;
       const updated = [];
       for (const id of ids) {
         const row = rows.get(String(id).toLowerCase());
@@ -182,6 +187,7 @@ function createMemoryInfrastructure(initialRows = []) {
           reserved_until: new Date(NOW.getTime() + ttlSeconds * 1000),
           reservation_id: reservationId,
           message_id: messageId,
+          scylla_write_policy: scyllaWritePolicy,
         });
         updated.push({ id: row.id });
       }
@@ -234,6 +240,7 @@ function createMemoryInfrastructure(initialRows = []) {
           reserved_until: null,
           reservation_id: null,
           message_id: null,
+          scylla_write_policy: null,
         });
         rowCount += 1;
       }
@@ -548,6 +555,10 @@ test('reservation is exclusive, commits once, and supports exact idempotent reco
     messageId: MESSAGE_ID,
   });
   assert.equal(first.state, 'reserved_new');
+  assert.equal(
+    infrastructure.rows.get(ATTACHMENT_ID).scylla_write_policy,
+    ATTACHMENT_MESSAGE_WRITE_POLICY,
+  );
 
   const concurrentSameOperation = await lifecycle.reserveForMessage({
     attachmentIds: [ATTACHMENT_ID],
@@ -616,6 +627,7 @@ test('confirmed message persistence failure releases its owned reservation safel
   assert.equal(row.status, 'staged');
   assert.equal(row.reservation_id, null);
   assert.equal(row.message_id, null);
+  assert.equal(row.scylla_write_policy, null);
 });
 
 test('cleanup removes only expired staged objects and preserves tracking on MinIO failure', async () => {

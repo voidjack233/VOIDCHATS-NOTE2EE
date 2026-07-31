@@ -8,6 +8,9 @@ import {
   createPostgresAttachmentReservationStore,
   createScyllaAttachmentMessageReader,
 } from '../../../server/attachments/reservationReconciliation.js';
+import {
+  ATTACHMENT_MESSAGE_WRITE_POLICY,
+} from '../../../server/attachments/messageConsistency.js';
 
 const CONVERSATION_ID = '11111111-1111-4111-8111-111111111111';
 const STORAGE_CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
@@ -22,12 +25,16 @@ function createGroup() {
     uploaderId: USER_ID,
     reservationId: 'client-message-1',
     messageId: MESSAGE_ID,
+    scyllaWritePolicy: ATTACHMENT_MESSAGE_WRITE_POLICY,
     attachmentIds: [ATTACHMENT_ID],
   };
 }
 
-function createStateHarness({ message, loadError } = {}) {
-  const group = createGroup();
+function createStateHarness({ message, loadError, groupOverrides } = {}) {
+  const group = {
+    ...createGroup(),
+    ...groupOverrides,
+  };
   let state = 'reserved';
   let freshExpiryAssigned = false;
   const reconciler = createAttachmentReservationReconciler({
@@ -97,6 +104,24 @@ test('definitively missing Scylla message returns reservation to staged', async 
   });
   assert.equal(harness.state, 'staged');
   assert.equal(harness.freshExpiryAssigned, true);
+});
+
+test('historical reservation without quorum policy remains reserved after a negative read', async () => {
+  const harness = createStateHarness({
+    message: null,
+    groupOverrides: { scyllaWritePolicy: null },
+  });
+
+  assert.deepEqual(await harness.reconciler.runOnce(), {
+    selected: 1,
+    committed: 0,
+    released: 0,
+    mismatched: 0,
+    uncertain: 1,
+    stale: 0,
+  });
+  assert.equal(harness.state, 'reserved');
+  assert.equal(harness.freshExpiryAssigned, false);
 });
 
 test('Scylla failure leaves the reservation unchanged for retry', async () => {
@@ -221,6 +246,36 @@ test('Scylla reader resolves storage identity and uses LOCAL_QUORUM', async () =
   assert.equal(executeInput.options.consistency, 6);
 });
 
+test('malformed Scylla read results are treated as uncertain', async () => {
+  const loadStoredMessage = createScyllaAttachmentMessageReader({
+    dbPool: {
+      async query() {
+        return { rows: [{ id: CONVERSATION_ID, type: 'group' }] };
+      },
+    },
+    scyllaClient: {
+      async execute() {
+        return {};
+      },
+    },
+    cassandraDriver: {
+      types: {
+        Uuid: { fromString: (value) => value },
+        TimeUuid: { fromString: (value) => value },
+        consistencies: { localQuorum: 6 },
+      },
+    },
+    async resolveStorageConversation() {
+      return { id: STORAGE_CONVERSATION_ID };
+    },
+  });
+
+  await assert.rejects(
+    loadStoredMessage(createGroup()),
+    /malformed Scylla result/,
+  );
+});
+
 test('PostgreSQL release transition is exact and assigns a fresh expiry', async () => {
   const group = createGroup();
   const queries = [];
@@ -228,7 +283,12 @@ test('PostgreSQL release transition is exact and assigns a fresh expiry', async 
     async query(query, parameters) {
       queries.push({ query, parameters });
       if (/SELECT id[\s\S]+FOR UPDATE/i.test(query)) {
-        return { rows: [{ id: ATTACHMENT_ID }] };
+        return {
+          rows: [{
+            id: ATTACHMENT_ID,
+            scylla_write_policy: ATTACHMENT_MESSAGE_WRITE_POLICY,
+          }],
+        };
       }
       if (/UPDATE attachment_objects/i.test(query)) {
         return { rowCount: 1 };

@@ -5,6 +5,9 @@ import {
   createAttachmentReservationId,
   extractProtectedAttachmentIds,
 } from '../../../attachments/lifecycle.js';
+import {
+  createAttachmentMessageConsistency,
+} from '../../../attachments/messageConsistency.js';
 import { dispatchMessagePushNotifications } from '../../../notifications/webPush.js';
 import { messageEventId } from '../../../utils/eventIdentity.js';
 import { debugLog } from '../../../utils/debugLog.js';
@@ -45,6 +48,10 @@ function fail(status, body) {
 }
 
 const MESSAGE_IDEMPOTENCY_TTL_SEC = 7 * 24 * 60 * 60;
+const attachmentMessageConsistency = createAttachmentMessageConsistency({
+  scyllaClient: scylla,
+  cassandraDriver: cassandra,
+});
 
 function getClientMessageIdempotencyKey(userId, conversationId, clientMessageId) {
   return `message:idempotency:${userId}:${conversationId}:${clientMessageId}`;
@@ -56,13 +63,12 @@ async function loadStoredMessage({
   storageConversationId,
   messageId,
 }) {
-  const result = await scylla.execute(
+  const result = await attachmentMessageConsistency.read(
     `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
     [
       cassandra.types.Uuid.fromString(String(storageConversationId)),
       cassandra.types.TimeUuid.fromString(String(messageId)),
     ],
-    { prepare: true }
   );
 
   const row = result.rows[0];
@@ -299,14 +305,15 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       now,
     ];
     messageWriteAttempted = true;
-    await scylla.execute(
-      `INSERT INTO messages (
+    const insertQuery = `INSERT INTO messages (
         conversation_id, message_id, sender_id, content,
         message_type, reply_to, attachments, forwarded, mentions, link_preview, is_edited, is_deleted, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
-      messageInsertParams,
-      { prepare: true }
-    );
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`;
+    if (attachmentIds.length > 0) {
+      await attachmentMessageConsistency.insert(insertQuery, messageInsertParams);
+    } else {
+      await scylla.execute(insertQuery, messageInsertParams, { prepare: true });
+    }
     messagePersistedToScylla = true;
 
     const touchedConversationIds = [...new Set(
@@ -419,10 +426,9 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       (!postgresCommitAttempted || !ownsAttachmentReservation)
     ) {
       try {
-        await scylla.execute(
+        await attachmentMessageConsistency.remove(
           'DELETE FROM messages WHERE conversation_id = ? AND message_id = ?',
           [storageConversationUuid, messageId],
-          { prepare: true }
         );
         scyllaRollbackConfirmed = true;
       } catch (cleanupErr) {

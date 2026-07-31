@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 import { extractProtectedAttachmentIds } from './lifecycleCore.js';
+import {
+  ATTACHMENT_MESSAGE_WRITE_POLICY,
+  createAttachmentMessageConsistency,
+} from './messageConsistency.js';
 
 const RECONCILIATION_LOCK_KEY = 'attachments:reservation-reconciliation:lock';
 const RECONCILIATION_LOCK_TTL_MS = 15 * 60 * 1000;
@@ -60,6 +64,10 @@ export function createAttachmentReservationReconciler({
       try {
         const message = await loadStoredMessage(group);
         if (!message) {
+          if (group.scyllaWritePolicy !== ATTACHMENT_MESSAGE_WRITE_POLICY) {
+            summary.uncertain += 1;
+            continue;
+          }
           const released = await releaseToStaged(group);
           summary[released ? 'released' : 'stale'] += 1;
           continue;
@@ -125,10 +133,11 @@ export function createPostgresAttachmentReservationStore({
               uploader_id,
               reservation_id,
               message_id::text AS message_id,
+              scylla_write_policy,
               ARRAY_AGG(id ORDER BY id) AS attachment_ids
        FROM attachment_objects
        WHERE status = 'reserved'
-       GROUP BY conversation_id, uploader_id, reservation_id, message_id
+       GROUP BY conversation_id, uploader_id, reservation_id, message_id, scylla_write_policy
        HAVING MAX(reserved_until) <= NOW()
        ORDER BY MIN(reserved_until), conversation_id, message_id
        LIMIT $1`,
@@ -140,6 +149,9 @@ export function createPostgresAttachmentReservationStore({
       uploaderId: String(row.uploader_id),
       reservationId: String(row.reservation_id),
       messageId: String(row.message_id),
+      scyllaWritePolicy: typeof row.scylla_write_policy === 'string'
+        ? row.scylla_write_policy
+        : null,
       attachmentIds: normalizeIds(row.attachment_ids),
     }));
   }
@@ -147,7 +159,7 @@ export function createPostgresAttachmentReservationStore({
   async function transition(group, state) {
     return withTransaction(dbPool, async (client) => {
       const lockedResult = await client.query(
-        `SELECT id
+        `SELECT id, scylla_write_policy
          FROM attachment_objects
          WHERE status = 'reserved'
            AND conversation_id = $1
@@ -166,6 +178,17 @@ export function createPostgresAttachmentReservationStore({
       );
       const lockedIds = normalizeIds(lockedResult.rows.map((row) => row.id));
       if (!hasExactIds(lockedIds, group.attachmentIds)) {
+        return false;
+      }
+      if (
+        state === 'staged' &&
+        (
+          group.scyllaWritePolicy !== ATTACHMENT_MESSAGE_WRITE_POLICY ||
+          lockedResult.rows.some(
+            (row) => row.scylla_write_policy !== ATTACHMENT_MESSAGE_WRITE_POLICY,
+          )
+        )
+      ) {
         return false;
       }
 
@@ -199,7 +222,8 @@ export function createPostgresAttachmentReservationStore({
                  reserved_until = NULL,
                  reservation_id = NULL,
                  message_id = NULL,
-                 committed_at = NULL
+                 committed_at = NULL,
+                 scylla_write_policy = NULL
              WHERE id = ANY($1::uuid[])
                AND status = 'reserved'
                AND reservation_id = $2
@@ -246,6 +270,10 @@ export function createScyllaAttachmentMessageReader({
   if (typeof resolveStorageConversation !== 'function') {
     throw new TypeError('Attachment message reader requires storage resolution');
   }
+  const messageConsistency = createAttachmentMessageConsistency({
+    scyllaClient,
+    cassandraDriver,
+  });
 
   return async function loadStoredMessage(group) {
     const conversationResult = await dbPool.query(
@@ -264,7 +292,7 @@ export function createScyllaAttachmentMessageReader({
       conversation,
       dbPool,
     );
-    const result = await scyllaClient.execute(
+    const result = await messageConsistency.read(
       `SELECT sender_id, attachments
        FROM messages
        WHERE conversation_id = ? AND message_id = ?`,
@@ -272,11 +300,10 @@ export function createScyllaAttachmentMessageReader({
         cassandraDriver.types.Uuid.fromString(String(storageConversation.id)),
         cassandraDriver.types.TimeUuid.fromString(String(group.messageId)),
       ],
-      {
-        prepare: true,
-        consistency: cassandraDriver.types.consistencies.localQuorum,
-      },
     );
+    if (!result || !Array.isArray(result.rows) || result.rows.length > 1) {
+      throw new Error('Attachment reconciliation received a malformed Scylla result');
+    }
     const row = result.rows[0];
     if (!row) {
       return null;

@@ -103,6 +103,7 @@ const MessageInput = (props: MessageInputProps) => {
     attachments,
     attachmentAlert,
     attachmentsAllowed,
+    attachmentsEnabled,
     attachmentsRestrictionLabel,
     inputRef,
     mediaInputRef,
@@ -123,7 +124,7 @@ const MessageInput = (props: MessageInputProps) => {
   } = useMessageInput(props);
 
   const { editingMessage, replyTo } = props;
-  const hasAttachments = attachments.length > 0;
+  const hasAttachments = !editingMessage && attachments.length > 0;
   const hasBanner = !!(editingMessage || replyTo);
   const isGroupConversation = props.conversation.type === 'group';
   const inputDisabled = false;
@@ -232,6 +233,15 @@ const MessageInput = (props: MessageInputProps) => {
     return () => document.removeEventListener('mousedown', handler);
   }, [attachMenuOpen]);
 
+  useEffect(() => {
+    if (!editingMessage) return;
+    const timer = window.setTimeout(() => {
+      setAttachMenuOpen(false);
+      setMobileAttachmentMenuId(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [editingMessage]);
+
   const syncMentionQuery = useCallback((nextText?: string, explicitCursor?: number | null) => {
     if (!isGroupConversation) {
       setActiveMentionQuery(null);
@@ -295,6 +305,14 @@ const MessageInput = (props: MessageInputProps) => {
     handleKeyDown(event);
   };
 
+  const blockEditModeFileDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!editingMessage || !Array.from(event.dataTransfer.types).includes('Files')) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }, [editingMessage]);
+
   return (
     <>
       <AttachmentLimitModal
@@ -311,6 +329,8 @@ const MessageInput = (props: MessageInputProps) => {
       />
       <div
         data-chat-message-input="true"
+        onDragOver={blockEditModeFileDrop}
+        onDrop={blockEditModeFileDrop}
         className="sticky bottom-0 z-20 shrink-0 border-t border-void-bg-hover/80 bg-void-bg-sec/95 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] supports-[backdrop-filter]:backdrop-blur md:static md:border-t-0 md:bg-transparent md:pb-4"
       >
       {/* Edit / Reply banner */}
@@ -465,6 +485,7 @@ const MessageInput = (props: MessageInputProps) => {
           type="file"
           accept={imageAccept}
           multiple
+          disabled={!attachmentsEnabled}
           className="hidden"
           onChange={handleFileChange}
         />
@@ -472,15 +493,17 @@ const MessageInput = (props: MessageInputProps) => {
           ref={fileInputRef}
           type="file"
           multiple
+          disabled={!attachmentsEnabled}
           className="hidden"
           onChange={handleFileChange}
         />
 
         {/* Attach menu */}
+        {!editingMessage ? (
         <div ref={attachMenuRef} className="relative mr-3">
           <button
             onClick={() => setAttachMenuOpen((o) => !o)}
-            disabled={inputDisabled || attachments.length >= 5}
+            disabled={inputDisabled || !attachmentsEnabled || attachments.length >= 5}
             className={`rounded-full p-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${attachMenuOpen ? 'text-void-accent' : 'text-void-text-muted hover:text-void-text'
               }`}
             title="Attach"
@@ -488,7 +511,7 @@ const MessageInput = (props: MessageInputProps) => {
             <Plus className={`w-5 h-5 transition-transform duration-150 ${attachMenuOpen ? 'rotate-45' : ''}`} />
           </button>
 
-          {attachMenuOpen && (
+          {attachMenuOpen && attachmentsEnabled && (
             <div className="absolute bottom-full left-0 mb-2 w-44 bg-void-bg-main border border-void-bg-hover rounded-xl shadow-2xl py-1.5 z-50">
               {/* Media */}
               <button
@@ -546,6 +569,7 @@ const MessageInput = (props: MessageInputProps) => {
             </div>
           )}
         </div>
+        ) : null}
 
         <div className="relative flex-1">
           {showMentionSuggestions ? (
