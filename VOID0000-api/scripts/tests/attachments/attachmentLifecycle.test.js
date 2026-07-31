@@ -80,12 +80,14 @@ function createMemoryInfrastructure(initialRows = []) {
       committed_at: null,
       message_id: null,
       scylla_write_policy: null,
+      scylla_write_acknowledged_at: null,
       ...row,
       id: String(row.id).toLowerCase(),
     },
   ]));
   const objects = new Set([...rows.values()].map((row) => row.object_key));
   const failedObjectDeletes = new Set();
+  const failedAcknowledgementUpdates = new Set();
   const mutex = new Mutex();
 
   async function execute(sql, params = []) {
@@ -131,6 +133,7 @@ function createMemoryInfrastructure(initialRows = []) {
         committed_at: null,
         message_id: null,
         scylla_write_policy: null,
+        scylla_write_acknowledged_at: null,
       });
       return { rows: [], rowCount: 1 };
     }
@@ -176,7 +179,7 @@ function createMemoryInfrastructure(initialRows = []) {
       query.startsWith('UPDATE attachment_objects') &&
       query.includes("SET status = 'reserved'")
     ) {
-      const [ids, reservationId, messageId, ttlSeconds, scyllaWritePolicy] = params;
+      const [ids, reservationId, messageId, ttlSeconds] = params;
       const updated = [];
       for (const id of ids) {
         const row = rows.get(String(id).toLowerCase());
@@ -187,7 +190,72 @@ function createMemoryInfrastructure(initialRows = []) {
           reserved_until: new Date(NOW.getTime() + ttlSeconds * 1000),
           reservation_id: reservationId,
           message_id: messageId,
+          scylla_write_policy: null,
+          scylla_write_acknowledged_at: null,
+        });
+        updated.push({ id: row.id });
+      }
+      return { rows: updated, rowCount: updated.length };
+    }
+
+    if (
+      query.startsWith('SELECT id, scylla_write_policy, scylla_write_acknowledged_at') &&
+      query.includes('FOR UPDATE')
+    ) {
+      const [ids, reservationId, messageId, userId, conversationId] = params;
+      const matching = ids
+        .map((id) => rows.get(String(id).toLowerCase()))
+        .filter((row) => (
+          row?.status === 'reserved' &&
+          row.reservation_id === reservationId &&
+          row.message_id === messageId &&
+          row.uploader_id === userId &&
+          row.conversation_id === conversationId
+        ))
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map((row) => ({
+          id: row.id,
+          scylla_write_policy: row.scylla_write_policy,
+          scylla_write_acknowledged_at: row.scylla_write_acknowledged_at,
+        }));
+      return { rows: matching, rowCount: matching.length };
+    }
+
+    if (
+      query.startsWith('UPDATE attachment_objects') &&
+      query.includes('SET scylla_write_policy = $6')
+    ) {
+      const [
+        ids,
+        reservationId,
+        messageId,
+        userId,
+        conversationId,
+        scyllaWritePolicy,
+      ] = params;
+      if (ids.some((id) => failedAcknowledgementUpdates.has(String(id).toLowerCase()))) {
+        throw new Error('simulated acknowledgement update failure');
+      }
+      const updated = [];
+      for (const id of ids) {
+        const row = rows.get(String(id).toLowerCase());
+        if (
+          row?.status !== 'reserved' ||
+          row.reservation_id !== reservationId ||
+          row.message_id !== messageId ||
+          row.uploader_id !== userId ||
+          row.conversation_id !== conversationId ||
+          row.scylla_write_acknowledged_at != null ||
+          (
+            row.scylla_write_policy != null &&
+            row.scylla_write_policy !== scyllaWritePolicy
+          )
+        ) {
+          continue;
+        }
+        Object.assign(row, {
           scylla_write_policy: scyllaWritePolicy,
+          scylla_write_acknowledged_at: new Date(NOW),
         });
         updated.push({ id: row.id });
       }
@@ -198,14 +266,25 @@ function createMemoryInfrastructure(initialRows = []) {
       query.startsWith('UPDATE attachment_objects') &&
       query.includes("SET status = 'committed'")
     ) {
-      const [ids, reservationId, messageId] = params;
+      const [
+        ids,
+        reservationId,
+        messageId,
+        userId,
+        conversationId,
+        scyllaWritePolicy,
+      ] = params;
       const updated = [];
       for (const id of ids) {
         const row = rows.get(String(id).toLowerCase());
         if (
           row?.status !== 'reserved' ||
           row.reservation_id !== reservationId ||
-          row.message_id !== messageId
+          row.message_id !== messageId ||
+          row.uploader_id !== userId ||
+          row.conversation_id !== conversationId ||
+          row.scylla_write_policy !== scyllaWritePolicy ||
+          row.scylla_write_acknowledged_at == null
         ) {
           continue;
         }
@@ -223,14 +302,16 @@ function createMemoryInfrastructure(initialRows = []) {
       query.startsWith('UPDATE attachment_objects') &&
       query.includes("SET status = 'staged'")
     ) {
-      const [ids, reservationId, messageId] = params;
+      const [ids, reservationId, messageId, userId, conversationId] = params;
       let rowCount = 0;
       for (const id of ids) {
         const row = rows.get(String(id).toLowerCase());
         if (
           row?.status !== 'reserved' ||
           row.reservation_id !== reservationId ||
-          row.message_id !== messageId
+          row.message_id !== messageId ||
+          row.uploader_id !== userId ||
+          row.conversation_id !== conversationId
         ) {
           continue;
         }
@@ -241,6 +322,7 @@ function createMemoryInfrastructure(initialRows = []) {
           reservation_id: null,
           message_id: null,
           scylla_write_policy: null,
+          scylla_write_acknowledged_at: null,
         });
         rowCount += 1;
       }
@@ -323,6 +405,7 @@ function createMemoryInfrastructure(initialRows = []) {
 
   return {
     dbPool,
+    failedAcknowledgementUpdates,
     failedObjectDeletes,
     objectStore,
     objects,
@@ -555,9 +638,10 @@ test('reservation is exclusive, commits once, and supports exact idempotent reco
     messageId: MESSAGE_ID,
   });
   assert.equal(first.state, 'reserved_new');
+  assert.equal(infrastructure.rows.get(ATTACHMENT_ID).scylla_write_policy, null);
   assert.equal(
-    infrastructure.rows.get(ATTACHMENT_ID).scylla_write_policy,
-    ATTACHMENT_MESSAGE_WRITE_POLICY,
+    infrastructure.rows.get(ATTACHMENT_ID).scylla_write_acknowledged_at,
+    null,
   );
 
   const concurrentSameOperation = await lifecycle.reserveForMessage({
@@ -591,6 +675,16 @@ test('reservation is exclusive, commits once, and supports exact idempotent reco
     { code: 'CLIENT_MESSAGE_ATTACHMENT_MISMATCH' },
   );
 
+  assert.equal(await lifecycle.acknowledgeScyllaWrite(first), 1);
+  assert.equal(
+    infrastructure.rows.get(ATTACHMENT_ID).scylla_write_policy,
+    ATTACHMENT_MESSAGE_WRITE_POLICY,
+  );
+  assert.ok(
+    infrastructure.rows.get(ATTACHMENT_ID).scylla_write_acknowledged_at instanceof Date,
+  );
+  assert.equal(await lifecycle.acknowledgeScyllaWrite(first), 1);
+
   await lifecycle.commitReservation(infrastructure.dbPool, first);
   assert.equal(infrastructure.rows.get(ATTACHMENT_ID).status, 'committed');
   assert.equal(infrastructure.rows.get(ATTACHMENT_ID).message_id, MESSAGE_ID);
@@ -604,6 +698,39 @@ test('reservation is exclusive, commits once, and supports exact idempotent reco
   });
   assert.equal(recovered.state, 'committed');
   assert.equal(recovered.messageId, MESSAGE_ID);
+});
+
+test('unacknowledged reservation cannot commit and acknowledgement failure stays uncertain', async () => {
+  const infrastructure = createMemoryInfrastructure([{
+    id: ATTACHMENT_ID,
+    conversation_id: CONVERSATION_ID,
+    uploader_id: USER_ID,
+    status: 'staged',
+  }]);
+  const lifecycle = createTestLifecycle(infrastructure);
+  const reservation = await lifecycle.reserveForMessage({
+    attachmentIds: [ATTACHMENT_ID],
+    userId: USER_ID,
+    conversationId: CONVERSATION_ID,
+    reservationId: 'client-message-1',
+    messageId: MESSAGE_ID,
+  });
+
+  await assert.rejects(
+    lifecycle.commitReservation(infrastructure.dbPool, reservation),
+    { code: 'ATTACHMENT_COMMIT_CONFLICT' },
+  );
+
+  infrastructure.failedAcknowledgementUpdates.add(ATTACHMENT_ID);
+  await assert.rejects(
+    lifecycle.acknowledgeScyllaWrite(reservation),
+    /simulated acknowledgement update failure/,
+  );
+
+  const row = infrastructure.rows.get(ATTACHMENT_ID);
+  assert.equal(row.status, 'reserved');
+  assert.equal(row.scylla_write_policy, null);
+  assert.equal(row.scylla_write_acknowledged_at, null);
 });
 
 test('confirmed message persistence failure releases its owned reservation safely', async () => {
@@ -628,6 +755,7 @@ test('confirmed message persistence failure releases its owned reservation safel
   assert.equal(row.reservation_id, null);
   assert.equal(row.message_id, null);
   assert.equal(row.scylla_write_policy, null);
+  assert.equal(row.scylla_write_acknowledged_at, null);
 });
 
 test('cleanup removes only expired staged objects and preserves tracking on MinIO failure', async () => {

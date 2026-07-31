@@ -408,6 +408,8 @@ export function createAttachmentLifecycle({
         attachmentIds: [],
         reservationId,
         messageId,
+        userId,
+        conversationId,
       };
     }
 
@@ -470,6 +472,8 @@ export function createAttachmentLifecycle({
           ...classification,
           attachmentIds,
           reservationId,
+          userId,
+          conversationId,
         };
       }
 
@@ -480,7 +484,8 @@ export function createAttachmentLifecycle({
              reserved_until = NOW() + ($4 * INTERVAL '1 second'),
              reservation_id = $2,
              message_id = $3,
-             scylla_write_policy = $5
+             scylla_write_policy = NULL,
+             scylla_write_acknowledged_at = NULL
          WHERE id = ANY($1::uuid[])
            AND status = 'staged'
            AND expires_at > NOW()
@@ -490,7 +495,6 @@ export function createAttachmentLifecycle({
           reservationId,
           messageId,
           config.reservationTtlSeconds,
-          ATTACHMENT_MESSAGE_WRITE_POLICY,
         ],
       );
       if (updateResult.rowCount !== attachmentIds.length) {
@@ -502,7 +506,110 @@ export function createAttachmentLifecycle({
         attachmentIds,
         reservationId,
         messageId,
+        userId,
+        conversationId,
       };
+    });
+  }
+
+  async function acknowledgeScyllaWrite({
+    attachmentIds,
+    reservationId,
+    messageId,
+    userId,
+    conversationId,
+  }) {
+    if (attachmentIds.length === 0) {
+      return 0;
+    }
+
+    return withTransaction(dbPool, async (client) => {
+      const lockedResult = await client.query(
+        `SELECT id, scylla_write_policy, scylla_write_acknowledged_at
+         FROM attachment_objects
+         WHERE id = ANY($1::uuid[])
+           AND status = 'reserved'
+           AND reservation_id = $2
+           AND message_id = $3
+           AND uploader_id = $4
+           AND conversation_id = $5
+         ORDER BY id
+         FOR UPDATE`,
+        [
+          attachmentIds,
+          reservationId,
+          messageId,
+          userId,
+          conversationId,
+        ],
+      );
+      const lockedIds = lockedResult.rows.map(normalizeRowId).sort();
+      const expectedIds = [...attachmentIds].sort();
+      if (
+        lockedIds.length !== expectedIds.length ||
+        lockedIds.some((id, index) => id !== expectedIds[index])
+      ) {
+        fail(
+          409,
+          'ATTACHMENT_ACKNOWLEDGEMENT_CONFLICT',
+          'Attachment reservation changed before its Scylla write was acknowledged',
+        );
+      }
+
+      const alreadyAcknowledged = lockedResult.rows.every((row) => (
+        row.scylla_write_policy === ATTACHMENT_MESSAGE_WRITE_POLICY &&
+        row.scylla_write_acknowledged_at != null
+      ));
+      if (alreadyAcknowledged) {
+        return attachmentIds.length;
+      }
+      if (lockedResult.rows.some((row) => (
+        row.scylla_write_acknowledged_at != null ||
+        (
+          row.scylla_write_policy != null &&
+          row.scylla_write_policy !== ATTACHMENT_MESSAGE_WRITE_POLICY
+        )
+      ))) {
+        fail(
+          409,
+          'ATTACHMENT_ACKNOWLEDGEMENT_CONFLICT',
+          'Attachment acknowledgement state is inconsistent',
+        );
+      }
+
+      const updateResult = await client.query(
+        `UPDATE attachment_objects
+         SET scylla_write_policy = $6,
+             scylla_write_acknowledged_at = NOW()
+         WHERE id = ANY($1::uuid[])
+           AND status = 'reserved'
+           AND reservation_id = $2
+           AND message_id = $3
+           AND uploader_id = $4
+           AND conversation_id = $5
+           AND scylla_write_acknowledged_at IS NULL
+           AND (
+             scylla_write_policy IS NULL
+             OR scylla_write_policy = $6
+           )
+         RETURNING id`,
+        [
+          attachmentIds,
+          reservationId,
+          messageId,
+          userId,
+          conversationId,
+          ATTACHMENT_MESSAGE_WRITE_POLICY,
+        ],
+      );
+      if (updateResult.rowCount !== attachmentIds.length) {
+        fail(
+          409,
+          'ATTACHMENT_ACKNOWLEDGEMENT_CONFLICT',
+          'Attachment reservation could not be acknowledged',
+        );
+      }
+      return updateResult.rowCount;
     });
   }
 
@@ -510,6 +617,8 @@ export function createAttachmentLifecycle({
     attachmentIds,
     reservationId,
     messageId,
+    userId,
+    conversationId,
   }) {
     if (attachmentIds.length === 0) {
       return 0;
@@ -524,8 +633,19 @@ export function createAttachmentLifecycle({
          AND status = 'reserved'
          AND reservation_id = $2
          AND message_id = $3
+         AND uploader_id = $4
+         AND conversation_id = $5
+         AND scylla_write_policy = $6
+         AND scylla_write_acknowledged_at IS NOT NULL
        RETURNING id`,
-      [attachmentIds, reservationId, messageId],
+      [
+        attachmentIds,
+        reservationId,
+        messageId,
+        userId,
+        conversationId,
+        ATTACHMENT_MESSAGE_WRITE_POLICY,
+      ],
     );
     if (result.rowCount !== attachmentIds.length) {
       fail(409, 'ATTACHMENT_COMMIT_CONFLICT', 'Attachment reservation could not be committed');
@@ -537,6 +657,8 @@ export function createAttachmentLifecycle({
     attachmentIds,
     reservationId,
     messageId,
+    userId,
+    conversationId,
   }) {
     if (attachmentIds.length === 0) {
       return 0;
@@ -549,12 +671,21 @@ export function createAttachmentLifecycle({
            reserved_until = NULL,
            reservation_id = NULL,
            message_id = NULL,
-           scylla_write_policy = NULL
+           scylla_write_policy = NULL,
+           scylla_write_acknowledged_at = NULL
        WHERE id = ANY($1::uuid[])
          AND status = 'reserved'
          AND reservation_id = $2
-         AND message_id = $3`,
-      [attachmentIds, reservationId, messageId],
+         AND message_id = $3
+         AND uploader_id = $4
+         AND conversation_id = $5`,
+      [
+        attachmentIds,
+        reservationId,
+        messageId,
+        userId,
+        conversationId,
+      ],
     );
     return result.rowCount;
   }
@@ -622,6 +753,7 @@ export function createAttachmentLifecycle({
     stageUploadedAttachments,
     deleteStagedAttachment,
     reserveForMessage,
+    acknowledgeScyllaWrite,
     commitReservation,
     releaseReservation,
     cleanupExpiredStaged,

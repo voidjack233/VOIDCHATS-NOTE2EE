@@ -64,7 +64,10 @@ export function createAttachmentReservationReconciler({
       try {
         const message = await loadStoredMessage(group);
         if (!message) {
-          if (group.scyllaWritePolicy !== ATTACHMENT_MESSAGE_WRITE_POLICY) {
+          if (
+            group.scyllaWritePolicy !== ATTACHMENT_MESSAGE_WRITE_POLICY ||
+            group.scyllaWriteAcknowledged !== true
+          ) {
             summary.uncertain += 1;
             continue;
           }
@@ -133,15 +136,23 @@ export function createPostgresAttachmentReservationStore({
               uploader_id,
               reservation_id,
               message_id::text AS message_id,
-              scylla_write_policy,
+              BOOL_AND(
+                COALESCE(
+                  scylla_write_policy = $2,
+                  FALSE
+                )
+              ) AS scylla_write_policy_confirmed,
+              BOOL_AND(
+                scylla_write_acknowledged_at IS NOT NULL
+              ) AS scylla_write_acknowledged,
               ARRAY_AGG(id ORDER BY id) AS attachment_ids
        FROM attachment_objects
        WHERE status = 'reserved'
-       GROUP BY conversation_id, uploader_id, reservation_id, message_id, scylla_write_policy
+       GROUP BY conversation_id, uploader_id, reservation_id, message_id
        HAVING MAX(reserved_until) <= NOW()
        ORDER BY MIN(reserved_until), conversation_id, message_id
        LIMIT $1`,
-      [batchSize],
+      [batchSize, ATTACHMENT_MESSAGE_WRITE_POLICY],
     );
 
     return result.rows.map((row) => ({
@@ -149,9 +160,10 @@ export function createPostgresAttachmentReservationStore({
       uploaderId: String(row.uploader_id),
       reservationId: String(row.reservation_id),
       messageId: String(row.message_id),
-      scyllaWritePolicy: typeof row.scylla_write_policy === 'string'
-        ? row.scylla_write_policy
+      scyllaWritePolicy: row.scylla_write_policy_confirmed === true
+        ? ATTACHMENT_MESSAGE_WRITE_POLICY
         : null,
+      scyllaWriteAcknowledged: row.scylla_write_acknowledged === true,
       attachmentIds: normalizeIds(row.attachment_ids),
     }));
   }
@@ -159,7 +171,9 @@ export function createPostgresAttachmentReservationStore({
   async function transition(group, state) {
     return withTransaction(dbPool, async (client) => {
       const lockedResult = await client.query(
-        `SELECT id, scylla_write_policy
+        `SELECT id,
+                scylla_write_policy,
+                scylla_write_acknowledged_at
          FROM attachment_objects
          WHERE status = 'reserved'
            AND conversation_id = $1
@@ -184,8 +198,12 @@ export function createPostgresAttachmentReservationStore({
         state === 'staged' &&
         (
           group.scyllaWritePolicy !== ATTACHMENT_MESSAGE_WRITE_POLICY ||
+          group.scyllaWriteAcknowledged !== true ||
           lockedResult.rows.some(
-            (row) => row.scylla_write_policy !== ATTACHMENT_MESSAGE_WRITE_POLICY,
+            (row) => (
+              row.scylla_write_policy !== ATTACHMENT_MESSAGE_WRITE_POLICY ||
+              row.scylla_write_acknowledged_at == null
+            ),
           )
         )
       ) {
@@ -223,7 +241,8 @@ export function createPostgresAttachmentReservationStore({
                  reservation_id = NULL,
                  message_id = NULL,
                  committed_at = NULL,
-                 scylla_write_policy = NULL
+                 scylla_write_policy = NULL,
+                 scylla_write_acknowledged_at = NULL
              WHERE id = ANY($1::uuid[])
                AND status = 'reserved'
                AND reservation_id = $2

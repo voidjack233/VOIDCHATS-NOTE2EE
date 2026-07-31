@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   ATTACHMENT_MESSAGE_WRITE_POLICY,
   createAttachmentMessageConsistency,
+  writeAttachmentMessageWithAcknowledgement,
 } from '../../../server/attachments/messageConsistency.js';
 
 test('attachment message insert, recovery read, and rollback delete use LOCAL_QUORUM', async () => {
@@ -38,6 +39,63 @@ test('attachment message insert, recovery read, and rollback delete use LOCAL_QU
   }
 });
 
+test('Scylla acknowledgement is recorded only after a successful insert', async () => {
+  const successfulOrder = [];
+  const result = await writeAttachmentMessageWithAcknowledgement({
+    async insertMessage() {
+      successfulOrder.push('insert');
+      return { applied: true };
+    },
+    onInsertSucceeded() {
+      successfulOrder.push('insert-returned');
+    },
+    async acknowledgeReservation() {
+      successfulOrder.push('acknowledge');
+    },
+  });
+  assert.deepEqual(result, { applied: true });
+  assert.deepEqual(successfulOrder, [
+    'insert',
+    'insert-returned',
+    'acknowledge',
+  ]);
+
+  const failedOrder = [];
+  await assert.rejects(
+    writeAttachmentMessageWithAcknowledgement({
+      async insertMessage() {
+        failedOrder.push('insert');
+        throw new Error('Scylla timeout');
+      },
+      onInsertSucceeded() {
+        failedOrder.push('insert-returned');
+      },
+      async acknowledgeReservation() {
+        failedOrder.push('acknowledge');
+      },
+    }),
+    /Scylla timeout/,
+  );
+  assert.deepEqual(failedOrder, ['insert']);
+});
+
+test('acknowledgement failure is reported after the Scylla write is known to have returned', async () => {
+  let insertReturned = false;
+  await assert.rejects(
+    writeAttachmentMessageWithAcknowledgement({
+      async insertMessage() {},
+      onInsertSucceeded() {
+        insertReturned = true;
+      },
+      async acknowledgeReservation() {
+        throw new Error('PostgreSQL acknowledgement unavailable');
+      },
+    }),
+    /acknowledgement unavailable/,
+  );
+  assert.equal(insertReturned, true);
+});
+
 test('message send wires quorum consistency to attachment writes and recovery operations', async () => {
   const source = await readFile(
     new URL(
@@ -49,8 +107,9 @@ test('message send wires quorum consistency to attachment writes and recovery op
 
   assert.match(
     source,
-    /if \(attachmentIds\.length > 0\)[\s\S]+attachmentMessageConsistency\.insert/,
+    /if \(attachmentIds\.length > 0\)[\s\S]+writeAttachmentMessageWithAcknowledgement/,
   );
+  assert.match(source, /attachmentLifecycle\.acknowledgeScyllaWrite/);
   assert.match(source, /attachmentMessageConsistency\.read/);
   assert.match(source, /attachmentMessageConsistency\.remove/);
   assert.equal(ATTACHMENT_MESSAGE_WRITE_POLICY, 'local_quorum_v1');

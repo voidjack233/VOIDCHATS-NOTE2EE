@@ -1,5 +1,24 @@
 export const ATTACHMENT_MESSAGE_WRITE_POLICY = 'local_quorum_v1';
 
+export async function writeAttachmentMessageWithAcknowledgement({
+  insertMessage,
+  onInsertSucceeded,
+  acknowledgeReservation,
+} = {}) {
+  if (
+    typeof insertMessage !== 'function' ||
+    typeof onInsertSucceeded !== 'function' ||
+    typeof acknowledgeReservation !== 'function'
+  ) {
+    throw new TypeError('Attachment message write acknowledgement requires lifecycle callbacks');
+  }
+
+  const result = await insertMessage();
+  onInsertSucceeded();
+  await acknowledgeReservation();
+  return result;
+}
+
 export function createAttachmentMessageConsistency({
   scyllaClient,
   cassandraDriver,

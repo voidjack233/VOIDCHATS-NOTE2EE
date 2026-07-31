@@ -26,6 +26,7 @@ function createGroup() {
     reservationId: 'client-message-1',
     messageId: MESSAGE_ID,
     scyllaWritePolicy: ATTACHMENT_MESSAGE_WRITE_POLICY,
+    scyllaWriteAcknowledged: true,
     attachmentIds: [ATTACHMENT_ID],
   };
 }
@@ -78,6 +79,10 @@ test('existing Scylla message with exact attachments commits the reservation', a
       senderId: USER_ID,
       attachmentIds: [ATTACHMENT_ID],
     },
+    groupOverrides: {
+      scyllaWritePolicy: null,
+      scyllaWriteAcknowledged: false,
+    },
   });
 
   assert.deepEqual(await harness.reconciler.runOnce(), {
@@ -106,10 +111,10 @@ test('definitively missing Scylla message returns reservation to staged', async 
   assert.equal(harness.freshExpiryAssigned, true);
 });
 
-test('historical reservation without quorum policy remains reserved after a negative read', async () => {
+test('unacknowledged reservation remains reserved after a negative read', async () => {
   const harness = createStateHarness({
     message: null,
-    groupOverrides: { scyllaWritePolicy: null },
+    groupOverrides: { scyllaWriteAcknowledged: false },
   });
 
   assert.deepEqual(await harness.reconciler.runOnce(), {
@@ -122,6 +127,20 @@ test('historical reservation without quorum policy remains reserved after a nega
   });
   assert.equal(harness.state, 'reserved');
   assert.equal(harness.freshExpiryAssigned, false);
+});
+
+test('historical reservation without quorum policy remains reserved after a negative read', async () => {
+  const harness = createStateHarness({
+    message: null,
+    groupOverrides: {
+      scyllaWritePolicy: null,
+      scyllaWriteAcknowledged: false,
+    },
+  });
+
+  const summary = await harness.reconciler.runOnce();
+  assert.equal(summary.uncertain, 1);
+  assert.equal(harness.state, 'reserved');
 });
 
 test('Scylla failure leaves the reservation unchanged for retry', async () => {
@@ -287,6 +306,7 @@ test('PostgreSQL release transition is exact and assigns a fresh expiry', async 
           rows: [{
             id: ATTACHMENT_ID,
             scylla_write_policy: ATTACHMENT_MESSAGE_WRITE_POLICY,
+            scylla_write_acknowledged_at: new Date(),
           }],
         };
       }
@@ -314,6 +334,7 @@ test('PostgreSQL release transition is exact and assigns a fresh expiry', async 
   assert.match(update.query, /SET status = 'staged'/i);
   assert.match(update.query, /expires_at = NOW\(\) \+ \(\$6 \* INTERVAL '1 second'\)/i);
   assert.match(update.query, /reservation_id = NULL/i);
+  assert.match(update.query, /scylla_write_acknowledged_at = NULL/i);
   assert.equal(update.parameters[5], 300);
 });
 
@@ -376,4 +397,23 @@ test('reconciliation migration adds a reserved-only expiry index', async () => {
   );
   assert.match(migration, /reserved_until/i);
   assert.match(migration, /WHERE status = 'reserved'/i);
+});
+
+test('acknowledgement migration leaves existing reservations uncertain', async () => {
+  const migration = await readFile(
+    new URL(
+      '../../../db/migrations/0010_attachment_message_write_acknowledgement.sql',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  assert.match(
+    migration,
+    /ADD COLUMN IF NOT EXISTS scylla_write_acknowledged_at TIMESTAMPTZ/i,
+  );
+  assert.match(
+    migration,
+    /scylla_write_acknowledged_at IS NULL[\s\S]+scylla_write_policy = 'local_quorum_v1'/i,
+  );
+  assert.doesNotMatch(migration, /UPDATE attachment_objects/i);
 });

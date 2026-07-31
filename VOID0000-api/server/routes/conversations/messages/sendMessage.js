@@ -7,6 +7,7 @@ import {
 } from '../../../attachments/lifecycle.js';
 import {
   createAttachmentMessageConsistency,
+  writeAttachmentMessageWithAcknowledgement,
 } from '../../../attachments/messageConsistency.js';
 import { dispatchMessagePushNotifications } from '../../../notifications/webPush.js';
 import { messageEventId } from '../../../utils/eventIdentity.js';
@@ -310,11 +311,22 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
         message_type, reply_to, attachments, forwarded, mentions, link_preview, is_edited, is_deleted, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`;
     if (attachmentIds.length > 0) {
-      await attachmentMessageConsistency.insert(insertQuery, messageInsertParams);
+      await writeAttachmentMessageWithAcknowledgement({
+        insertMessage: () => attachmentMessageConsistency.insert(
+          insertQuery,
+          messageInsertParams,
+        ),
+        onInsertSucceeded: () => {
+          messagePersistedToScylla = true;
+        },
+        acknowledgeReservation: () => (
+          attachmentLifecycle.acknowledgeScyllaWrite(attachmentReservation)
+        ),
+      });
     } else {
       await scylla.execute(insertQuery, messageInsertParams, { prepare: true });
+      messagePersistedToScylla = true;
     }
-    messagePersistedToScylla = true;
 
     const touchedConversationIds = [...new Set(
       [conversationId, storageConversationId, conversation.parent_conversation_id].filter(Boolean)
