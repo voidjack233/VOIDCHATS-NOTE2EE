@@ -1,0 +1,74 @@
+{
+  "expo": {
+    "name": "VOID0000",
+    "slug": "void0000-native",
+    "version": "1.0.0",
+    "scheme": "void0000",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "online.void0000.app",
+      "buildNumber": "1",
+      "associatedDomains": [
+        "applinks:void0000.online",
+        "applinks:www.void0000.online"
+      ]
+    },
+    "android": {
+      "package": "online.void0000.app",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "predictiveBackGestureEnabled": true,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "void0000.online",
+              "pathPrefix": "/"
+            },
+            {
+              "scheme": "https",
+              "host": "www.void0000.online",
+              "pathPrefix": "/"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow VOID0000 to select images for avatars and chat attachments.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      "expo-document-picker",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      "expo-asset"
+    ]
+  }
+}
