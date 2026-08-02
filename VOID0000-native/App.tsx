@@ -6,21 +6,29 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppDataProvider } from './src/context/AppDataContext';
 import { AuthProvider } from './src/context/AuthContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
-import { ThemeProvider } from './src/theme/ThemeContext';
+import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
+
+function ThemedApp() {
+  const { palette } = useTheme();
+
+  return (
+    <View style={[styles.container, { backgroundColor: palette.bg }]}>
+      <StatusBar style="light" />
+      <AuthProvider>
+        <AppDataProvider>
+          <RootNavigator />
+        </AppDataProvider>
+      </AuthProvider>
+    </View>
+  );
+}
 
 export default function App() {
   return (
-    <GestureHandlerRootView style={styles.container}>
+    <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <ThemeProvider>
-          <AuthProvider>
-            <AppDataProvider>
-              <View style={styles.container}>
-                <StatusBar style="light" />
-                <RootNavigator />
-              </View>
-            </AppDataProvider>
-          </AuthProvider>
+          <ThemedApp />
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
@@ -29,6 +37,10 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: {
+    flex: 1,
+  },
+  root: {
+    backgroundColor: '#111827',
     flex: 1,
   },
 });

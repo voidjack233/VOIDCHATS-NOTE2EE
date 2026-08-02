@@ -7,6 +7,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React, { useEffect, useMemo, useState } from 'react';
+import { Platform } from 'react-native';
 import { Screen } from '../components/common/Screen';
 import { StateView } from '../components/common/StateView';
 import { useAuth } from '../context/AuthContext';
@@ -149,7 +150,7 @@ export function RootNavigator() {
         initialRouteName={authenticated && pendingInvite ? 'Invite' : authenticated ? 'Home' : 'SignIn'}
         key={authenticated ? `authenticated-${pendingInvite || 'home'}` : 'public'}
         screenOptions={{
-          animation: 'slide_from_right',
+          animation: Platform.OS === 'android' ? 'fade' : 'slide_from_right',
           contentStyle: { backgroundColor: palette.bg },
           headerShown: false,
         }}
