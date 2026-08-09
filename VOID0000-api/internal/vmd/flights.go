@@ -49,13 +49,33 @@ func (g *FlightGroup[T]) Do(ctx context.Context, key string, task func() (T, err
 	g.active[key] = current
 	g.mu.Unlock()
 
-	current.result.value, current.result.err = task()
-	close(current.done)
+	defer func() {
+		panicValue := recover()
+		if panicValue != nil {
+			var zero T
+			current.result = flightResult[T]{
+				value: zero,
+				err: mediaError(
+					500,
+					"VMD_DELIVERY_FAILED",
+					"VMD image delivery failed",
+					nil,
+				),
+			}
+		}
 
-	g.mu.Lock()
-	if g.active[key] == current {
-		delete(g.active, key)
-	}
-	g.mu.Unlock()
+		close(current.done)
+		g.mu.Lock()
+		if g.active[key] == current {
+			delete(g.active, key)
+		}
+		g.mu.Unlock()
+
+		if panicValue != nil {
+			panic(panicValue)
+		}
+	}()
+
+	current.result.value, current.result.err = task()
 	return current.result.value, current.result.err
 }

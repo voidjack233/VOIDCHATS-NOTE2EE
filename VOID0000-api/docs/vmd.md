@@ -126,6 +126,14 @@ pipelines run concurrently and up to eight wait briefly before VMD returns
 same attachment and variant. The private worker independently bounds accepted
 bytes and shares the global Sharp work gate.
 
+The shared render leader intentionally uses a service-owned timeout rather than
+the initiating HTTP request context. A disconnected client stops waiting, but
+an accepted render continues so other followers can receive it and the finished
+variant can enter the persistent cache. The render timeout, flight cap, Go work
+queue, transform-worker queue, byte limits, and Sharp gate bound that detached
+work. A task panic wakes followers with a delivery error, removes the flight,
+and is re-raised for the HTTP server to report rather than poisoning the key.
+
 VMD exposes low-noise persistent-cache, transform, and queue counters in its
 `/health` response. Cache failure warnings are rate-limited.
 

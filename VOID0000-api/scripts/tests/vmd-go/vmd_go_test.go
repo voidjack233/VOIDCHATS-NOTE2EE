@@ -246,6 +246,170 @@ func TestReadinessIncludesTransformWorker(t *testing.T) {
 	}
 }
 
+func TestFlightGroupCoalescesSameKey(t *testing.T) {
+	group := vmd.NewFlightGroup[int](8)
+	leaderStarted := make(chan struct{})
+	releaseLeader := make(chan struct{})
+	leaderResult := make(chan int, 1)
+	leaderError := make(chan error, 1)
+	var taskCalls atomic.Int32
+
+	go func() {
+		value, err := group.Do(context.Background(), "same-key", func() (int, error) {
+			taskCalls.Add(1)
+			close(leaderStarted)
+			<-releaseLeader
+			return 42, nil
+		})
+		leaderResult <- value
+		leaderError <- err
+	}()
+	<-leaderStarted
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(releaseLeader)
+	}()
+	followerTaskCalled := false
+	followerValue, followerErr := group.Do(context.Background(), "same-key", func() (int, error) {
+		followerTaskCalled = true
+		return 99, nil
+	})
+	if followerErr != nil {
+		t.Fatal(followerErr)
+	}
+	if followerValue != 42 || followerTaskCalled {
+		t.Fatalf("follower did not share the leader result: value=%d task_called=%t", followerValue, followerTaskCalled)
+	}
+	if err := <-leaderError; err != nil {
+		t.Fatal(err)
+	}
+	if value := <-leaderResult; value != 42 {
+		t.Fatalf("unexpected leader result: %d", value)
+	}
+	if taskCalls.Load() != 1 {
+		t.Fatalf("same-key task ran %d times", taskCalls.Load())
+	}
+}
+
+func TestFlightGroupFollowerCancellationDoesNotCancelLeader(t *testing.T) {
+	group := vmd.NewFlightGroup[int](8)
+	leaderStarted := make(chan struct{})
+	releaseLeader := make(chan struct{})
+	leaderResult := make(chan int, 1)
+	leaderError := make(chan error, 1)
+
+	go func() {
+		value, err := group.Do(context.Background(), "cancel-key", func() (int, error) {
+			close(leaderStarted)
+			<-releaseLeader
+			return 7, nil
+		})
+		leaderResult <- value
+		leaderError <- err
+	}()
+	<-leaderStarted
+
+	cancelledContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := group.Do(cancelledContext, "cancel-key", func() (int, error) {
+		t.Fatal("cancelled follower unexpectedly became the leader")
+		return 0, nil
+	}); err != context.Canceled {
+		t.Fatalf("unexpected follower cancellation error: %v", err)
+	}
+
+	close(releaseLeader)
+	if err := <-leaderError; err != nil {
+		t.Fatal(err)
+	}
+	if value := <-leaderResult; value != 7 {
+		t.Fatalf("leader did not complete after follower cancellation: %d", value)
+	}
+}
+
+func TestFlightGroupRespectsActiveFlightRegistrationLimit(t *testing.T) {
+	group := vmd.NewFlightGroup[int](1)
+	leaderStarted := make(chan struct{})
+	releaseLeader := make(chan struct{})
+	leaderDone := make(chan struct{})
+
+	go func() {
+		defer close(leaderDone)
+		_, _ = group.Do(context.Background(), "registered-key", func() (int, error) {
+			close(leaderStarted)
+			<-releaseLeader
+			return 1, nil
+		})
+	}()
+	<-leaderStarted
+
+	var overflowCalls atomic.Int32
+	for range 2 {
+		value, err := group.Do(context.Background(), "overflow-key", func() (int, error) {
+			return int(overflowCalls.Add(1)), nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value <= 0 {
+			t.Fatalf("unexpected overflow task result: %d", value)
+		}
+	}
+	if overflowCalls.Load() != 2 {
+		t.Fatalf("overflow work was unexpectedly registered for coalescing: %d", overflowCalls.Load())
+	}
+
+	close(releaseLeader)
+	<-leaderDone
+}
+
+func TestFlightGroupPanicWakesFollowersAndDoesNotPoisonKey(t *testing.T) {
+	group := vmd.NewFlightGroup[int](8)
+	leaderStarted := make(chan struct{})
+	triggerPanic := make(chan struct{})
+	leaderPanic := make(chan any, 1)
+
+	go func() {
+		defer func() {
+			leaderPanic <- recover()
+		}()
+		_, _ = group.Do(context.Background(), "panic-key", func() (int, error) {
+			close(leaderStarted)
+			<-triggerPanic
+			panic("expected panic")
+		})
+	}()
+	<-leaderStarted
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(triggerPanic)
+	}()
+	followerTaskCalled := false
+	_, followerErr := group.Do(context.Background(), "panic-key", func() (int, error) {
+		followerTaskCalled = true
+		return 0, nil
+	})
+	if followerTaskCalled {
+		t.Fatal("panic follower unexpectedly started duplicate work")
+	}
+	mediaErr, ok := followerErr.(*vmd.MediaError)
+	if !ok || mediaErr.Code != "VMD_DELIVERY_FAILED" {
+		t.Fatalf("follower received an unsafe panic result: %#v", followerErr)
+	}
+	if recovered := <-leaderPanic; recovered != "expected panic" {
+		t.Fatalf("leader panic was not preserved: %#v", recovered)
+	}
+
+	value, err := group.Do(context.Background(), "panic-key", func() (int, error) {
+		return 23, nil
+	})
+	if err != nil || value != 23 {
+		t.Fatalf("panic key remained poisoned: value=%d err=%v", value, err)
+	}
+}
+
 func TestWorkQueueBoundsConcurrencyAndReturnsAllResults(t *testing.T) {
 	queue := vmd.NewWorkQueue[int](2, 8, time.Second)
 	defer queue.Close()
