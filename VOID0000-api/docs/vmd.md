@@ -3,6 +3,12 @@
 VMD serves bounded display variants for private chat images. Original attachment
 downloads continue to use signed `cdn.void0000.online` URLs.
 
+The public VMD control plane is a Go service. Cache-miss image decoding and
+encoding remain isolated in the existing worker process behind a private Unix
+socket, where they share the bounded Sharp/libvips gate with other trusted image
+work. This keeps the public service memory-bounded without changing established
+AVIF, GIF, WebP, TIFF, orientation, animation, or safety-limit behavior.
+
 ## Request Flow
 
 1. An authenticated message request verifies conversation membership.
@@ -42,6 +48,21 @@ exposes only:
 - `GET /health`
 - `GET /ready`
 - `GET /v1/images/:attachmentId/:variant?exp=...&sig=...`
+
+Build and reload VMD after dependencies and the worker are ready:
+
+Go 1.26 or newer is required to build the static service binary.
+
+```bash
+npm run build:vmd
+pm2 startOrReload ecosystem.config.cjs --only voidapp-worker-service --update-env
+pm2 startOrReload ecosystem.config.cjs --only voidapp-vmd-service --update-env
+pm2 save
+```
+
+The PM2 service keeps the existing name and port. If rollback is required, the
+previous Node entrypoint remains available through `npm run start:vmd:node` and
+`server/entrypoints/vmd-server.js` until the Go migration is frozen.
 
 The frontend Content Security Policy must include
 `https://vmd.void0000.online` in `img-src`. No VMD origin is needed in
@@ -99,9 +120,11 @@ The dedicated cache bucket stays private and has a 30-day lifecycle on the
 versions without recursive cleanup in request paths. An expired active variant
 is regenerated lazily on its next request.
 
-Different images use a bounded FIFO work queue: two MinIO-read/Sharp pipelines
-run concurrently and up to eight wait briefly before VMD returns `503`. Sentinel
-still coalesces simultaneous requests for the same attachment and variant.
+Different images use a bounded FIFO work queue in Go: two MinIO-read/transform
+pipelines run concurrently and up to eight wait briefly before VMD returns
+`503`. An in-process flight group still coalesces simultaneous requests for the
+same attachment and variant. The private worker independently bounds accepted
+bytes and shares the global Sharp work gate.
 
 VMD exposes low-noise persistent-cache, transform, and queue counters in its
 `/health` response. Cache failure warnings are rate-limited.

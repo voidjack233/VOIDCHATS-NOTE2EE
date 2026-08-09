@@ -2,6 +2,7 @@
 node_modules/
 .env
 .runtime/
+/bin/voidapp-vmd
 
 # Elixir / Phoenix (void_gateway)
 void_gateway/_build/

@@ -51,9 +51,10 @@ const apps = [
   },
   {
     name: 'voidapp-vmd-service',
-    script: 'server/entrypoints/vmd-server.js',
+    script: 'startup/run-vmd-go.sh',
     instances: 1,
     exec_mode: 'fork',
+    interpreter: 'none',
     env: {
       ...commonEnv,
       VMD_SERVICE_PORT: 3006,
@@ -114,6 +115,7 @@ const apps = [
     exec_mode: 'fork',
     env: commonEnv,
     max_memory_restart: '2G',
+    kill_timeout: 10_000,
     watch: false,
     autorestart: true,
   },

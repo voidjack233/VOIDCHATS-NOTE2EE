@@ -14,6 +14,9 @@ const {
   startAttachmentSanitizerServer,
 } = await import('../attachmentSanitizer/server.js');
 const {
+  startVmdTransformServer,
+} = await import('../vmd/transformServer.js');
+const {
   createStagedAttachmentCleanupRunner,
 } = await import('../attachments/cleanup.js');
 const {
@@ -40,6 +43,7 @@ initPublisher();
 initPresenceFanout();
 
 const attachmentSanitizerServer = await startAttachmentSanitizerServer();
+const vmdTransformServer = await startVmdTransformServer();
 const imageWorker = startImageWorker();
 const stagedAttachmentCleanup = createStagedAttachmentCleanupRunner({
   lifecycle: attachmentLifecycle,
@@ -94,11 +98,15 @@ async function shutdown(signal) {
   stagedAttachmentCleanup.stop();
   await Promise.allSettled([
     attachmentSanitizerServer.close(),
+    vmdTransformServer.close(),
     imageWorker.close(),
   ]).then((results) => {
-    const [attachmentResult, imageResult] = results;
+    const [attachmentResult, vmdResult, imageResult] = results;
     if (attachmentResult.status === 'rejected') {
       console.error('Attachment sanitizer shutdown failed:', attachmentResult.reason);
+    }
+    if (vmdResult.status === 'rejected') {
+      console.error('VMD transform shutdown failed:', vmdResult.reason);
     }
     if (imageResult.status === 'rejected') {
       console.error('Image worker shutdown failed:', imageResult.reason);
@@ -116,5 +124,5 @@ process.on('SIGTERM', () => {
 });
 
 console.log(
-  `✅ Worker service running (PID ${process.pid}, attachment IPC ${attachmentSanitizerServer.socketPath})`,
+  `✅ Worker service running (PID ${process.pid}, attachment IPC ${attachmentSanitizerServer.socketPath}, VMD IPC ${vmdTransformServer.socketPath})`,
 );
