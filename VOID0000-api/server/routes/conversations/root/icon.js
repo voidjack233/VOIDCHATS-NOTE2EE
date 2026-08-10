@@ -2,7 +2,11 @@ import { Router } from 'express';
 import sharp from 'sharp';
 import { pool } from '../../../db.js';
 import { findConversationByIdentifier } from '../../../utils/conversationIdentity.js';
-import { minioClient, GROUP_AVATAR_BUCKET } from '../../../minio.js';
+import {
+  minioClient,
+  GROUP_AVATAR_BUCKET,
+  PUBLIC_IMAGE_CACHE_CONTROL,
+} from '../../../minio.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
   ALLOWED_ICON_MIME_PREFIXES,
@@ -82,7 +86,10 @@ router.put('/:conversationId/icon', async (req, res) => {
       iconFilename,
       processed,
       processed.length,
-      { 'Content-Type': 'image/webp' }
+      {
+        'Content-Type': 'image/webp',
+        'Cache-Control': PUBLIC_IMAGE_CACHE_CONTROL,
+      }
     );
 
     const updateResult = await pool.query(

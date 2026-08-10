@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
 import { authenticateUser } from '../../middleware/jwt.js';
+import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
 
 const router = express.Router();
 
@@ -10,9 +11,17 @@ router.get('/', authenticateUser, async (req, res) => {
 
   try {
     const result = await db.query(
-      `SELECT id, email, username, profile_id, created_at
-       FROM users
-       WHERE id = $1`,
+      `SELECT
+         u.id,
+         u.email,
+         u.username,
+         u.profile_id,
+         u.created_at,
+         up.display_name,
+         up.avatar_filename
+       FROM users u
+       LEFT JOIN user_profiles up ON up.id = u.profile_id
+       WHERE u.id = $1`,
       [userId]
     );
 
@@ -20,9 +29,12 @@ router.get('/', authenticateUser, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const { avatar_filename: avatarFilename, ...account } = result.rows[0];
+    account.avatar_url = resolveUserAvatarUrl(avatarFilename);
+
     res.json({
       success: true,
-      account: result.rows[0]
+      account,
     });
   } catch (err) {
     console.error('AccountRead GET error:', err);

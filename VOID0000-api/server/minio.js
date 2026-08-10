@@ -59,6 +59,7 @@ const cdnMinioClient = getCdnMinioClient();
 const BUCKET = process.env.MINIO_BUCKET || 'avatars';
 const GROUP_AVATAR_BUCKET = process.env.MINIO_GROUP_AVATAR_BUCKET || 'group-avatars';
 const ATTACH_BUCKET = process.env.MINIO_ATTACH_BUCKET || 'chat-attachments';
+const PUBLIC_IMAGE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
 async function ensureBucketExists(bucket) {
   const exists = await minioClient.bucketExists(bucket);
@@ -120,4 +121,5 @@ export {
   BUCKET,
   GROUP_AVATAR_BUCKET,
   ATTACH_BUCKET,
+  PUBLIC_IMAGE_CACHE_CONTROL,
 };

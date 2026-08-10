@@ -1,7 +1,7 @@
 // server/queues/imageQueue.js
 import { Queue, Worker, QueueEvents } from 'bullmq';
 import { pool } from '../db.js';
-import { minioClient, BUCKET } from '../minio.js';
+import { minioClient, BUCKET, PUBLIC_IMAGE_CACHE_CONTROL } from '../minio.js';
 import { profileCache } from '../middleware/profileCache.js';
 import { debugLog } from '../utils/debugLog.js';
 import { runSharpWork } from '../imageProcessing/sharpWorkGate.js';
@@ -78,7 +78,10 @@ export function startImageWorker() {
         avatarFilename,
         processed,
         processed.length,
-        { 'Content-Type': 'image/webp' }
+        {
+          'Content-Type': 'image/webp',
+          'Cache-Control': PUBLIC_IMAGE_CACHE_CONTROL,
+        }
       );
 
       // 4. Update database

@@ -50,7 +50,11 @@ const ChatDashboard = () => {
   const { loading, user } = useAuth();
   const { isLoggingOut } = useUser();
 
-  const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
+  const { profile: loadedMyProfile } = useProfileRecord(user?.profile_id || '');
+  const myProfile = loadedMyProfile || (user ? {
+    avatar_url: typeof user.avatar_url === 'string' ? user.avatar_url : null,
+    display_name: typeof user.display_name === 'string' ? user.display_name : null,
+  } : null);
   const { isOnline, showReconnectBanner } = useConnectionStatus();
   const showFullscreenPreparing = isLoggingOut || loading;
 

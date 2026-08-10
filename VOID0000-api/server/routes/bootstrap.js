@@ -8,12 +8,26 @@ const router = Router();
 
 async function getAccount(userId) {
   const result = await pool.query(
-    `SELECT id, email, username, profile_id, created_at
-     FROM users
-     WHERE id = $1`,
+    `SELECT
+       u.id,
+       u.email,
+       u.username,
+       u.profile_id,
+       u.created_at,
+       up.display_name,
+       up.avatar_filename
+     FROM users u
+     LEFT JOIN user_profiles up ON up.id = u.profile_id
+     WHERE u.id = $1`,
     [userId]
   );
-  return result.rows[0] || null;
+  if (!result.rows[0]) return null;
+
+  const { avatar_filename: avatarFilename, ...account } = result.rows[0];
+  return {
+    ...account,
+    avatar_url: resolveUserAvatarUrl(avatarFilename),
+  };
 }
 
 async function getPreferences(userId) {
