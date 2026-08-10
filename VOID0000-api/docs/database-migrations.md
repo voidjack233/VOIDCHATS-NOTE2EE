@@ -31,6 +31,13 @@ PostgreSQL migrations run in this order:
 - `0003_message_notifications_pref.sql` adds message notification preferences.
 - `0004_private_attachment_objects.sql` stores private object ownership.
 - `0005_push_subscriptions.sql` stores browser push subscriptions.
+- `0006_refresh_token_predecessor.sql` adds bounded refresh-race recovery state.
+- `0007_attachment_lifecycle.sql` adds staged attachment lifecycle state.
+- `0008_attachment_reserved_reconciliation.sql` adds reservation recovery data.
+- `0009_attachment_message_write_policy.sql` records the intended Scylla policy.
+- `0010_attachment_message_write_acknowledgement.sql` records acknowledged writes.
+- `0011_attachment_blob_deduplication.sql` separates logical attachments from
+  shared content-addressed physical blobs.
 
 ScyllaDB uses one fresh baseline:
 

@@ -66,10 +66,12 @@ func (s *Storage) findAttachmentObject(ctx context.Context, attachmentID string)
 	var objectKey string
 	err := s.pool.QueryRow(
 		ctx,
-		`SELECT object_key
-		 FROM attachment_objects
-		 WHERE id = $1
-		   AND bucket = $2
+		`SELECT blob.object_key
+		 FROM attachment_objects AS attachment
+		 JOIN attachment_blobs AS blob
+		   ON blob.id = attachment.blob_id
+		 WHERE attachment.id = $1
+		   AND blob.bucket = $2
 		 LIMIT 1`,
 		attachmentID,
 		s.config.AttachmentBucket,

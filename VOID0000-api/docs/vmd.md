@@ -16,9 +16,10 @@ AVIF, GIF, WebP, TIFF, orientation, animation, or safety-limit behavior.
    `display_url`, and temporary fixed-size `display_variants` capabilities.
 3. The browser puts those capabilities directly in native `src`/`srcset`
    attributes.
-4. VMD validates the capability, resolves the attachment UUID through
-   `attachment_objects`, checks its private persistent variant cache, and
-   returns WebP. Only a cache miss reads and transforms the private original.
+4. VMD validates the capability, resolves the attachment UUID through its
+   logical `attachment_objects` row to the shared `attachment_blobs` object,
+   checks its private persistent variant cache, and returns WebP. Only a cache
+   miss reads and transforms the private original.
 
 VMD does not accept external URLs or client-provided object keys.
 

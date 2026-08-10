@@ -5,6 +5,7 @@ import sharp from 'sharp';
 
 import { sanitizeChatAttachmentImage } from '../../../server/utils/chatImageSanitizer.js';
 import {
+  createAttachmentBlobMetadata,
   createAttachmentObjectMetadata,
   createProtectedAttachmentResponseHeaders,
   createAttachmentStoragePolicy,
@@ -193,12 +194,60 @@ test('attachment filenames cannot inject headers or retain path components', () 
   assert.doesNotMatch(filename, /[\r\n"\\/]/);
 });
 
+test('shared blob metadata never stores a logical uploader filename', () => {
+  const policy = createAttachmentStoragePolicy({
+    sanitizedImage: null,
+    originalName: 'private-report.pdf',
+  });
+  const metadata = createAttachmentBlobMetadata(policy);
+
+  assert.equal(metadata['X-Amz-Meta-Original-Filename'], undefined);
+  assert.equal(
+    metadata['Content-Disposition'],
+    'attachment; filename="attachment.bin"',
+  );
+});
+
+test('delivery uses the logical filename instead of shared blob metadata', () => {
+  const sharedBlobStat = {
+    metaData: {
+      'content-type': 'image/jpeg',
+      'content-disposition': 'inline; filename="attachment.bin"',
+      'x-amz-meta-void-sanitized-image': '1',
+    },
+  };
+
+  const protectedHeaders = createProtectedAttachmentResponseHeaders(
+    sharedBlobStat,
+    'blobs/v1/sha256/aa/hash',
+    'my-cat.jpg',
+  );
+  const signedParams = createPresignedAttachmentResponseParams(
+    sharedBlobStat,
+    'blobs/v1/sha256/aa/hash',
+    'my-cat.jpg',
+  );
+
+  assert.equal(
+    protectedHeaders['Content-Disposition'],
+    'inline; filename="my-cat.jpg"',
+  );
+  assert.equal(
+    signedParams['response-content-disposition'],
+    'inline; filename="my-cat.jpg"',
+  );
+});
+
 test('signed-original generation is not given client-controlled descriptor metadata', async () => {
   const attachmentId = '11111111-1111-4111-8111-111111111111';
   let receivedArguments;
   const attachDelivery = createAttachmentDeliveryMapper({
     async queryAttachmentObjects() {
-      return [{ id: attachmentId, object_key: `conversation/${attachmentId}.bin` }];
+      return [{
+        id: attachmentId,
+        object_key: `conversation/${attachmentId}.bin`,
+        filename: 'stored-name.bin',
+      }];
     },
     async createOriginalDelivery(...args) {
       receivedArguments = args;
@@ -214,7 +263,14 @@ test('signed-original generation is not given client-controlled descriptor metad
     })],
   }], 'conversation-id');
 
-  assert.deepEqual(receivedArguments, [`conversation/${attachmentId}.bin`]);
+  assert.deepEqual(receivedArguments, [
+    `conversation/${attachmentId}.bin`,
+    {
+      id: attachmentId,
+      object_key: `conversation/${attachmentId}.bin`,
+      filename: 'stored-name.bin',
+    },
+  ]);
 });
 
 test('unmarked attachments are not given VMD inline delivery URLs', async () => {

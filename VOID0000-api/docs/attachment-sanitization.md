@@ -6,14 +6,15 @@ inside `voidapp-message-service`.
 ## Data Flow
 
 ```text
-browser JSON/base64 upload
-  -> message-server decodes one in-memory Buffer
+browser raw binary upload
+  -> message-server reads one bounded in-memory Buffer
   -> permission-restricted Unix socket
   -> worker-server bounded attachment queue
   -> shared Sharp work gate
   -> metadata-safe re-encoded image returned over the socket
-  -> message-server writes only the sanitized bytes to MinIO
-  -> message-server commits attachment ownership in PostgreSQL
+  -> message-server hashes the final trusted bytes
+  -> message-server creates or reuses one physical MinIO blob
+  -> message-server stages a new logical attachment in PostgreSQL
 ```
 
 Ordinary non-image attachments are identified by the worker and continue
@@ -22,9 +23,23 @@ closed if validation or sanitization fails.
 
 Raw chat image bytes exist temporarily only in the message request buffer, Unix
 socket/kernel buffers, and the worker process input buffer. They are never
-written to disk, MinIO, BullMQ, or Valkey. The message API still prepares every
-file before writing any object, and it removes successful MinIO writes if a
-later object or database operation fails.
+written to disk, MinIO, BullMQ, or Valkey. Only the worker's final trusted bytes
+can enter attachment blob storage.
+
+## Storage Deduplication
+
+`attachment_objects` remains the authorization and staged/reserved/committed
+lifecycle record. It points to `attachment_blobs`, which owns the physical
+content-addressed MinIO object. SHA-256 is computed only from final trusted
+bytes after sanitization, so identical uploads reuse one physical blob while
+retaining independent attachment IDs, owners, conversations, filenames and
+message lifecycle state.
+
+Deleting or expiring a staged attachment removes only its logical reference.
+The worker later garbage-collects zero-reference blobs after a 24-hour grace,
+under the existing distributed cleanup lock, and verifies the real reference
+set before deleting MinIO data. Historical rows are migrated one-to-one with no
+invented content hash and therefore are not falsely deduplicated.
 
 ## Inline Delivery Trust
 

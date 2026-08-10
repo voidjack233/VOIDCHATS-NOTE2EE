@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { ATTACHMENT_MESSAGE_WRITE_POLICY } from './messageConsistency.js';
 
@@ -15,6 +15,8 @@ export const DEFAULT_STAGED_ATTACHMENT_MAX_BYTES = 100 * 1024 * 1024;
 export const DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_SECONDS = 15 * 60;
 export const DEFAULT_ATTACHMENT_CLEANUP_BATCH_SIZE = 50;
 export const DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE = 25;
+export const DEFAULT_ATTACHMENT_BLOB_GC_GRACE_SECONDS = 24 * 60 * 60;
+export const DEFAULT_ATTACHMENT_BLOB_GC_BATCH_SIZE = 25;
 
 const MAX_STAGED_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_ATTACHMENT_RESERVATION_TTL_SECONDS = 60 * 60;
@@ -23,6 +25,9 @@ const MAX_STAGED_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 const MAX_ATTACHMENT_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60;
 const MAX_ATTACHMENT_CLEANUP_BATCH_SIZE = 500;
 const MAX_ATTACHMENT_RECONCILIATION_BATCH_SIZE = 100;
+const MAX_ATTACHMENT_BLOB_GC_GRACE_SECONDS = 30 * 24 * 60 * 60;
+const MAX_ATTACHMENT_BLOB_GC_BATCH_SIZE = 100;
+const CONTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
 function resolvePositiveInteger(value, fallback, maximum) {
   const normalized = value == null ? '' : String(value).trim();
@@ -74,7 +79,32 @@ export function resolveAttachmentLifecycleConfig(env = process.env) {
       DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE,
       MAX_ATTACHMENT_RECONCILIATION_BATCH_SIZE,
     ),
+    blobGcGraceSeconds: resolvePositiveInteger(
+      env.ATTACHMENT_BLOB_GC_GRACE_SECONDS,
+      DEFAULT_ATTACHMENT_BLOB_GC_GRACE_SECONDS,
+      MAX_ATTACHMENT_BLOB_GC_GRACE_SECONDS,
+    ),
+    blobGcBatchSize: resolvePositiveInteger(
+      env.ATTACHMENT_BLOB_GC_BATCH_SIZE,
+      DEFAULT_ATTACHMENT_BLOB_GC_BATCH_SIZE,
+      MAX_ATTACHMENT_BLOB_GC_BATCH_SIZE,
+    ),
   });
+}
+
+export function createAttachmentContentHash(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new TypeError('Attachment blob hashing requires a non-empty buffer');
+  }
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+export function createAttachmentBlobObjectKey(contentHash) {
+  const normalized = String(contentHash || '').trim().toLowerCase();
+  if (!CONTENT_HASH_PATTERN.test(normalized)) {
+    throw new TypeError('Attachment blob object key requires a SHA-256 hash');
+  }
+  return `blobs/v1/sha256/${normalized.slice(0, 2)}/${normalized}`;
 }
 
 export class AttachmentLifecycleError extends Error {
@@ -283,7 +313,11 @@ export function createAttachmentLifecycle({
   if (!dbPool || typeof dbPool.query !== 'function' || typeof dbPool.connect !== 'function') {
     throw new TypeError('Attachment lifecycle requires a PostgreSQL pool');
   }
-  if (!objectStore || typeof objectStore.removeObject !== 'function') {
+  if (
+    !objectStore ||
+    typeof objectStore.putObject !== 'function' ||
+    typeof objectStore.removeObject !== 'function'
+  ) {
     throw new TypeError('Attachment lifecycle requires an object store');
   }
   if (typeof bucket !== 'string' || !bucket.trim()) {
@@ -307,8 +341,20 @@ export function createAttachmentLifecycle({
     conversationId,
     attachments,
   }) {
-    const incomingBytes = attachments.reduce(
-      (total, attachment) => total + Number(attachment.sizeBytes || 0),
+    const preparedAttachments = attachments.map((attachment) => {
+      if (!Buffer.isBuffer(attachment.buffer) || attachment.buffer.length === 0) {
+        throw new TypeError('Staged attachments require final non-empty bytes');
+      }
+      const contentHash = createAttachmentContentHash(attachment.buffer);
+      return {
+        ...attachment,
+        contentHash,
+        objectKey: createAttachmentBlobObjectKey(contentHash),
+        sizeBytes: attachment.buffer.length,
+      };
+    });
+    const incomingBytes = preparedAttachments.reduce(
+      (total, attachment) => total + attachment.sizeBytes,
       0,
     );
 
@@ -321,13 +367,97 @@ export function createAttachmentLifecycle({
       assertStagedUploadQuota({
         currentCount: usage.count,
         currentBytes: usage.bytes,
-        incomingCount: attachments.length,
+        incomingCount: preparedAttachments.length,
         incomingBytes,
         maxCount: config.stagedMaxCount,
         maxBytes: config.stagedMaxBytes,
       });
 
-      for (const attachment of attachments) {
+      const attachmentGroups = new Map();
+      for (const attachment of preparedAttachments) {
+        const group = attachmentGroups.get(attachment.contentHash) || [];
+        group.push(attachment);
+        attachmentGroups.set(attachment.contentHash, group);
+      }
+
+      const blobByHash = new Map();
+      for (const contentHash of [...attachmentGroups.keys()].sort()) {
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
+          [`attachment-blob:${contentHash}`],
+        );
+
+        const [representative] = attachmentGroups.get(contentHash);
+        const existingResult = await client.query(
+          `SELECT id, bucket, object_key, size_bytes, content_type, inline, status
+           FROM attachment_blobs
+           WHERE content_hash = $1
+           FOR UPDATE`,
+          [contentHash],
+        );
+        const existing = existingResult.rows[0];
+
+        if (existing) {
+          if (existing.status !== 'ready') {
+            fail(
+              503,
+              'ATTACHMENT_BLOB_BUSY',
+              'This attachment is temporarily unavailable for upload',
+              { retryable: true },
+            );
+          }
+          if (
+            existing.bucket !== bucket ||
+            existing.object_key !== representative.objectKey ||
+            Number(existing.size_bytes) !== representative.sizeBytes ||
+            existing.content_type !== representative.contentType ||
+            existing.inline !== representative.inline
+          ) {
+            fail(
+              409,
+              'ATTACHMENT_BLOB_CONFLICT',
+              'Attachment content identity conflicts with stored metadata',
+            );
+          }
+          blobByHash.set(contentHash, existing);
+          continue;
+        }
+
+        await objectStore.putObject(
+          bucket,
+          representative.objectKey,
+          representative.buffer,
+          representative.sizeBytes,
+          representative.objectMetadata,
+        );
+        const insertBlobResult = await client.query(
+          `INSERT INTO attachment_blobs (
+             content_hash,
+             bucket,
+             object_key,
+             size_bytes,
+             content_type,
+             inline,
+             status,
+             ref_count,
+             orphaned_at
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, 'ready', 0, NOW())
+           RETURNING id, bucket, object_key, size_bytes, content_type, inline, status`,
+          [
+            contentHash,
+            bucket,
+            representative.objectKey,
+            representative.sizeBytes,
+            representative.contentType,
+            representative.inline,
+          ],
+        );
+        blobByHash.set(contentHash, insertBlobResult.rows[0]);
+      }
+
+      for (const attachment of preparedAttachments) {
+        const blob = blobByHash.get(attachment.contentHash);
         await client.query(
           `INSERT INTO attachment_objects (
              id,
@@ -335,33 +465,44 @@ export function createAttachmentLifecycle({
              uploader_id,
              bucket,
              object_key,
+             blob_id,
+             filename,
              status,
              size_bytes,
              staged_at,
              expires_at
            )
            VALUES (
-             $1, $2, $3, $4, $5, 'staged', $6, NOW(),
-             NOW() + ($7 * INTERVAL '1 second')
+             $1, $2, $3, $4, $5, $6, $7, 'staged', $8, NOW(),
+             NOW() + ($9 * INTERVAL '1 second')
            )`,
           [
             attachment.id,
             conversationId,
             userId,
-            bucket,
-            attachment.objectKey,
+            blob.bucket,
+            blob.object_key,
+            blob.id,
+            attachment.filename,
             attachment.sizeBytes,
             config.stagedTtlSeconds,
           ],
         );
       }
+
+      return preparedAttachments.map((attachment) => ({
+        id: attachment.id,
+        blobId: blobByHash.get(attachment.contentHash).id,
+        contentHash: attachment.contentHash,
+        objectKey: attachment.objectKey,
+      }));
     });
   }
 
   async function deleteStagedAttachment({ attachmentId, userId, conversationId }) {
     return withTransaction(dbPool, async (client) => {
       const result = await client.query(
-        `SELECT id, conversation_id, uploader_id, bucket, object_key, status
+        `SELECT id, conversation_id, uploader_id, status
          FROM attachment_objects
          WHERE id = $1
          FOR UPDATE`,
@@ -381,7 +522,6 @@ export function createAttachmentLifecycle({
         fail(409, 'ATTACHMENT_NOT_STAGED', 'Only unsent staged attachments can be removed');
       }
 
-      await objectStore.removeObject(row.bucket, row.object_key);
       const deleteResult = await client.query(
         `DELETE FROM attachment_objects
          WHERE id = $1
@@ -710,7 +850,7 @@ export function createAttachmentLifecycle({
       try {
         const result = await withTransaction(dbPool, async (client) => {
           const lockedResult = await client.query(
-            `SELECT id, bucket, object_key
+            `SELECT id
              FROM attachment_objects
              WHERE id = $1
                AND status = 'staged'
@@ -723,7 +863,6 @@ export function createAttachmentLifecycle({
             return false;
           }
 
-          await objectStore.removeObject(row.bucket, row.object_key);
           const deleteResult = await client.query(
             `DELETE FROM attachment_objects
              WHERE id = $1
@@ -747,6 +886,125 @@ export function createAttachmentLifecycle({
     return summary;
   }
 
+  async function cleanupOrphanedBlobs({ batchSize = config.blobGcBatchSize } = {}) {
+    const candidateResult = await dbPool.query(
+      `SELECT id
+       FROM attachment_blobs
+       WHERE ref_count = 0
+         AND orphaned_at <= NOW() - ($1 * INTERVAL '1 second')
+         AND status IN ('ready', 'deleting')
+       ORDER BY orphaned_at, id
+       LIMIT $2`,
+      [config.blobGcGraceSeconds, batchSize],
+    );
+    const summary = {
+      selected: candidateResult.rows.length,
+      deleted: 0,
+      retained: 0,
+      failed: 0,
+    };
+
+    for (const candidate of candidateResult.rows) {
+      let blob;
+      try {
+        blob = await withTransaction(dbPool, async (client) => {
+          const lockedResult = await client.query(
+            `SELECT id, bucket, object_key, status, ref_count, orphaned_at
+             FROM attachment_blobs
+             WHERE id = $1
+               AND ref_count = 0
+               AND orphaned_at <= NOW() - ($2 * INTERVAL '1 second')
+               AND status IN ('ready', 'deleting')
+             FOR UPDATE`,
+            [candidate.id, config.blobGcGraceSeconds],
+          );
+          const row = lockedResult.rows[0];
+          if (!row) return null;
+
+          const referenceResult = await client.query(
+            `SELECT EXISTS (
+               SELECT 1
+               FROM attachment_objects
+               WHERE blob_id = $1
+             ) AS has_references`,
+            [candidate.id],
+          );
+          if (referenceResult.rows[0]?.has_references) {
+            await client.query(
+              `UPDATE attachment_blobs
+               SET ref_count = (
+                     SELECT COUNT(*)::bigint
+                     FROM attachment_objects
+                     WHERE blob_id = $1
+                   ),
+                   orphaned_at = NULL,
+                   status = 'ready',
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [candidate.id],
+            );
+            return null;
+          }
+
+          if (row.status === 'ready') {
+            const updateResult = await client.query(
+              `UPDATE attachment_blobs
+               SET status = 'deleting',
+                   updated_at = NOW()
+               WHERE id = $1
+                 AND status = 'ready'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM attachment_objects WHERE blob_id = $1
+                 )
+               RETURNING id`,
+              [candidate.id],
+            );
+            if (updateResult.rowCount !== 1) return null;
+          } else if (row.status !== 'deleting') {
+            return null;
+          }
+
+          return {
+            id: row.id,
+            bucket: row.bucket,
+            objectKey: row.object_key,
+          };
+        });
+
+        if (!blob) {
+          summary.retained += 1;
+          continue;
+        }
+
+        await objectStore.removeObject(blob.bucket, blob.objectKey);
+        const deleteResult = await withTransaction(dbPool, async (client) => (
+          client.query(
+            `DELETE FROM attachment_blobs
+             WHERE id = $1
+               AND status = 'deleting'
+               AND NOT EXISTS (
+                 SELECT 1 FROM attachment_objects WHERE blob_id = $1
+               )`,
+            [blob.id],
+          )
+        ));
+        if (deleteResult.rowCount === 1) {
+          summary.deleted += 1;
+        } else {
+          summary.retained += 1;
+        }
+      } catch (error) {
+        summary.failed += 1;
+        logger.error('[ATTACHMENT_BLOB_GC] physical blob cleanup failed', {
+          blob_id: String(candidate.id),
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      }
+    }
+
+    return summary;
+  }
+
   return Object.freeze({
     config,
     assertUploadAllowed,
@@ -757,6 +1015,7 @@ export function createAttachmentLifecycle({
     commitReservation,
     releaseReservation,
     cleanupExpiredStaged,
+    cleanupOrphanedBlobs,
   });
 }
 

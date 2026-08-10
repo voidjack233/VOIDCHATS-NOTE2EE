@@ -67,10 +67,12 @@ function isObjectNotFoundError(error) {
 
 async function findAttachmentObject(attachmentId) {
   const result = await pool.query(
-    `SELECT object_key
-     FROM attachment_objects
-     WHERE id = $1
-       AND bucket = $2
+    `SELECT blob.object_key
+     FROM attachment_objects AS attachment
+     JOIN attachment_blobs AS blob
+       ON blob.id = attachment.blob_id
+     WHERE attachment.id = $1
+       AND blob.bucket = $2
      LIMIT 1`,
     [attachmentId, ATTACH_BUCKET],
   );

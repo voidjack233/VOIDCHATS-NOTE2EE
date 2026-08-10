@@ -191,8 +191,8 @@ export function createAttachmentDeliveryMapper({
 
     try {
       const attachmentObjects = await queryAttachmentObjects(conversationId, attachmentIds);
-      const objectKeyById = new Map(
-        attachmentObjects.map((row) => [String(row.id), row.object_key]),
+      const attachmentObjectById = new Map(
+        attachmentObjects.map((row) => [String(row.id), row]),
       );
       const imageAttachmentIds = new Set(
         parsedEntries
@@ -202,10 +202,13 @@ export function createAttachmentDeliveryMapper({
           .map((entry) => entry.attachmentId),
       );
       const signedEntries = await mapWithBoundedConcurrency(
-        [...objectKeyById.entries()],
+        [...attachmentObjectById.entries()],
         deliveryMaxConcurrency,
-        async ([attachmentId, objectKey]) => {
-          const originalDelivery = await createOriginalDelivery(objectKey);
+        async ([attachmentId, attachmentObject]) => {
+          const originalDelivery = await createOriginalDelivery(
+            attachmentObject.object_key,
+            attachmentObject,
+          );
           let imageDelivery = null;
 
           if (

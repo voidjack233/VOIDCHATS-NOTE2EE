@@ -4,11 +4,15 @@ import test from 'node:test';
 
 import {
   AttachmentLifecycleError,
+  DEFAULT_ATTACHMENT_BLOB_GC_BATCH_SIZE,
+  DEFAULT_ATTACHMENT_BLOB_GC_GRACE_SECONDS,
   DEFAULT_ATTACHMENT_CLEANUP_BATCH_SIZE,
   DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE,
   DEFAULT_STAGED_ATTACHMENT_MAX_BYTES,
   DEFAULT_STAGED_ATTACHMENT_MAX_COUNT,
   assertStagedUploadQuota,
+  createAttachmentBlobObjectKey,
+  createAttachmentContentHash,
   createAttachmentLifecycle,
   extractProtectedAttachmentIds,
   resolveAttachmentLifecycleConfig,
@@ -46,6 +50,8 @@ function lifecycleConfig(overrides = {}) {
     cleanupIntervalSeconds: 900,
     cleanupBatchSize: 50,
     reconciliationBatchSize: 25,
+    blobGcGraceSeconds: 24 * 60 * 60,
+    blobGcBatchSize: 25,
     ...overrides,
   };
 }
@@ -81,11 +87,30 @@ function createMemoryInfrastructure(initialRows = []) {
       message_id: null,
       scylla_write_policy: null,
       scylla_write_acknowledged_at: null,
+      blob_id: row.blob_id || `blob-${String(row.id).toLowerCase()}`,
       ...row,
       id: String(row.id).toLowerCase(),
     },
   ]));
+  const blobs = new Map();
+  for (const row of rows.values()) {
+    const blob = blobs.get(row.blob_id) || {
+      id: row.blob_id,
+      content_hash: null,
+      bucket: row.bucket,
+      object_key: row.object_key,
+      size_bytes: row.size_bytes,
+      content_type: null,
+      inline: null,
+      status: 'ready',
+      ref_count: 0,
+      orphaned_at: null,
+    };
+    blob.ref_count += 1;
+    blobs.set(blob.id, blob);
+  }
   const objects = new Set([...rows.values()].map((row) => row.object_key));
+  const objectWrites = [];
   const failedObjectDeletes = new Set();
   const failedAcknowledgementUpdates = new Set();
   const mutex = new Mutex();
@@ -115,14 +140,54 @@ function createMemoryInfrastructure(initialRows = []) {
       };
     }
 
+    if (
+      query.startsWith('SELECT id, bucket, object_key, size_bytes, content_type, inline, status') &&
+      query.includes('FROM attachment_blobs')
+    ) {
+      const blob = [...blobs.values()].find((candidate) => (
+        candidate.content_hash === params[0]
+      ));
+      return { rows: blob ? [{ ...blob }] : [], rowCount: blob ? 1 : 0 };
+    }
+
+    if (query.startsWith('INSERT INTO attachment_blobs')) {
+      const [contentHash, bucket, objectKey, sizeBytes, contentType, inline] = params;
+      const blob = {
+        id: `blob-${blobs.size + 1}`,
+        content_hash: contentHash,
+        bucket,
+        object_key: objectKey,
+        size_bytes: sizeBytes,
+        content_type: contentType,
+        inline,
+        status: 'ready',
+        ref_count: 0,
+        orphaned_at: NOW,
+      };
+      blobs.set(blob.id, blob);
+      return { rows: [{ ...blob }], rowCount: 1 };
+    }
+
     if (query.startsWith('INSERT INTO attachment_objects')) {
-      const [id, conversationId, uploaderId, bucket, objectKey, sizeBytes, ttlSeconds] = params;
+      const [
+        id,
+        conversationId,
+        uploaderId,
+        bucket,
+        objectKey,
+        blobId,
+        filename,
+        sizeBytes,
+        ttlSeconds,
+      ] = params;
       rows.set(String(id).toLowerCase(), {
         id: String(id).toLowerCase(),
         conversation_id: conversationId,
         uploader_id: uploaderId,
         bucket,
         object_key: objectKey,
+        blob_id: blobId,
+        filename,
         status: 'staged',
         size_bytes: sizeBytes,
         staged_at: new Date(NOW),
@@ -135,11 +200,14 @@ function createMemoryInfrastructure(initialRows = []) {
         scylla_write_policy: null,
         scylla_write_acknowledged_at: null,
       });
+      const blob = blobs.get(blobId);
+      blob.ref_count += 1;
+      blob.orphaned_at = null;
       return { rows: [], rowCount: 1 };
     }
 
     if (
-      query.startsWith('SELECT id, conversation_id, uploader_id, bucket, object_key, status') &&
+      query.startsWith('SELECT id, conversation_id, uploader_id, status') &&
       query.includes('WHERE id = $1')
     ) {
       const row = rows.get(String(params[0]).toLowerCase());
@@ -343,7 +411,78 @@ function createMemoryInfrastructure(initialRows = []) {
     }
 
     if (
-      query.startsWith('SELECT id, bucket, object_key') &&
+      query.startsWith('SELECT id FROM attachment_blobs') &&
+      query.includes('ORDER BY orphaned_at')
+    ) {
+      const [graceSeconds, batchSize] = params;
+      const candidates = [...blobs.values()]
+        .filter((blob) => (
+          blob.ref_count === 0 &&
+          blob.orphaned_at &&
+          blob.orphaned_at.getTime() + (graceSeconds * 1000) <= NOW.getTime() &&
+          ['ready', 'deleting'].includes(blob.status)
+        ))
+        .sort((left, right) => left.orphaned_at - right.orphaned_at)
+        .slice(0, batchSize)
+        .map((blob) => ({ id: blob.id }));
+      return { rows: candidates, rowCount: candidates.length };
+    }
+
+    if (
+      query.startsWith('SELECT id, bucket, object_key, status, ref_count, orphaned_at') &&
+      query.includes('FROM attachment_blobs')
+    ) {
+      const [blobId, graceSeconds] = params;
+      const blob = blobs.get(blobId);
+      const eligible = blob?.ref_count === 0 &&
+        blob.orphaned_at &&
+        blob.orphaned_at.getTime() + (graceSeconds * 1000) <= NOW.getTime() &&
+        ['ready', 'deleting'].includes(blob.status);
+      return { rows: eligible ? [{ ...blob }] : [], rowCount: eligible ? 1 : 0 };
+    }
+
+    if (query.startsWith('SELECT EXISTS ( SELECT 1 FROM attachment_objects')) {
+      const hasReferences = [...rows.values()].some((row) => row.blob_id === params[0]);
+      return { rows: [{ has_references: hasReferences }], rowCount: 1 };
+    }
+
+    if (
+      query.startsWith('UPDATE attachment_blobs') &&
+      query.includes('SET ref_count = (')
+    ) {
+      const blob = blobs.get(params[0]);
+      if (!blob) return { rows: [], rowCount: 0 };
+      blob.ref_count = [...rows.values()].filter((row) => row.blob_id === blob.id).length;
+      blob.orphaned_at = null;
+      blob.status = 'ready';
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (
+      query.startsWith('UPDATE attachment_blobs') &&
+      query.includes("SET status = 'deleting'")
+    ) {
+      const blob = blobs.get(params[0]);
+      const hasReferences = [...rows.values()].some((row) => row.blob_id === params[0]);
+      if (!blob || blob.status !== 'ready' || hasReferences) {
+        return { rows: [], rowCount: 0 };
+      }
+      blob.status = 'deleting';
+      return { rows: [{ id: blob.id }], rowCount: 1 };
+    }
+
+    if (query.startsWith('DELETE FROM attachment_blobs')) {
+      const blob = blobs.get(params[0]);
+      const hasReferences = [...rows.values()].some((row) => row.blob_id === params[0]);
+      if (!blob || blob.status !== 'deleting' || hasReferences) {
+        return { rows: [], rowCount: 0 };
+      }
+      blobs.delete(blob.id);
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (
+      query.startsWith('SELECT id FROM attachment_objects') &&
       query.includes("status = 'staged'")
     ) {
       const row = rows.get(String(params[0]).toLowerCase());
@@ -361,6 +500,11 @@ function createMemoryInfrastructure(initialRows = []) {
         return { rows: [], rowCount: 0 };
       }
       rows.delete(id);
+      const blob = blobs.get(row.blob_id);
+      if (blob) {
+        blob.ref_count = Math.max(0, blob.ref_count - 1);
+        if (blob.ref_count === 0) blob.orphaned_at = new Date(NOW);
+      }
       return { rows: [], rowCount: 1 };
     }
 
@@ -395,6 +539,15 @@ function createMemoryInfrastructure(initialRows = []) {
   };
 
   const objectStore = {
+    async putObject(_bucket, objectKey, buffer, size, metadata) {
+      objects.add(objectKey);
+      objectWrites.push({
+        objectKey,
+        buffer: Buffer.from(buffer),
+        size,
+        metadata,
+      });
+    },
     async removeObject(_bucket, objectKey) {
       if (failedObjectDeletes.has(objectKey)) {
         throw new Error('simulated MinIO failure');
@@ -405,9 +558,11 @@ function createMemoryInfrastructure(initialRows = []) {
 
   return {
     dbPool,
+    blobs,
     failedAcknowledgementUpdates,
     failedObjectDeletes,
     objectStore,
+    objectWrites,
     objects,
     rows,
   };
@@ -420,6 +575,30 @@ function createTestLifecycle(infrastructure, configOverrides = {}) {
     bucket: 'chat-attachments',
     config: lifecycleConfig(configOverrides),
     logger: { error() {} },
+  });
+}
+
+function stageTestAttachment(lifecycle, {
+  id,
+  userId = USER_ID,
+  conversationId = CONVERSATION_ID,
+  buffer = Buffer.from('same-final-sanitized-bytes'),
+  filename = 'photo.jpg',
+} = {}) {
+  return lifecycle.stageUploadedAttachments({
+    userId,
+    conversationId,
+    attachments: [{
+      id,
+      buffer,
+      filename,
+      contentType: 'image/jpeg',
+      inline: true,
+      objectMetadata: {
+        'Content-Type': 'image/jpeg',
+        'X-Amz-Meta-Void-Sanitized-Image': '1',
+      },
+    }],
   });
 }
 
@@ -439,6 +618,8 @@ test('attachment lifecycle configuration and upload limiter use bounded safe def
     config.reconciliationBatchSize,
     DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE,
   );
+  assert.equal(config.blobGcGraceSeconds, DEFAULT_ATTACHMENT_BLOB_GC_GRACE_SECONDS);
+  assert.equal(config.blobGcBatchSize, DEFAULT_ATTACHMENT_BLOB_GC_BATCH_SIZE);
   assert.equal(RATE_LIMIT_POLICIES.attachmentUpload.scope, 'user');
   assert.equal(RATE_LIMIT_POLICIES.attachmentUpload.bucketSize, 30);
 });
@@ -462,14 +643,19 @@ test('protected attachment parsing rejects malformed, external, and duplicate re
 test('new uploads are staged with expiry and race-safe staged quota accounting', async () => {
   const infrastructure = createMemoryInfrastructure();
   const lifecycle = createTestLifecycle(infrastructure);
+  const finalBytes = Buffer.alloc(2048, 0x61);
+  const contentHash = createAttachmentContentHash(finalBytes);
 
   await lifecycle.stageUploadedAttachments({
     userId: USER_ID,
     conversationId: CONVERSATION_ID,
     attachments: [{
       id: ATTACHMENT_ID,
-      objectKey: `${CONVERSATION_ID}/${ATTACHMENT_ID}.bin`,
-      sizeBytes: 2048,
+      buffer: finalBytes,
+      filename: 'photo.jpg',
+      contentType: 'image/jpeg',
+      inline: true,
+      objectMetadata: { 'X-Amz-Meta-Void-Sanitized-Image': '1' },
     }],
   });
 
@@ -478,6 +664,10 @@ test('new uploads are staged with expiry and race-safe staged quota accounting',
   assert.equal(row.size_bytes, 2048);
   assert.equal(row.staged_at.toISOString(), NOW.toISOString());
   assert.equal(row.expires_at.toISOString(), '2026-07-30T01:00:00.000Z');
+  assert.equal(row.filename, 'photo.jpg');
+  assert.equal(row.object_key, createAttachmentBlobObjectKey(contentHash));
+  assert.equal(infrastructure.blobs.size, 1);
+  assert.equal([...infrastructure.blobs.values()][0].ref_count, 1);
 
   assert.throws(
     () => assertStagedUploadQuota({
@@ -503,8 +693,115 @@ test('new uploads are staged with expiry and race-safe staged quota accounting',
   );
 });
 
+test('identical final bytes create independent logical attachments over one blob', async () => {
+  const infrastructure = createMemoryInfrastructure();
+  const lifecycle = createTestLifecycle(infrastructure);
+  const finalBytes = Buffer.from('deduplicate-these-final-trusted-bytes');
+
+  await Promise.all([
+    stageTestAttachment(lifecycle, {
+      id: ATTACHMENT_ID,
+      buffer: finalBytes,
+      filename: 'cat.jpg',
+    }),
+    stageTestAttachment(lifecycle, {
+      id: SECOND_ATTACHMENT_ID,
+      userId: OTHER_USER_ID,
+      conversationId: OTHER_CONVERSATION_ID,
+      buffer: finalBytes,
+      filename: 'vacation.jpg',
+    }),
+  ]);
+
+  const first = infrastructure.rows.get(ATTACHMENT_ID);
+  const second = infrastructure.rows.get(SECOND_ATTACHMENT_ID);
+  assert.equal(infrastructure.blobs.size, 1);
+  assert.equal(infrastructure.objectWrites.length, 1);
+  assert.equal(first.blob_id, second.blob_id);
+  assert.equal(first.object_key, second.object_key);
+  assert.equal(first.filename, 'cat.jpg');
+  assert.equal(second.filename, 'vacation.jpg');
+  assert.equal(infrastructure.blobs.get(first.blob_id).ref_count, 2);
+
+  await lifecycle.deleteStagedAttachment({
+    attachmentId: ATTACHMENT_ID,
+    userId: USER_ID,
+    conversationId: CONVERSATION_ID,
+  });
+  assert.equal(infrastructure.objects.has(second.object_key), true);
+  assert.equal(infrastructure.blobs.get(second.blob_id).ref_count, 1);
+});
+
+test('blob GC verifies actual references, observes grace, and retries storage failure', async () => {
+  const infrastructure = createMemoryInfrastructure();
+  const lifecycle = createTestLifecycle(infrastructure, {
+    blobGcGraceSeconds: 3600,
+  });
+  const finalBytes = Buffer.from('reference-aware-garbage-collection');
+
+  await Promise.all([
+    stageTestAttachment(lifecycle, { id: ATTACHMENT_ID, buffer: finalBytes }),
+    stageTestAttachment(lifecycle, {
+      id: SECOND_ATTACHMENT_ID,
+      userId: OTHER_USER_ID,
+      conversationId: OTHER_CONVERSATION_ID,
+      buffer: finalBytes,
+    }),
+  ]);
+  const sharedBlob = [...infrastructure.blobs.values()][0];
+
+  sharedBlob.ref_count = 0;
+  sharedBlob.orphaned_at = new Date(NOW.getTime() - 7200_000);
+  assert.deepEqual(await lifecycle.cleanupOrphanedBlobs(), {
+    selected: 1,
+    deleted: 0,
+    retained: 1,
+    failed: 0,
+  });
+  assert.equal(sharedBlob.ref_count, 2);
+  assert.equal(infrastructure.objects.has(sharedBlob.object_key), true);
+
+  await lifecycle.deleteStagedAttachment({
+    attachmentId: ATTACHMENT_ID,
+    userId: USER_ID,
+    conversationId: CONVERSATION_ID,
+  });
+  await lifecycle.deleteStagedAttachment({
+    attachmentId: SECOND_ATTACHMENT_ID,
+    userId: OTHER_USER_ID,
+    conversationId: OTHER_CONVERSATION_ID,
+  });
+  assert.deepEqual(await lifecycle.cleanupOrphanedBlobs(), {
+    selected: 0,
+    deleted: 0,
+    retained: 0,
+    failed: 0,
+  });
+
+  sharedBlob.orphaned_at = new Date(NOW.getTime() - 7200_000);
+  infrastructure.failedObjectDeletes.add(sharedBlob.object_key);
+  assert.deepEqual(await lifecycle.cleanupOrphanedBlobs(), {
+    selected: 1,
+    deleted: 0,
+    retained: 0,
+    failed: 1,
+  });
+  assert.equal(sharedBlob.status, 'deleting');
+  assert.equal(infrastructure.blobs.has(sharedBlob.id), true);
+
+  infrastructure.failedObjectDeletes.delete(sharedBlob.object_key);
+  assert.deepEqual(await lifecycle.cleanupOrphanedBlobs(), {
+    selected: 1,
+    deleted: 1,
+    retained: 0,
+    failed: 0,
+  });
+  assert.equal(infrastructure.blobs.has(sharedBlob.id), false);
+  assert.equal(infrastructure.objects.has(sharedBlob.object_key), false);
+});
+
 test('owned staged deletion is idempotent and rejects unsafe lifecycle states', async (t) => {
-  await t.test('owned staged attachment is removed from MinIO and PostgreSQL', async () => {
+  await t.test('owned staged reference is removed without deleting its physical blob', async () => {
     const infrastructure = createMemoryInfrastructure([{
       id: ATTACHMENT_ID,
       conversation_id: CONVERSATION_ID,
@@ -519,7 +816,8 @@ test('owned staged deletion is idempotent and rejects unsafe lifecycle states', 
       conversationId: CONVERSATION_ID,
     }), { deleted: true });
     assert.equal(infrastructure.rows.has(ATTACHMENT_ID), false);
-    assert.equal(infrastructure.objects.size, 0);
+    assert.equal(infrastructure.objects.size, 1);
+    assert.equal([...infrastructure.blobs.values()][0].ref_count, 0);
     assert.deepEqual(await lifecycle.deleteStagedAttachment({
       attachmentId: ATTACHMENT_ID,
       userId: USER_ID,
@@ -758,7 +1056,7 @@ test('confirmed message persistence failure releases its owned reservation safel
   assert.equal(row.scylla_write_acknowledged_at, null);
 });
 
-test('cleanup removes only expired staged objects and preserves tracking on MinIO failure', async () => {
+test('cleanup removes only expired staged references without deleting physical blobs', async () => {
   const expiredId = ATTACHMENT_ID;
   const failedId = SECOND_ATTACHMENT_ID;
   const committedId = '99999999-9999-4999-8999-999999999999';
@@ -793,21 +1091,20 @@ test('cleanup removes only expired staged objects and preserves tracking on MinI
       expires_at: new Date(NOW.getTime() - 5000),
     },
   ]);
-  infrastructure.failedObjectDeletes.add(
-    infrastructure.rows.get(failedId).object_key,
-  );
   const lifecycle = createTestLifecycle(infrastructure);
 
   const result = await lifecycle.cleanupExpiredStaged();
-  assert.deepEqual(result, { selected: 2, deleted: 1, failed: 1 });
+  assert.deepEqual(result, { selected: 2, deleted: 2, failed: 0 });
   assert.equal(infrastructure.rows.has(expiredId), false);
-  assert.equal(infrastructure.rows.has(failedId), true);
+  assert.equal(infrastructure.rows.has(failedId), false);
   assert.equal(infrastructure.rows.has(committedId), true);
   assert.equal(infrastructure.rows.has(legacyId), true);
+  assert.equal(infrastructure.objects.size, 4);
 });
 
 test('cleanup runner coalesces local calls and honors the distributed lease', async () => {
   let cleanupCalls = 0;
+  let blobCleanupCalls = 0;
   let releaseCalls = 0;
   const lifecycle = {
     config: { cleanupIntervalSeconds: 900 },
@@ -815,6 +1112,10 @@ test('cleanup runner coalesces local calls and honors the distributed lease', as
       cleanupCalls += 1;
       await new Promise((resolve) => setTimeout(resolve, 5));
       return { selected: 1, deleted: 1, failed: 0 };
+    },
+    async cleanupOrphanedBlobs() {
+      blobCleanupCalls += 1;
+      return { selected: 1, deleted: 1, retained: 0, failed: 0 };
     },
   };
   const lockClient = {
@@ -833,9 +1134,15 @@ test('cleanup runner coalesces local calls and honors the distributed lease', as
   });
 
   const [first, second] = await Promise.all([runner.runOnce(), runner.runOnce()]);
-  assert.deepEqual(first, { selected: 1, deleted: 1, failed: 0 });
+  assert.deepEqual(first, {
+    selected: 1,
+    deleted: 1,
+    failed: 0,
+    blobs: { selected: 1, deleted: 1, retained: 0, failed: 0 },
+  });
   assert.deepEqual(second, first);
   assert.equal(cleanupCalls, 1);
+  assert.equal(blobCleanupCalls, 1);
   assert.equal(releaseCalls, 1);
 
   const blockedRunner = createStagedAttachmentCleanupRunner({
@@ -865,6 +1172,22 @@ test('migration conservatively marks historical rows legacy and cleanup targets 
   assert.match(migration, /SET status = 'legacy'\s+WHERE status IS NULL/i);
   assert.match(migration, /WHERE status = 'staged'/i);
   assert.doesNotMatch(migration, /DELETE FROM attachment_objects/i);
+});
+
+test('blob migration preserves legacy uncertainty and installs reference-safe GC guards', async () => {
+  const migration = await readFile(
+    new URL('../../../db/migrations/0011_attachment_blob_deduplication.sql', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(migration, /CREATE TABLE attachment_blobs/i);
+  assert.match(migration, /SELECT\s+NULL,\s+attachment\.bucket/i);
+  assert.match(migration, /content_hash IS NOT NULL/i);
+  assert.match(migration, /FOREIGN KEY \(blob_id\)/i);
+  assert.match(migration, /require_ready_attachment_blob/i);
+  assert.match(migration, /maintain_attachment_blob_ref_count/i);
+  assert.match(migration, /LEFT JOIN attachment_objects/i);
+  assert.doesNotMatch(migration, /SET content_hash\s*=/i);
 });
 
 test('lifecycle failures expose stable HTTP-safe error bodies', () => {

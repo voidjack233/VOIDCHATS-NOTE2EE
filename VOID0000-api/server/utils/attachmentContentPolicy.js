@@ -77,6 +77,17 @@ export function createAttachmentObjectMetadata(policy) {
   };
 }
 
+export function createAttachmentBlobMetadata(policy) {
+  return {
+    'Content-Type': policy.contentType,
+    'Content-Disposition': createAttachmentContentDisposition(
+      DEFAULT_ATTACHMENT_FILENAME,
+      policy.inline,
+    ),
+    'X-Amz-Meta-Void-Sanitized-Image': policy.inline ? '1' : '0',
+  };
+}
+
 export function getStoredAttachmentSanitizerMarker(objectStat) {
   return getMetadataValue(objectStat?.metaData, [
     'void-sanitized-image',
@@ -84,7 +95,11 @@ export function getStoredAttachmentSanitizerMarker(objectStat) {
   ]);
 }
 
-export function resolveStoredAttachmentPolicy(objectStat, objectKey = '') {
+export function resolveStoredAttachmentPolicy(
+  objectStat,
+  objectKey = '',
+  logicalFilename = '',
+) {
   const metadata = objectStat?.metaData || {};
   const storedContentType = getMetadataValue(metadata, ['content-type']);
   const inlineMarker = getStoredAttachmentSanitizerMarker(objectStat);
@@ -96,7 +111,9 @@ export function resolveStoredAttachmentPolicy(objectStat, objectKey = '') {
 
   const inline = inlineMarker === '1' &&
     isInlineAttachmentImageContentType(storedContentType);
-  const filename = sanitizeAttachmentFilename(storedFilename || fallbackFilename);
+  const filename = sanitizeAttachmentFilename(
+    logicalFilename || storedFilename || fallbackFilename,
+  );
   const contentType = inline
     ? normalizeContentType(storedContentType)
     : OCTET_STREAM_CONTENT_TYPE;
@@ -109,8 +126,12 @@ export function resolveStoredAttachmentPolicy(objectStat, objectKey = '') {
   };
 }
 
-export function createProtectedAttachmentResponseHeaders(objectStat, objectKey = '') {
-  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey);
+export function createProtectedAttachmentResponseHeaders(
+  objectStat,
+  objectKey = '',
+  logicalFilename = '',
+) {
+  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey, logicalFilename);
   return {
     'Content-Type': policy.contentType,
     'Content-Disposition': policy.contentDisposition,
@@ -119,8 +140,12 @@ export function createProtectedAttachmentResponseHeaders(objectStat, objectKey =
   };
 }
 
-export function createPresignedAttachmentResponseParams(objectStat, objectKey = '') {
-  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey);
+export function createPresignedAttachmentResponseParams(
+  objectStat,
+  objectKey = '',
+  logicalFilename = '',
+) {
+  const policy = resolveStoredAttachmentPolicy(objectStat, objectKey, logicalFilename);
   return {
     'response-cache-control': 'private, no-store',
     'response-content-type': policy.contentType,

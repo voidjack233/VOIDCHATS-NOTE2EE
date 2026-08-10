@@ -8,7 +8,7 @@ import {
 } from '../../../server/attachments/rawUpload.js';
 import { createAttachmentUploadProcessor } from '../../../server/attachments/uploadProcessor.js';
 import {
-  createAttachmentObjectMetadata,
+  createAttachmentBlobMetadata,
   createAttachmentStoragePolicy,
 } from '../../../server/utils/attachmentContentPolicy.js';
 import {
@@ -39,35 +39,31 @@ function createUploadHarness({ sanitizeImage } = {}) {
       quotaCalls.push(input);
     },
     async stageUploadedAttachments(input) {
-      stagedRows.push(...input.attachments.map((attachment) => ({
-        ...attachment,
-        status: 'staged',
-        userId: input.userId,
-        conversationId: input.conversationId,
-      })));
+      stagedRows.push(...input.attachments.map((attachment) => {
+        storedObjects.push({
+          buffer: Buffer.from(attachment.buffer),
+          size: attachment.buffer.length,
+          metadata: attachment.objectMetadata,
+        });
+        return {
+          id: attachment.id,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+          inline: attachment.inline,
+          sizeBytes: attachment.buffer.length,
+          status: 'staged',
+          userId: input.userId,
+          conversationId: input.conversationId,
+        };
+      }));
     },
-  };
-  const objectStore = {
-    async putObject(bucket, objectKey, buffer, size, metadata) {
-      storedObjects.push({
-        bucket,
-        objectKey,
-        buffer: Buffer.from(buffer),
-        size,
-        metadata,
-      });
-    },
-    async removeObject() {},
   };
   const processor = createAttachmentUploadProcessor({
     sanitizeImage: sanitizeImage || (async () => null),
     createStoragePolicy: createAttachmentStoragePolicy,
-    createObjectMetadata: createAttachmentObjectMetadata,
-    objectStore,
+    createObjectMetadata: createAttachmentBlobMetadata,
     lifecycle,
-    bucket: 'chat-attachments',
     createId: () => ATTACHMENT_ID,
-    logger: { error() {} },
   });
 
   return {
@@ -156,7 +152,9 @@ test('raw image upload sanitizes, marks, stages, and preserves response shape', 
   }]);
   assert.deepEqual(harness.stagedRows, [{
     id: ATTACHMENT_ID,
-    objectKey: `${CONVERSATION_ID}/${ATTACHMENT_ID}.bin`,
+    filename: 'photo.jpg',
+    contentType: 'image/png',
+    inline: true,
     sizeBytes: sanitizedBytes.length,
     status: 'staged',
     userId: USER_ID,

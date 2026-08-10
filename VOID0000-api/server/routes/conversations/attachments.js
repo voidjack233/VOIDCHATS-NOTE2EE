@@ -29,7 +29,7 @@ import {
 } from '../../attachmentSanitizer/client.js';
 import sentinel, { createSentinelKey } from '../../sentinel/index.js';
 import {
-  createAttachmentObjectMetadata,
+  createAttachmentBlobMetadata,
   createProtectedAttachmentResponseHeaders,
   createAttachmentStoragePolicy,
 } from '../../utils/attachmentContentPolicy.js';
@@ -77,10 +77,8 @@ function buildPrivateAttachmentUrl(conversation, attachmentId) {
 const processAttachmentUpload = createAttachmentUploadProcessor({
   sanitizeImage: sanitizeChatAttachmentImageInWorker,
   createStoragePolicy: createAttachmentStoragePolicy,
-  createObjectMetadata: createAttachmentObjectMetadata,
-  objectStore: minioClient,
+  createObjectMetadata: createAttachmentBlobMetadata,
   lifecycle: attachmentLifecycle,
-  bucket: ATTACH_BUCKET,
 });
 
 async function resolveConversationForMember(conversationIdentifier, userId) {
@@ -110,11 +108,13 @@ async function findAttachmentObject(conversationId, attachmentId) {
   const result = await sentinel.guard(
     attachmentFlightKey,
     () => pool.query(
-      `SELECT object_key
-       FROM attachment_objects
-       WHERE id = $1
-         AND conversation_id = $2
-         AND bucket = $3
+      `SELECT blob.object_key, attachment.filename
+       FROM attachment_objects AS attachment
+       JOIN attachment_blobs AS blob
+         ON blob.id = attachment.blob_id
+       WHERE attachment.id = $1
+         AND attachment.conversation_id = $2
+         AND blob.bucket = $3
        LIMIT 1`,
       [attachmentId, conversationId, ATTACH_BUCKET],
     ),
@@ -130,8 +130,12 @@ function statAttachmentObject(objectKey) {
   );
 }
 
-function setAttachmentResponseHeaders(res, objectStat, objectKey) {
-  const headers = createProtectedAttachmentResponseHeaders(objectStat, objectKey);
+function setAttachmentResponseHeaders(res, objectStat, objectKey, logicalFilename) {
+  const headers = createProtectedAttachmentResponseHeaders(
+    objectStat,
+    objectKey,
+    logicalFilename,
+  );
   Object.entries(headers).forEach(([name, value]) => {
     res.setHeader(name, value);
   });
@@ -174,7 +178,7 @@ async function readAttachmentObjectWithinBudget(objectKey, objectSize) {
   }
 }
 
-async function streamAttachmentObject(res, objectKey) {
+async function streamAttachmentObject(res, objectKey, logicalFilename) {
   let objectStat;
   try {
     objectStat = await statAttachmentObject(objectKey);
@@ -196,7 +200,7 @@ async function streamAttachmentObject(res, objectKey) {
         () => readAttachmentObjectWithinBudget(objectKey, objectStat.size),
       );
       if (objectBuffer) {
-        setAttachmentResponseHeaders(res, objectStat, objectKey);
+        setAttachmentResponseHeaders(res, objectStat, objectKey, logicalFilename);
         return res.end(objectBuffer);
       }
     } catch (err) {
@@ -219,7 +223,7 @@ async function streamAttachmentObject(res, objectKey) {
     return res.status(404).json({ error: 'Attachment not found' });
   }
 
-  setAttachmentResponseHeaders(res, objectStat, objectKey);
+  setAttachmentResponseHeaders(res, objectStat, objectKey, logicalFilename);
 
   objectStream.on('error', (err) => {
     console.error('Attachment download stream error:', err);
@@ -365,7 +369,11 @@ router.get('/:attachmentId', async (req, res) => {
       return res.status(404).json({ error: 'Attachment not found' });
     }
 
-    return streamAttachmentObject(res, attachmentObject.object_key);
+    return streamAttachmentObject(
+      res,
+      attachmentObject.object_key,
+      attachmentObject.filename,
+    );
   } catch (err) {
     console.error('Attachment download error:', err);
     return res.status(500).json({ error: 'Attachment download failed' });

@@ -14,7 +14,11 @@ export function createStagedAttachmentCleanupRunner({
   lockClient,
   logger = console,
 } = {}) {
-  if (!lifecycle || typeof lifecycle.cleanupExpiredStaged !== 'function') {
+  if (
+    !lifecycle ||
+    typeof lifecycle.cleanupExpiredStaged !== 'function' ||
+    typeof lifecycle.cleanupOrphanedBlobs !== 'function'
+  ) {
     throw new TypeError('Staged attachment cleanup requires a lifecycle service');
   }
   if (
@@ -58,7 +62,9 @@ export function createStagedAttachmentCleanupRunner({
       }
 
       try {
-        return await lifecycle.cleanupExpiredStaged();
+        const staged = await lifecycle.cleanupExpiredStaged();
+        const blobs = await lifecycle.cleanupOrphanedBlobs();
+        return { ...staged, blobs };
       } finally {
         await lockClient.eval(
           RELEASE_LOCK_SCRIPT,
