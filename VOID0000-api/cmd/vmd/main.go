@@ -70,7 +70,11 @@ func main() {
 	}
 
 	storage := vmd.NewStorage(config, pool, minioClient, logger)
-	defer storage.Close()
+	defer func() {
+		fallbackContext, cancelFallback := context.WithTimeout(context.Background(), time.Second)
+		defer cancelFallback()
+		_ = storage.Shutdown(fallbackContext)
+	}()
 	handler, err := vmd.NewHandler(config, vmd.HTTPDependencies{
 		Render:  storage.Render,
 		Metrics: storage.Metrics,
@@ -133,7 +137,14 @@ func main() {
 	}
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancelShutdown()
-	if err := httpServer.Shutdown(shutdownContext); err != nil {
+	serverShutdown := make(chan error, 1)
+	go func() {
+		serverShutdown <- httpServer.Shutdown(shutdownContext)
+	}()
+	if err := storage.Shutdown(shutdownContext); err != nil {
+		logger.Warn("VMD work queue shutdown deadline reached", "error", err)
+	}
+	if err := <-serverShutdown; err != nil {
 		logger.Error("VMD graceful shutdown failed", "error", err)
 		_ = httpServer.Close()
 	}

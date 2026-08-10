@@ -34,7 +34,7 @@ func NewStorage(config Config, pool *pgxpool.Pool, minioClient *minio.Client, lo
 		pool:        pool,
 		minio:       minioClient,
 		transformer: NewTransformClient(config.TransformSocketPath, config.TransformTimeout, config.MaxSourceBytes, config.MaxVariantBytes),
-		queue:       NewWorkQueue[Image](config.MaxConcurrentTransforms, config.MaxQueuedTransforms, config.QueueWaitTimeout),
+		queue:       NewWorkQueue[Image](config.MaxConcurrentTransforms, config.MaxQueuedTransforms, config.QueueWaitTimeout, logger),
 		flights:     NewFlightGroup[Image](config.MaxActiveFlights),
 		logger:      logger,
 		warnings:    make(map[string]time.Time),
@@ -45,8 +45,8 @@ func (s *Storage) Metrics() map[string]any {
 	return s.metrics.Snapshot(s.queue.Snapshot())
 }
 
-func (s *Storage) Close() {
-	s.queue.Close()
+func (s *Storage) Shutdown(ctx context.Context) error {
+	return s.queue.Shutdown(ctx)
 }
 
 func (s *Storage) warnCacheFailure(kind string, err error) {

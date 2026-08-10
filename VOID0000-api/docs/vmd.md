@@ -134,6 +134,14 @@ queue, transform-worker queue, byte limits, and Sharp gate bound that detached
 work. A task panic wakes followers with a delivery error, removes the flight,
 and is re-raised for the HTTP server to report rather than poisoning the key.
 
+Pending queue work is removed immediately when its operation context is
+canceled. Queue timeout, cancellation, promotion, and shutdown share one job
+state transition so only one path can complete a pending request. A panic in an
+active queue goroutine is logged with its stack, returned as a bounded delivery
+error, and still advances the queue. During service shutdown, pending work is
+rejected immediately while active work receives the same bounded eight-second
+drain window as the HTTP server; PM2 allows ten seconds before forced exit.
+
 VMD exposes low-noise persistent-cache, transform, and queue counters in its
 `/health` response. Cache failure warnings are rate-limited.
 

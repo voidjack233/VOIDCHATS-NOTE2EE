@@ -60,6 +60,7 @@ const apps = [
       VMD_SERVICE_PORT: 3006,
     },
     max_memory_restart: '450M',
+    kill_timeout: 10_000,
     watch: false,
     autorestart: true,
   },

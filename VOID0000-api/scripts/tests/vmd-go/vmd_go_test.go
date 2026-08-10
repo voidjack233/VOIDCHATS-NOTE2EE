@@ -1,17 +1,20 @@
 package vmd_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -410,9 +413,63 @@ func TestFlightGroupPanicWakesFollowersAndDoesNotPoisonKey(t *testing.T) {
 	}
 }
 
+type queueTestResult struct {
+	value int
+	err   error
+}
+
+func runQueueAsync(
+	queue *vmd.WorkQueue[int],
+	ctx context.Context,
+	task func() (int, error),
+) <-chan queueTestResult {
+	result := make(chan queueTestResult, 1)
+	go func() {
+		value, err := queue.Run(ctx, task)
+		result <- queueTestResult{value: value, err: err}
+	}()
+	return result
+}
+
+func waitForQueueSnapshot(
+	t *testing.T,
+	queue *vmd.WorkQueue[int],
+	predicate func(vmd.QueueSnapshot) bool,
+) vmd.QueueSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshot := queue.Snapshot()
+		if predicate(snapshot) {
+			return snapshot
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue state did not settle before deadline: %+v", snapshot)
+		}
+		time.Sleep(100 * time.Microsecond)
+	}
+}
+
+func shutdownWorkQueue(t *testing.T, queue *vmd.WorkQueue[int]) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := queue.Shutdown(ctx); err != nil {
+		t.Errorf("work queue shutdown failed: %v", err)
+	}
+}
+
+func requireMediaErrorCode(t *testing.T, err error, code string) {
+	t.Helper()
+	var mediaErr *vmd.MediaError
+	if !errors.As(err, &mediaErr) || mediaErr.Code != code {
+		t.Fatalf("expected media error %s, got %#v", code, err)
+	}
+}
+
 func TestWorkQueueBoundsConcurrencyAndReturnsAllResults(t *testing.T) {
 	queue := vmd.NewWorkQueue[int](2, 8, time.Second)
-	defer queue.Close()
+	defer shutdownWorkQueue(t, queue)
 	var active atomic.Int32
 	var maximum atomic.Int32
 	var startMu sync.Mutex
@@ -462,7 +519,7 @@ func TestWorkQueueBoundsConcurrencyAndReturnsAllResults(t *testing.T) {
 
 func TestWorkQueueStartsQueuedTasksInFIFOOrder(t *testing.T) {
 	queue := vmd.NewWorkQueue[int](1, 3, time.Second)
-	defer queue.Close()
+	defer shutdownWorkQueue(t, queue)
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	starts := make(chan int, 4)
@@ -511,5 +568,375 @@ func TestWorkQueueStartsQueuedTasksInFIFOOrder(t *testing.T) {
 			t.Fatal(err)
 		}
 		<-results
+	}
+}
+
+func TestWorkQueuePendingCancellationImmediatelyReleasesCapacity(t *testing.T) {
+	queue := vmd.NewWorkQueue[int](1, 1, time.Second)
+	defer shutdownWorkQueue(t, queue)
+	activeStarted := make(chan struct{})
+	releaseActive := make(chan struct{})
+	activeResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		close(activeStarted)
+		<-releaseActive
+		return 1, nil
+	})
+	<-activeStarted
+
+	pendingContext, cancelPending := context.WithCancel(context.Background())
+	var pendingRan atomic.Bool
+	pendingResult := runQueueAsync(queue, pendingContext, func() (int, error) {
+		pendingRan.Store(true)
+		return 2, nil
+	})
+	waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+		return snapshot.Active == 1 && snapshot.Queued == 1
+	})
+	cancelPending()
+	if result := <-pendingResult; !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("unexpected pending cancellation result: %+v", result)
+	}
+	waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+		return snapshot.Active == 1 && snapshot.Queued == 0
+	})
+	if pendingRan.Load() {
+		t.Fatal("canceled pending task executed")
+	}
+
+	replacementResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		return 3, nil
+	})
+	waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+		return snapshot.Active == 1 && snapshot.Queued == 1
+	})
+	close(releaseActive)
+	if result := <-activeResult; result.err != nil || result.value != 1 {
+		t.Fatalf("unexpected active result: %+v", result)
+	}
+	if result := <-replacementResult; result.err != nil || result.value != 3 {
+		t.Fatalf("unexpected replacement result: %+v", result)
+	}
+}
+
+func TestWorkQueueCancellationRacingWithStartHasOneOwner(t *testing.T) {
+	for iteration := range 20 {
+		queue := vmd.NewWorkQueue[int](1, 1, time.Second)
+		activeStarted := make(chan struct{})
+		releaseActive := make(chan struct{})
+		activeResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+			close(activeStarted)
+			<-releaseActive
+			return 1, nil
+		})
+		<-activeStarted
+
+		pendingContext, cancelPending := context.WithCancel(context.Background())
+		var pendingRuns atomic.Int32
+		pendingResult := runQueueAsync(queue, pendingContext, func() (int, error) {
+			pendingRuns.Add(1)
+			<-pendingContext.Done()
+			return 0, pendingContext.Err()
+		})
+		waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+			return snapshot.Active == 1 && snapshot.Queued == 1
+		})
+
+		raceStart := make(chan struct{})
+		var race sync.WaitGroup
+		race.Add(2)
+		go func() {
+			defer race.Done()
+			<-raceStart
+			cancelPending()
+		}()
+		go func() {
+			defer race.Done()
+			<-raceStart
+			close(releaseActive)
+		}()
+		close(raceStart)
+		race.Wait()
+
+		if result := <-pendingResult; !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("iteration %d returned unexpected cancellation result: %+v", iteration, result)
+		}
+		if result := <-activeResult; result.err != nil || result.value != 1 {
+			t.Fatalf("iteration %d returned unexpected active result: %+v", iteration, result)
+		}
+		waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+			return snapshot.Active == 0 && snapshot.Queued == 0
+		})
+		if pendingRuns.Load() > 1 {
+			t.Fatalf("iteration %d ran pending work more than once: %d", iteration, pendingRuns.Load())
+		}
+		shutdownWorkQueue(t, queue)
+	}
+}
+
+func TestWorkQueueWaitTimeoutRemovesPendingJob(t *testing.T) {
+	queue := vmd.NewWorkQueue[int](1, 1, 10*time.Millisecond)
+	defer shutdownWorkQueue(t, queue)
+	activeStarted := make(chan struct{})
+	releaseActive := make(chan struct{})
+	activeResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		close(activeStarted)
+		<-releaseActive
+		return 1, nil
+	})
+	<-activeStarted
+
+	var timedOutTaskRan atomic.Bool
+	_, err := queue.Run(context.Background(), func() (int, error) {
+		timedOutTaskRan.Store(true)
+		return 2, nil
+	})
+	requireMediaErrorCode(t, err, "VMD_QUEUE_TIMEOUT")
+	waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+		return snapshot.Active == 1 && snapshot.Queued == 0
+	})
+	if timedOutTaskRan.Load() {
+		t.Fatal("timed-out pending task executed")
+	}
+	close(releaseActive)
+	if result := <-activeResult; result.err != nil {
+		t.Fatal(result.err)
+	}
+}
+
+func TestWorkQueueRejectsWhenPendingCapacityIsFull(t *testing.T) {
+	queue := vmd.NewWorkQueue[int](1, 1, time.Second)
+	defer shutdownWorkQueue(t, queue)
+	activeStarted := make(chan struct{})
+	releaseActive := make(chan struct{})
+	activeResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		close(activeStarted)
+		<-releaseActive
+		return 1, nil
+	})
+	<-activeStarted
+	pendingResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		return 2, nil
+	})
+	waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+		return snapshot.Active == 1 && snapshot.Queued == 1
+	})
+
+	_, err := queue.Run(context.Background(), func() (int, error) {
+		return 3, nil
+	})
+	requireMediaErrorCode(t, err, "VMD_AT_CAPACITY")
+	close(releaseActive)
+	if result := <-activeResult; result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result := <-pendingResult; result.err != nil || result.value != 2 {
+		t.Fatalf("unexpected pending result: %+v", result)
+	}
+}
+
+func TestWorkQueueTaskPanicReturnsSafeErrorAndRestoresCapacity(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	queue := vmd.NewWorkQueue[int](1, 1, time.Second, logger)
+	defer shutdownWorkQueue(t, queue)
+
+	_, err := queue.Run(context.Background(), func() (int, error) {
+		panic("expected queue panic")
+	})
+	requireMediaErrorCode(t, err, "VMD_DELIVERY_FAILED")
+	snapshot := queue.Snapshot()
+	if snapshot.Active != 0 || snapshot.Queued != 0 {
+		t.Fatalf("panic left queue capacity occupied: %+v", snapshot)
+	}
+	if !strings.Contains(logs.String(), "VMD work queue task panicked") ||
+		!strings.Contains(logs.String(), "expected queue panic") ||
+		!strings.Contains(logs.String(), "goroutine") {
+		t.Fatalf("panic log is missing message or stack: %s", logs.String())
+	}
+
+	value, err := queue.Run(context.Background(), func() (int, error) {
+		return 9, nil
+	})
+	if err != nil || value != 9 {
+		t.Fatalf("queue was unusable after panic: value=%d err=%v", value, err)
+	}
+}
+
+func TestWorkQueueShutdownRejectsPendingAndWaitsForActiveWork(t *testing.T) {
+	queue := vmd.NewWorkQueue[int](1, 1, time.Second)
+	activeStarted := make(chan struct{})
+	releaseActive := make(chan struct{})
+	activeResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		close(activeStarted)
+		<-releaseActive
+		return 1, nil
+	})
+	<-activeStarted
+	var pendingRan atomic.Bool
+	pendingResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		pendingRan.Store(true)
+		return 2, nil
+	})
+	waitForQueueSnapshot(t, queue, func(snapshot vmd.QueueSnapshot) bool {
+		return snapshot.Active == 1 && snapshot.Queued == 1
+	})
+
+	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShutdown()
+	shutdownResult := make(chan error, 1)
+	go func() {
+		shutdownResult <- queue.Shutdown(shutdownContext)
+	}()
+	if result := <-pendingResult; result.err == nil {
+		t.Fatal("pending work was accepted during shutdown")
+	} else {
+		requireMediaErrorCode(t, result.err, "VMD_AT_CAPACITY")
+	}
+	if pendingRan.Load() {
+		t.Fatal("shutdown executed pending work")
+	}
+	select {
+	case err := <-shutdownResult:
+		t.Fatalf("shutdown returned before active work completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if _, err := queue.Run(context.Background(), func() (int, error) { return 3, nil }); err == nil {
+		t.Fatal("shutdown queue accepted new work")
+	} else {
+		requireMediaErrorCode(t, err, "VMD_AT_CAPACITY")
+	}
+
+	close(releaseActive)
+	if result := <-activeResult; result.err != nil || result.value != 1 {
+		t.Fatalf("unexpected active result during shutdown: %+v", result)
+	}
+	if err := <-shutdownResult; err != nil {
+		t.Fatalf("shutdown failed after active work completed: %v", err)
+	}
+}
+
+func TestWorkQueueShutdownReturnsAtDeadlineAndCanFinishLater(t *testing.T) {
+	queue := vmd.NewWorkQueue[int](1, 1, time.Second)
+	activeStarted := make(chan struct{})
+	releaseActive := make(chan struct{})
+	activeResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+		close(activeStarted)
+		<-releaseActive
+		return 1, nil
+	})
+	<-activeStarted
+
+	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := queue.Shutdown(shutdownContext)
+	cancelShutdown()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown did not honor its deadline: %v", err)
+	}
+	snapshot := queue.Snapshot()
+	if snapshot.Active != 1 || snapshot.Queued != 0 {
+		t.Fatalf("shutdown deadline corrupted queue state: %+v", snapshot)
+	}
+	if _, err := queue.Run(context.Background(), func() (int, error) { return 2, nil }); err == nil {
+		t.Fatal("timed-out shutdown reopened the queue")
+	}
+
+	close(releaseActive)
+	if result := <-activeResult; result.err != nil {
+		t.Fatal(result.err)
+	}
+	finalContext, cancelFinal := context.WithTimeout(context.Background(), time.Second)
+	defer cancelFinal()
+	if err := queue.Shutdown(finalContext); err != nil {
+		t.Fatalf("queue did not finish draining after initial timeout: %v", err)
+	}
+}
+
+func TestWorkQueueTimeoutCancelCloseAndStartRacesCompleteOnce(t *testing.T) {
+	for iteration := range 20 {
+		queue := vmd.NewWorkQueue[int](1, 1, 2*time.Millisecond)
+		activeStarted := make(chan struct{})
+		releaseActive := make(chan struct{})
+		activeResult := runQueueAsync(queue, context.Background(), func() (int, error) {
+			close(activeStarted)
+			<-releaseActive
+			return 1, nil
+		})
+		<-activeStarted
+
+		pendingContext, cancelPending := context.WithCancel(context.Background())
+		var pendingRuns atomic.Int32
+		pendingResult := runQueueAsync(queue, pendingContext, func() (int, error) {
+			pendingRuns.Add(1)
+			return 2, nil
+		})
+		var pending queueTestResult
+		pendingCompleted := false
+		observationDeadline := time.Now().Add(2 * time.Second)
+	observationLoop:
+		for {
+			snapshot := queue.Snapshot()
+			if snapshot.Active == 1 && snapshot.Queued == 1 {
+				break
+			}
+			select {
+			case pending = <-pendingResult:
+				pendingCompleted = true
+				break observationLoop
+			default:
+			}
+			if time.Now().After(observationDeadline) {
+				t.Fatalf("iteration %d did not enqueue or time out pending work: %+v", iteration, snapshot)
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+
+		raceStart := make(chan struct{})
+		shutdownResult := make(chan error, 1)
+		var race sync.WaitGroup
+		race.Add(3)
+		go func() {
+			defer race.Done()
+			<-raceStart
+			cancelPending()
+		}()
+		go func() {
+			defer race.Done()
+			<-raceStart
+			close(releaseActive)
+		}()
+		go func() {
+			defer race.Done()
+			<-raceStart
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			shutdownResult <- queue.Shutdown(ctx)
+		}()
+		close(raceStart)
+		race.Wait()
+
+		if !pendingCompleted {
+			pending = <-pendingResult
+		}
+		if pending.err != nil &&
+			!errors.Is(pending.err, context.Canceled) {
+			var mediaErr *vmd.MediaError
+			if !errors.As(pending.err, &mediaErr) ||
+				(mediaErr.Code != "VMD_QUEUE_TIMEOUT" && mediaErr.Code != "VMD_AT_CAPACITY") {
+				t.Fatalf("iteration %d returned unexpected pending result: %+v", iteration, pending)
+			}
+		}
+		if result := <-activeResult; result.err != nil || result.value != 1 {
+			t.Fatalf("iteration %d returned unexpected active result: %+v", iteration, result)
+		}
+		if err := <-shutdownResult; err != nil {
+			t.Fatalf("iteration %d shutdown failed: %v", iteration, err)
+		}
+		if pendingRuns.Load() > 1 {
+			t.Fatalf("iteration %d ran pending task more than once: %d", iteration, pendingRuns.Load())
+		}
+		snapshot := queue.Snapshot()
+		if snapshot.Active != 0 || snapshot.Queued != 0 {
+			t.Fatalf("iteration %d left queue work behind: %+v", iteration, snapshot)
+		}
 	}
 }
