@@ -22,6 +22,10 @@ import { resolveMessageMentions } from '../../Chat/messageMentions';
 import { fetchLinkPreview, getFirstPreviewableUrl } from '../../Chat/linkPreviewService';
 import { parseAttachment, serializeAttachment } from '../../Chat/messageAttachments';
 import {
+  getAttachmentUploadErrorLabel,
+  MAX_ATTACHMENT_FILE_BYTES,
+} from '../../Chat/attachmentUploadPolicy';
+import {
   canStartComposerAttachmentUpload,
   cleanupPendingComposerAttachmentsForEdit,
   discardCompletedComposerUpload,
@@ -72,7 +76,6 @@ interface AttachmentAlertState {
 
 const MAX_ATTACHMENTS = 5;
 const IMAGE_ACCEPT_TYPES = 'image/jpeg,image/png,image/gif,image/webp';
-const MAX_ATTACHMENT_FILE_SIZE = 10 * 1024 * 1024;
 const DEFAULT_ATTACHMENT_PERMISSION = 'everyone';
 
 function getSendErrorNotice(error: any): string {
@@ -98,17 +101,6 @@ function getQueuedSendNotice(error: any): string {
     return 'Message service is having trouble. Your message was queued and will retry automatically.';
   }
   return 'Message was queued and will retry when your connection recovers.';
-}
-
-function getAttachmentUploadErrorLabel(error: any): string {
-  const status = Number(error?.status ?? error?.statusCode);
-  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
-  if (error?.code === 'ATTACHMENT_STAGED_QUOTA_EXCEEDED') return 'Too many unsent attachments';
-  if (error?.code === 'ATTACHMENT_UPLOAD_RATE_LIMITED' || status === 429) return 'Upload limit reached';
-  if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError' || message.includes('timed out')) return 'Upload timed out';
-  if (status >= 500) return 'Service unavailable';
-  if (message.includes('failed to fetch') || message.includes('network')) return 'Waiting for network';
-  return 'Upload failed';
 }
 
 const resolveAttachmentAccess = (conversation: Conversation) => {
@@ -320,7 +312,7 @@ export const useMessageInput = ({
     if (!attachmentsEnabled) return;
     let oversizedCount = 0;
     const accepted = Array.from(files).filter((file) => {
-      if (file.size <= MAX_ATTACHMENT_FILE_SIZE) return true;
+      if (file.size <= MAX_ATTACHMENT_FILE_BYTES) return true;
       oversizedCount += 1;
       return false;
     });

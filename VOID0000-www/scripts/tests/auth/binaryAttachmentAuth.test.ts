@@ -41,6 +41,54 @@ function resetAuthClientState() {
   setAuthLogoutInProgress(false);
 }
 
+function installHighResolutionImageMocks() {
+  const originalImage = Object.getOwnPropertyDescriptor(globalThis, 'Image');
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+
+  class MockImage {
+    naturalWidth = 8_000;
+    naturalHeight = 6_000;
+    onload: (() => void) | null = null;
+
+    set src(_value: string) {
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+
+  class MockCanvas {
+    width = 0;
+    height = 0;
+
+    getContext() {
+      return {
+        drawImage() {},
+        getImageData: () => ({
+          data: new Uint8ClampedArray(this.width * this.height * 4),
+        }),
+      };
+    }
+
+    toBlob(callback: (blob: Blob | null) => void, type?: string) {
+      callback(new Blob(['normalized-image'], { type: type || 'image/jpeg' }));
+    }
+  }
+
+  Object.defineProperty(globalThis, 'Image', { configurable: true, value: MockImage });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      createElement: () => new MockCanvas(),
+    },
+  });
+
+  return () => {
+    if (originalImage) Object.defineProperty(globalThis, 'Image', originalImage);
+    else delete (globalThis as { Image?: unknown }).Image;
+    if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
+    else delete (globalThis as { document?: unknown }).document;
+  };
+}
+
 test.after(() => {
   globalThis.fetch = nativeFetch;
 });
@@ -136,6 +184,114 @@ test('multiple files use separate raw requests and preserve result order', async
   assert.strictEqual(uploadBodies[1], files[1]);
   assert.match(results[0]!, /11111111-1111-4111-8111-111111111111/);
   assert.match(results[1]!, /11111111-1111-4111-8111-111111111112/);
+});
+
+test('normalized phone image still uses the authenticated raw binary contract', async () => {
+  resetAuthClientState();
+  const restoreBrowserMocks = installHighResolutionImageMocks();
+  const source = new File(['large-camera-source'], 'camera.jpeg', { type: 'image/jpeg' });
+  let uploadRequest: RequestInit | undefined;
+
+  try {
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/api/csrf/csrf-token')) {
+        return jsonResponse({ success: true, csrfToken: 'csrf-normalized' });
+      }
+      if (url.endsWith('/api/conversations/conversation-1/attachments')) {
+        uploadRequest = init;
+        return jsonResponse({
+          success: true,
+          urls: [
+            '/api/conversations/conversation-1/attachments/11111111-1111-4111-8111-111111111113',
+          ],
+          attachments: [{
+            mime: 'image/jpeg',
+            size: (init?.body as File).size,
+            width: 4_000,
+            height: 3_000,
+          }],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+
+    await uploadAttachments('conversation-1', [source]);
+
+    assert.ok(uploadRequest?.body instanceof File);
+    assert.notStrictEqual(uploadRequest?.body, source);
+    const normalized = uploadRequest!.body as File;
+    assert.equal(normalized.type, 'image/jpeg');
+    const headers = new Headers(uploadRequest?.headers);
+    assert.equal(headers.get('Content-Type'), 'application/octet-stream');
+    assert.equal(headers.get('X-Attachment-Mime'), 'image/jpeg');
+    assert.equal(headers.get('X-Attachment-Width'), '4000');
+    assert.equal(headers.get('X-Attachment-Height'), '3000');
+    assert.equal(headers.get('X-CSRF-Token'), 'csrf-normalized');
+  } finally {
+    restoreBrowserMocks();
+  }
+});
+
+test('structured attachment 4xx errors preserve code, status, and safe message', async () => {
+  resetAuthClientState();
+  const file = new File(['image'], 'image.bin', { type: 'application/octet-stream' });
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/api/csrf/csrf-token')) {
+      return jsonResponse({ success: true, csrfToken: 'csrf-error' });
+    }
+    if (url.endsWith('/api/conversations/conversation-1/attachments')) {
+      return jsonResponse({
+        error: 'Attachment image exceeds processing safety limits',
+        code: 'ATTACHMENT_IMAGE_LIMIT_EXCEEDED',
+      }, 413);
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  await assert.rejects(
+    uploadAttachments('conversation-1', [file]),
+    (error: unknown) => {
+      const payload = error as Error & Record<string, unknown>;
+      assert.equal(payload.message, 'Attachment image exceeds processing safety limits');
+      assert.equal(payload.code, 'ATTACHMENT_IMAGE_LIMIT_EXCEEDED');
+      assert.equal(payload.status, 413);
+      assert.equal(payload.statusCode, 413);
+      return true;
+    },
+  );
+});
+
+test('non-JSON upload failures still preserve their HTTP status for safe labeling', async () => {
+  resetAuthClientState();
+  const file = new File(['image'], 'image.bin', { type: 'application/octet-stream' });
+
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/api/csrf/csrf-token')) {
+      return jsonResponse({ success: true, csrfToken: 'csrf-non-json-error' });
+    }
+    if (url.endsWith('/api/conversations/conversation-1/attachments')) {
+      return new Response('<!doctype html><title>Payload too large</title>', {
+        status: 413,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  await assert.rejects(
+    uploadAttachments('conversation-1', [file]),
+    (error: unknown) => {
+      const payload = error as Error & Record<string, unknown>;
+      assert.equal(payload.message, 'Attachment upload failed');
+      assert.equal(payload.status, 413);
+      assert.equal(payload.statusCode, 413);
+      return true;
+    },
+  );
 });
 
 test('ordinary JSON mutations retain the application/json content type', async () => {

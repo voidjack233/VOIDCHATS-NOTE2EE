@@ -161,6 +161,18 @@ function createAttachmentUploadHeaders(
   return headers;
 }
 
+async function readAttachmentUploadResponse(response: Response): Promise<Record<string, unknown>> {
+  try {
+    const data = await response.json();
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {
+      success: false,
+      error: 'Attachment upload failed',
+    };
+  }
+}
+
 export async function uploadAttachments(conversationId: string, files: File[]): Promise<string[]> {
   const prepared = await Promise.all(files.map(prepareAttachmentFile));
 
@@ -174,7 +186,7 @@ export async function uploadAttachments(conversationId: string, files: File[]): 
         headers: createAttachmentUploadHeaders(attachment),
         body: file,
       });
-      return { response, data: await response.json() };
+      return { response, data: await readAttachmentUploadResponse(response) };
     });
     if (!response.ok || !data.success) {
       throw createApiError(data, {
