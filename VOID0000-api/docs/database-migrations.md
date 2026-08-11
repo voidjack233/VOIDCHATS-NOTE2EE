@@ -39,6 +39,31 @@ PostgreSQL migrations run in this order:
 - `0011_attachment_blob_deduplication.sql` separates logical attachments from
   shared content-addressed physical blobs.
 
+## Migration 0011 Deployment Boundary
+
+Migration `0011_attachment_blob_deduplication.sql` is a no-mixed-version
+boundary. An old message service deletes attachment object keys directly, but
+the new schema permits multiple logical attachments to share one physical
+object. Never run an old message-service process against a database where
+`0011` has been applied.
+
+For an existing deployment, use this exact order:
+
+1. Stop or drain every old `voidapp-message-service` instance and stop every old
+   `voidapp-worker-service` instance. The old worker cleanup also deletes staged
+   MinIO object keys directly.
+2. Run `npm run migrate` and verify `0011` with `npm run migrate:status`.
+3. Start the new `voidapp-message-service`.
+4. Start or update `voidapp-worker-service` and `voidapp-vmd-service` with the
+   blob-aware release.
+
+The new message and worker services verify the migration record, blob table,
+required `attachment_objects.blob_id`, and its foreign key before accepting
+work. They fail startup with `ATTACHMENT_SCHEMA_INCOMPATIBLE` when that contract
+is missing. This check protects new code from an old schema; the stop-before-
+migrate sequence is still required because already-running old message and
+worker binaries cannot contain the new check.
+
 ScyllaDB uses one fresh baseline:
 
 - `0000_message_storage.cql` creates message content, metadata, link previews,

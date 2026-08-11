@@ -17,10 +17,10 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-const cacheVersion = "v1"
+const cacheVersion = "v2"
 
 type CacheIdentity struct {
-	AttachmentID      string
+	PhysicalSourceID  string
 	SourceFingerprint string
 	Variant           string
 	ObjectKey         string
@@ -51,7 +51,10 @@ func javascriptISOString(value time.Time) string {
 	return value.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-func CreateCacheIdentity(attachmentID, objectKey, variant string, objectInfo minio.ObjectInfo) (CacheIdentity, error) {
+func CreateCacheIdentity(objectKey, variant string, objectInfo minio.ObjectInfo) (CacheIdentity, error) {
+	if objectKey == "" {
+		return CacheIdentity{}, fmt.Errorf("VMD cache identity requires a physical object key")
+	}
 	descriptor := sourceDescriptor{
 		ObjectKey:    objectKey,
 		ETag:         normalizeETag(objectInfo.ETag),
@@ -65,15 +68,16 @@ func CreateCacheIdentity(attachmentID, objectKey, variant string, objectInfo min
 	}
 	hash := sha256.Sum256(serialized)
 	fingerprint := hex.EncodeToString(hash[:])
-	normalizedAttachmentID := strings.ToLower(attachmentID)
+	physicalSourceHash := sha256.Sum256([]byte(objectKey))
+	physicalSourceID := hex.EncodeToString(physicalSourceHash[:])
 	return CacheIdentity{
-		AttachmentID:      normalizedAttachmentID,
+		PhysicalSourceID:  physicalSourceID,
 		SourceFingerprint: fingerprint,
 		Variant:           variant,
 		ObjectKey: fmt.Sprintf(
 			"variants/%s/%s/%s/%s.webp",
 			cacheVersion,
-			normalizedAttachmentID,
+			physicalSourceID,
 			fingerprint,
 			variant,
 		),

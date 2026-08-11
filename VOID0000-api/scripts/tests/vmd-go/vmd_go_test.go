@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -129,9 +130,8 @@ func TestNodeGeneratedCapabilityFixture(t *testing.T) {
 	}
 }
 
-func TestNodeCompatibleCacheIdentity(t *testing.T) {
+func TestPhysicalSourceCacheIdentity(t *testing.T) {
 	identity, err := vmd.CreateCacheIdentity(
-		attachmentID,
 		"folder/original.bin",
 		"small",
 		minio.ObjectInfo{
@@ -148,9 +148,60 @@ func TestNodeCompatibleCacheIdentity(t *testing.T) {
 	if identity.SourceFingerprint != expectedFingerprint {
 		t.Fatalf("fingerprint mismatch: %s", identity.SourceFingerprint)
 	}
-	expectedObjectKey := "variants/v1/" + attachmentID + "/" + expectedFingerprint + "/small.webp"
+	physicalHash := sha256.Sum256([]byte("folder/original.bin"))
+	expectedPhysicalSourceID := fmt.Sprintf("%x", physicalHash)
+	if identity.PhysicalSourceID != expectedPhysicalSourceID {
+		t.Fatalf("physical source mismatch: %s", identity.PhysicalSourceID)
+	}
+	expectedObjectKey := "variants/v2/" + expectedPhysicalSourceID + "/" + expectedFingerprint + "/small.webp"
 	if identity.ObjectKey != expectedObjectKey {
 		t.Fatalf("object key mismatch: %s", identity.ObjectKey)
+	}
+}
+
+func TestPhysicalSourceCacheIdentitySeparatesSourcesVariantsAndVersions(t *testing.T) {
+	baseInfo := minio.ObjectInfo{
+		ETag:         `"source-etag"`,
+		VersionID:    "version-1",
+		Size:         1234,
+		LastModified: time.Date(2026, time.August, 8, 1, 2, 3, 0, time.UTC),
+	}
+	first, err := vmd.CreateCacheIdentity("blobs/source-a", "small", baseInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	samePhysicalSource, err := vmd.CreateCacheIdentity("blobs/source-a", "small", baseInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ObjectKey != samePhysicalSource.ObjectKey {
+		t.Fatal("the same physical source did not reuse one persistent cache key")
+	}
+
+	differentSource, err := vmd.CreateCacheIdentity("blobs/source-b", "small", baseInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ObjectKey == differentSource.ObjectKey {
+		t.Fatal("different physical sources collided")
+	}
+
+	differentVariant, err := vmd.CreateCacheIdentity("blobs/source-a", "medium", baseInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ObjectKey == differentVariant.ObjectKey {
+		t.Fatal("different variants collided")
+	}
+
+	changedInfo := baseInfo
+	changedInfo.ETag = `"changed-etag"`
+	changedSource, err := vmd.CreateCacheIdentity("blobs/source-a", "small", changedInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ObjectKey == changedSource.ObjectKey {
+		t.Fatal("a changed source fingerprint reused a stale cache key")
 	}
 }
 
@@ -226,6 +277,23 @@ func TestHTTPRejectsInvalidCapabilityAndUnknownQuery(t *testing.T) {
 	}
 	if renderCalls.Load() != 0 {
 		t.Fatalf("renderer ran %d times for rejected requests", renderCalls.Load())
+	}
+
+	directPhysicalSource := httptest.NewRecorder()
+	hash := strings.Repeat("a", 64)
+	handler.ServeHTTP(
+		directPhysicalSource,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/v1/images/"+hash+"/small?exp="+strconv.FormatInt(expiresAt, 10)+"&sig=invalid",
+			nil,
+		),
+	)
+	if directPhysicalSource.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected direct physical source status: %d", directPhysicalSource.Code)
+	}
+	if renderCalls.Load() != 0 {
+		t.Fatal("a physical source identifier reached the renderer")
 	}
 }
 

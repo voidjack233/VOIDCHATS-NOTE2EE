@@ -23,6 +23,9 @@ const {
   attachmentLifecycle,
 } = await import('../attachments/lifecycle.js');
 const {
+  assertAttachmentBlobSchemaCompatible,
+} = await import('../attachments/schemaCompatibility.js');
+const {
   createAttachmentReservationReconciler,
   createAttachmentReservationReconciliationRunner,
   createPostgresAttachmentReservationStore,
@@ -38,6 +41,11 @@ const {
 } = await import('../utils/messageConversation.js');
 const { default: valkey } = await import('../valkey.js');
 const { cleanupAllExpired } = await import('../utils/cleanUpExpired.js');
+
+await assertAttachmentBlobSchemaCompatible({
+  dbPool: pool,
+  serviceName: 'voidapp-worker-service',
+});
 
 initPublisher();
 initPresenceFanout();

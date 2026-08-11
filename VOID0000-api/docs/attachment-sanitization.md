@@ -41,6 +41,16 @@ under the existing distributed cleanup lock, and verifies the real reference
 set before deleting MinIO data. Historical rows are migrated one-to-one with no
 invented content hash and therefore are not falsely deduplicated.
 
+The same cleanup run also reconciles physical objects left behind when MinIO
+succeeded but the PostgreSQL transaction did not commit. It scans only
+`blobs/v1/sha256/`, processes at most 25 objects per run by default, and carries
+a private Valkey cursor across runs. An object must be older than the same
+24-hour grace before it is eligible. Under the same PostgreSQL advisory lock as
+uploads, cleanup rechecks the object and retains it if any `attachment_blobs`
+row matches its bucket/key or SHA-256. Malformed paths, recent objects,
+same-hash inconsistencies, and uncertain failures are retained and counted;
+legacy paths outside the content-addressed prefix are never scanned.
+
 ## Inline Delivery Trust
 
 Stored images are eligible for inline protected, signed-CDN, and VMD delivery

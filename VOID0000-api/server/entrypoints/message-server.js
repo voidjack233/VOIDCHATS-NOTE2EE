@@ -19,6 +19,9 @@ const { authenticateUser } = await import('../middleware/jwt.js');
 const { messageReactionToggleLimiter } = await import('../middleware/rate_limit.js');
 const { noCache } = await import('../middleware/noCache.js');
 const { pool } = await import('../db.js');
+const {
+  assertAttachmentBlobSchemaCompatible,
+} = await import('../attachments/schemaCompatibility.js');
 const { default: valkey } = await import('../valkey.js');
 const { default: scyllaClient } = await import('../scylla.js');
 const { minioClient, ATTACH_BUCKET } = await import('../minio.js');
@@ -33,6 +36,11 @@ const app = express();
 const PORT = process.env.MESSAGE_SERVICE_PORT || process.env.PORT || 3002;
 const HOST = process.env.HOST || process.env.BIND_HOST || '0.0.0.0';
 const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
+
+await assertAttachmentBlobSchemaCompatible({
+  dbPool: pool,
+  serviceName: 'voidapp-message-service',
+});
 
 const allowedOrigins = [
   FRONT_URL,

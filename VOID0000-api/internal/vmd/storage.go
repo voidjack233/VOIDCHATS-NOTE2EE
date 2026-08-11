@@ -138,7 +138,7 @@ func (s *Storage) renderStoredImage(ctx context.Context, attachmentID, variant s
 		return Image{}, mediaError(415, "VMD_ATTACHMENT_NOT_SANITIZED", "Attachment is not an approved sanitized image", nil)
 	}
 
-	identity, err := CreateCacheIdentity(attachmentID, objectKey, variant, objectInfo)
+	identity, err := CreateCacheIdentity(objectKey, variant, objectInfo)
 	if err != nil {
 		return Image{}, wrapInternal("create VMD cache identity", err)
 	}

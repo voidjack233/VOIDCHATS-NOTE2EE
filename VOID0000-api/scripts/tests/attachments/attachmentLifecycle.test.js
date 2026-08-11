@@ -6,6 +6,7 @@ import {
   AttachmentLifecycleError,
   DEFAULT_ATTACHMENT_BLOB_GC_BATCH_SIZE,
   DEFAULT_ATTACHMENT_BLOB_GC_GRACE_SECONDS,
+  ATTACHMENT_BLOB_OBJECT_PREFIX,
   DEFAULT_ATTACHMENT_CLEANUP_BATCH_SIZE,
   DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE,
   DEFAULT_STAGED_ATTACHMENT_MAX_BYTES,
@@ -110,6 +111,11 @@ function createMemoryInfrastructure(initialRows = []) {
     blobs.set(blob.id, blob);
   }
   const objects = new Set([...rows.values()].map((row) => row.object_key));
+  const objectDetails = new Map([...objects].map((objectKey) => [objectKey, {
+    name: objectKey,
+    lastModified: new Date(NOW),
+    size: 1234,
+  }]));
   const objectWrites = [];
   const failedObjectDeletes = new Set();
   const failedAcknowledgementUpdates = new Set();
@@ -482,6 +488,21 @@ function createMemoryInfrastructure(initialRows = []) {
     }
 
     if (
+      query.startsWith('SELECT id, bucket, object_key, content_hash, status') &&
+      query.includes('FROM attachment_blobs')
+    ) {
+      const [bucket, objectKey, contentHash] = params;
+      const matching = [...blobs.values()]
+        .filter((blob) => (
+          (blob.bucket === bucket && blob.object_key === objectKey) ||
+          blob.content_hash === contentHash
+        ))
+        .slice(0, 2)
+        .map((blob) => ({ ...blob }));
+      return { rows: matching, rowCount: matching.length };
+    }
+
+    if (
       query.startsWith('SELECT id FROM attachment_objects') &&
       query.includes("status = 'staged'")
     ) {
@@ -541,6 +562,11 @@ function createMemoryInfrastructure(initialRows = []) {
   const objectStore = {
     async putObject(_bucket, objectKey, buffer, size, metadata) {
       objects.add(objectKey);
+      objectDetails.set(objectKey, {
+        name: objectKey,
+        lastModified: new Date(),
+        size,
+      });
       objectWrites.push({
         objectKey,
         buffer: Buffer.from(buffer),
@@ -553,6 +579,24 @@ function createMemoryInfrastructure(initialRows = []) {
         throw new Error('simulated MinIO failure');
       }
       objects.delete(objectKey);
+      objectDetails.delete(objectKey);
+    },
+    async statObject(_bucket, objectKey) {
+      const detail = objectDetails.get(objectKey);
+      if (!detail) {
+        const error = new Error('object not found');
+        error.code = 'NoSuchKey';
+        throw error;
+      }
+      return { ...detail };
+    },
+    async *listObjectsV2(_bucket, prefix, _recursive, startAfter = '') {
+      const names = [...objectDetails.keys()]
+        .filter((objectKey) => objectKey.startsWith(prefix) && objectKey > startAfter)
+        .sort();
+      for (const objectKey of names) {
+        yield { ...objectDetails.get(objectKey) };
+      }
     },
   };
 
@@ -562,6 +606,7 @@ function createMemoryInfrastructure(initialRows = []) {
     failedAcknowledgementUpdates,
     failedObjectDeletes,
     objectStore,
+    objectDetails,
     objectWrites,
     objects,
     rows,
@@ -798,6 +843,99 @@ test('blob GC verifies actual references, observes grace, and retries storage fa
   });
   assert.equal(infrastructure.blobs.has(sharedBlob.id), false);
   assert.equal(infrastructure.objects.has(sharedBlob.object_key), false);
+});
+
+test('untracked content-addressed MinIO reconciliation is bounded and conservative', async () => {
+  const infrastructure = createMemoryInfrastructure();
+  const lifecycle = createTestLifecycle(infrastructure, {
+    blobGcGraceSeconds: 3600,
+    blobGcBatchSize: 3,
+  });
+  const oldTime = new Date(Date.now() - 7200_000);
+  const recentTime = new Date();
+  const oldHash = '11'.repeat(32);
+  const recentHash = '22'.repeat(32);
+  const failedHash = '33'.repeat(32);
+  const oldKey = `${ATTACHMENT_BLOB_OBJECT_PREFIX}11/${oldHash}`;
+  const recentKey = `${ATTACHMENT_BLOB_OBJECT_PREFIX}22/${recentHash}`;
+  const failedKey = `${ATTACHMENT_BLOB_OBJECT_PREFIX}33/${failedHash}`;
+  const malformedKey = `${ATTACHMENT_BLOB_OBJECT_PREFIX}zz/not-a-hash`;
+  const legacyKey = `${CONVERSATION_ID}/legacy.bin`;
+
+  for (const [name, lastModified] of [
+    [oldKey, oldTime],
+    [recentKey, recentTime],
+    [failedKey, oldTime],
+    [malformedKey, oldTime],
+    [legacyKey, oldTime],
+  ]) {
+    infrastructure.objects.add(name);
+    infrastructure.objectDetails.set(name, { name, lastModified, size: 1234 });
+  }
+  infrastructure.failedObjectDeletes.add(failedKey);
+
+  const first = await lifecycle.cleanupUntrackedContentAddressedObjects();
+  assert.equal(first.selected, 3);
+  assert.equal(first.deleted, 1);
+  assert.equal(first.recent, 1);
+  assert.equal(first.failed, 1);
+  assert.equal(first.scanComplete, false);
+  assert.equal(first.nextCursor, failedKey);
+  assert.equal(infrastructure.objects.has(oldKey), false);
+  assert.equal(infrastructure.objects.has(recentKey), true);
+  assert.equal(infrastructure.objects.has(failedKey), true);
+  assert.equal(infrastructure.objects.has(legacyKey), true);
+
+  const second = await lifecycle.cleanupUntrackedContentAddressedObjects({
+    startAfter: first.nextCursor,
+  });
+  assert.equal(second.selected, 1);
+  assert.equal(second.malformed, 1);
+  assert.equal(second.scanComplete, true);
+  assert.equal(infrastructure.objects.has(malformedKey), true);
+
+  infrastructure.failedObjectDeletes.delete(failedKey);
+  const retry = await lifecycle.cleanupUntrackedContentAddressedObjects();
+  assert.equal(retry.deleted, 1);
+  assert.equal(infrastructure.objects.has(failedKey), false);
+
+  const idempotent = await lifecycle.cleanupUntrackedContentAddressedObjects();
+  assert.equal(idempotent.deleted, 0);
+  assert.equal(infrastructure.objects.has(legacyKey), true);
+});
+
+test('untracked reconciliation retains referenced keys and same-hash inconsistencies', async () => {
+  const infrastructure = createMemoryInfrastructure();
+  const lifecycle = createTestLifecycle(infrastructure, {
+    blobGcGraceSeconds: 3600,
+  });
+  const bytes = Buffer.from('referenced-physical-source');
+  await stageTestAttachment(lifecycle, { id: ATTACHMENT_ID, buffer: bytes });
+
+  const referencedBlob = [...infrastructure.blobs.values()][0];
+  infrastructure.objectDetails.get(referencedBlob.object_key).lastModified =
+    new Date(Date.now() - 7200_000);
+
+  const exactReference = await lifecycle.cleanupUntrackedContentAddressedObjects();
+  assert.equal(exactReference.referenced, 1);
+  assert.equal(exactReference.inconsistent, 0);
+  assert.equal(exactReference.deleted, 0);
+  assert.equal(infrastructure.objects.has(referencedBlob.object_key), true);
+
+  const inconsistentKey = `${ATTACHMENT_BLOB_OBJECT_PREFIX}${referencedBlob.content_hash.slice(0, 2)}/${referencedBlob.content_hash}`;
+  referencedBlob.object_key = 'blobs/v1/sha256/ff/' + 'ff'.repeat(32);
+  infrastructure.objectDetails.set(inconsistentKey, {
+    name: inconsistentKey,
+    lastModified: new Date(Date.now() - 7200_000),
+    size: bytes.length,
+  });
+  infrastructure.objects.add(inconsistentKey);
+
+  const result = await lifecycle.cleanupUntrackedContentAddressedObjects();
+  assert.equal(result.referenced, 1);
+  assert.equal(result.inconsistent, 1);
+  assert.equal(result.deleted, 0);
+  assert.equal(infrastructure.objects.has(inconsistentKey), true);
 });
 
 test('owned staged deletion is idempotent and rejects unsafe lifecycle states', async (t) => {
@@ -1106,6 +1244,8 @@ test('cleanup runner coalesces local calls and honors the distributed lease', as
   let cleanupCalls = 0;
   let blobCleanupCalls = 0;
   let releaseCalls = 0;
+  let scanCalls = 0;
+  let cursor = '';
   const lifecycle = {
     config: { cleanupIntervalSeconds: 900 },
     async cleanupExpiredStaged() {
@@ -1117,10 +1257,35 @@ test('cleanup runner coalesces local calls and honors the distributed lease', as
       blobCleanupCalls += 1;
       return { selected: 1, deleted: 1, retained: 0, failed: 0 };
     },
+    async cleanupUntrackedContentAddressedObjects({ startAfter }) {
+      scanCalls += 1;
+      assert.equal(startAfter, cursor);
+      return {
+        selected: 1,
+        deleted: 0,
+        recent: 1,
+        referenced: 0,
+        inconsistent: 0,
+        malformed: 0,
+        missing: 0,
+        failed: 0,
+        nextCursor: null,
+        scanComplete: true,
+      };
+    },
   };
   const lockClient = {
-    async set() {
+    async set(key, value, ...args) {
+      if (args.includes('NX')) return 'OK';
+      cursor = value;
       return 'OK';
+    },
+    async get() {
+      return cursor;
+    },
+    async del() {
+      cursor = '';
+      return 1;
     },
     async eval() {
       releaseCalls += 1;
@@ -1130,7 +1295,7 @@ test('cleanup runner coalesces local calls and honors the distributed lease', as
   const runner = createStagedAttachmentCleanupRunner({
     lifecycle,
     lockClient,
-    logger: { error() {}, warn() {} },
+    logger: { error() {}, warn() {}, info() {} },
   });
 
   const [first, second] = await Promise.all([runner.runOnce(), runner.runOnce()]);
@@ -1139,10 +1304,23 @@ test('cleanup runner coalesces local calls and honors the distributed lease', as
     deleted: 1,
     failed: 0,
     blobs: { selected: 1, deleted: 1, retained: 0, failed: 0 },
+    untrackedBlobs: {
+      selected: 1,
+      deleted: 0,
+      recent: 1,
+      referenced: 0,
+      inconsistent: 0,
+      malformed: 0,
+      missing: 0,
+      failed: 0,
+      nextCursor: null,
+      scanComplete: true,
+    },
   });
   assert.deepEqual(second, first);
   assert.equal(cleanupCalls, 1);
   assert.equal(blobCleanupCalls, 1);
+  assert.equal(scanCalls, 1);
   assert.equal(releaseCalls, 1);
 
   const blockedRunner = createStagedAttachmentCleanupRunner({
@@ -1151,11 +1329,17 @@ test('cleanup runner coalesces local calls and honors the distributed lease', as
       async set() {
         return null;
       },
+      async get() {
+        return '';
+      },
+      async del() {
+        return 0;
+      },
       async eval() {
         throw new Error('lock was not acquired');
       },
     },
-    logger: { error() {}, warn() {} },
+    logger: { error() {}, warn() {}, info() {} },
   });
   assert.deepEqual(
     await blockedRunner.runOnce(),

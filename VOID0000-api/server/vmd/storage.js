@@ -160,7 +160,6 @@ async function renderStoredImage(attachmentId, variant) {
   }
 
   const cacheIdentity = createVmdVariantIdentity({
-    attachmentId,
     objectKey: attachment.object_key,
     objectStat,
     variant,

@@ -107,14 +107,22 @@ Generated variants persist in the private `vmd-variants` MinIO bucket. The
 object key is:
 
 ```text
-variants/v1/<attachment UUID>/<source fingerprint>/<variant>.webp
+variants/v2/<physical source ID>/<source fingerprint>/<variant>.webp
 ```
+
+The physical source ID is a private SHA-256 of the internally resolved MinIO
+object key. It is never accepted from or returned to a client. Authorization
+still validates the signed logical attachment UUID before PostgreSQL resolves
+that UUID to its physical blob. Two authorized logical attachments sharing one
+blob therefore reuse one persistent variant, while different blobs remain
+separate.
 
 The source fingerprint is SHA-256 over the trusted original object key, MinIO
 ETag, version ID, size, and last-modified value. Changing any source identity or
 the VMD cache version creates a new entry. Cached bytes carry a SHA-256 checksum
 and are regenerated if metadata or bytes do not match. MinIO object writes are
-atomic; if a cache write fails, VMD still serves the generated response.
+atomic; if a cache write fails, VMD still serves the generated response. Old
+`variants/v1/` objects expire naturally under the existing cache lifecycle.
 
 The dedicated cache bucket stays private and has a 30-day lifecycle on the
 `variants/` prefix. This bounds orphaned attachment variants and old cache

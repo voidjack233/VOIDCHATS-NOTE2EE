@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { minioClient } from '../minio.js';
 
-export const VMD_CACHE_VERSION = 'v1';
+export const VMD_CACHE_VERSION = 'v2';
 export const VMD_CACHE_BUCKET = process.env.MINIO_VMD_CACHE_BUCKET || 'vmd-variants';
 
 const DEFAULT_CACHE_RETENTION_DAYS = 30;
@@ -69,7 +69,10 @@ async function readBoundedObject(client, bucket, objectKey, expectedSize) {
   return Buffer.concat(chunks, totalBytes);
 }
 
-export function createVmdVariantIdentity({ attachmentId, objectKey, objectStat, variant }) {
+export function createVmdVariantIdentity({ objectKey, objectStat, variant }) {
+  if (typeof objectKey !== 'string' || objectKey.length === 0) {
+    throw new TypeError('VMD cache identity requires a physical object key');
+  }
   const sourceDescriptor = JSON.stringify({
     object_key: String(objectKey),
     etag: normalizeEtag(objectStat?.etag),
@@ -80,13 +83,13 @@ export function createVmdVariantIdentity({ attachmentId, objectKey, objectStat, 
       : String(objectStat?.lastModified || ''),
   });
   const sourceFingerprint = sha256Hex(sourceDescriptor);
-  const normalizedAttachmentId = String(attachmentId).toLowerCase();
+  const physicalSourceId = sha256Hex(objectKey);
 
   return {
-    attachmentId: normalizedAttachmentId,
+    physicalSourceId,
     sourceFingerprint,
     variant,
-    objectKey: `variants/${VMD_CACHE_VERSION}/${normalizedAttachmentId}/${sourceFingerprint}/${variant}.webp`,
+    objectKey: `variants/${VMD_CACHE_VERSION}/${physicalSourceId}/${sourceFingerprint}/${variant}.webp`,
   };
 }
 

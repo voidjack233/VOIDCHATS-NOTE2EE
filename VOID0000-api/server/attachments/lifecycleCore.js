@@ -17,6 +17,7 @@ export const DEFAULT_ATTACHMENT_CLEANUP_BATCH_SIZE = 50;
 export const DEFAULT_ATTACHMENT_RECONCILIATION_BATCH_SIZE = 25;
 export const DEFAULT_ATTACHMENT_BLOB_GC_GRACE_SECONDS = 24 * 60 * 60;
 export const DEFAULT_ATTACHMENT_BLOB_GC_BATCH_SIZE = 25;
+export const ATTACHMENT_BLOB_OBJECT_PREFIX = 'blobs/v1/sha256/';
 
 const MAX_STAGED_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_ATTACHMENT_RESERVATION_TTL_SECONDS = 60 * 60;
@@ -28,6 +29,9 @@ const MAX_ATTACHMENT_RECONCILIATION_BATCH_SIZE = 100;
 const MAX_ATTACHMENT_BLOB_GC_GRACE_SECONDS = 30 * 24 * 60 * 60;
 const MAX_ATTACHMENT_BLOB_GC_BATCH_SIZE = 100;
 const CONTENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const CONTENT_ADDRESSED_OBJECT_KEY_PATTERN = new RegExp(
+  `^${ATTACHMENT_BLOB_OBJECT_PREFIX}([0-9a-f]{2})/([0-9a-f]{64})$`,
+);
 
 function resolvePositiveInteger(value, fallback, maximum) {
   const normalized = value == null ? '' : String(value).trim();
@@ -104,7 +108,15 @@ export function createAttachmentBlobObjectKey(contentHash) {
   if (!CONTENT_HASH_PATTERN.test(normalized)) {
     throw new TypeError('Attachment blob object key requires a SHA-256 hash');
   }
-  return `blobs/v1/sha256/${normalized.slice(0, 2)}/${normalized}`;
+  return `${ATTACHMENT_BLOB_OBJECT_PREFIX}${normalized.slice(0, 2)}/${normalized}`;
+}
+
+export function parseAttachmentBlobObjectKey(objectKey) {
+  const match = String(objectKey || '').match(CONTENT_ADDRESSED_OBJECT_KEY_PATTERN);
+  if (!match || match[1] !== match[2].slice(0, 2)) {
+    return null;
+  }
+  return match[2];
 }
 
 export class AttachmentLifecycleError extends Error {
@@ -123,6 +135,19 @@ export class AttachmentLifecycleError extends Error {
 
 function fail(status, code, message, extra) {
   throw new AttachmentLifecycleError(status, code, message, extra);
+}
+
+function isMissingObjectError(error) {
+  const code = String(error?.code || error?.name || '');
+  return code === 'NoSuchKey' || code === 'NoSuchObject' || code === 'NotFound';
+}
+
+function isOlderThanGrace(lastModified, graceSeconds) {
+  const timestamp = lastModified instanceof Date
+    ? lastModified.getTime()
+    : Date.parse(String(lastModified || ''));
+  return Number.isFinite(timestamp) &&
+    timestamp <= Date.now() - (graceSeconds * 1000);
 }
 
 function parseAttachmentDescriptor(rawAttachment) {
@@ -316,7 +341,9 @@ export function createAttachmentLifecycle({
   if (
     !objectStore ||
     typeof objectStore.putObject !== 'function' ||
-    typeof objectStore.removeObject !== 'function'
+    typeof objectStore.removeObject !== 'function' ||
+    typeof objectStore.statObject !== 'function' ||
+    typeof objectStore.listObjectsV2 !== 'function'
   ) {
     throw new TypeError('Attachment lifecycle requires an object store');
   }
@@ -1005,6 +1032,121 @@ export function createAttachmentLifecycle({
     return summary;
   }
 
+  async function cleanupUntrackedContentAddressedObjects({
+    batchSize = config.blobGcBatchSize,
+    startAfter = '',
+  } = {}) {
+    const normalizedStartAfter = typeof startAfter === 'string' &&
+      startAfter.startsWith(ATTACHMENT_BLOB_OBJECT_PREFIX)
+      ? startAfter
+      : '';
+    const candidates = [];
+    const objectStream = objectStore.listObjectsV2(
+      bucket,
+      ATTACHMENT_BLOB_OBJECT_PREFIX,
+      true,
+      normalizedStartAfter,
+    );
+
+    for await (const object of objectStream) {
+      candidates.push(object);
+      if (candidates.length >= batchSize) break;
+    }
+
+    const summary = {
+      selected: candidates.length,
+      deleted: 0,
+      recent: 0,
+      referenced: 0,
+      inconsistent: 0,
+      malformed: 0,
+      missing: 0,
+      failed: 0,
+      nextCursor: candidates.length === batchSize
+        ? String(candidates.at(-1)?.name || '')
+        : null,
+      scanComplete: candidates.length < batchSize,
+    };
+
+    for (const candidate of candidates) {
+      const objectKey = String(candidate?.name || '');
+      const contentHash = parseAttachmentBlobObjectKey(objectKey);
+      if (!contentHash) {
+        summary.malformed += 1;
+        continue;
+      }
+      if (!isOlderThanGrace(candidate.lastModified, config.blobGcGraceSeconds)) {
+        summary.recent += 1;
+        continue;
+      }
+
+      try {
+        const outcome = await withTransaction(dbPool, async (client) => {
+          await client.query(
+            'SELECT pg_advisory_xact_lock(hashtext($1))',
+            [`attachment-blob:${contentHash}`],
+          );
+
+          const blobResult = await client.query(
+            `SELECT id, bucket, object_key, content_hash, status
+             FROM attachment_blobs
+             WHERE (bucket = $1 AND object_key = $2)
+                OR content_hash = $3
+             LIMIT 2`,
+            [bucket, objectKey, contentHash],
+          );
+          if (blobResult.rows.length > 0) {
+            const exact = blobResult.rows.find((row) => (
+              row.bucket === bucket && row.object_key === objectKey
+            ));
+            const inconsistent = !exact ||
+              String(exact.content_hash || '').toLowerCase() !== contentHash;
+            return { state: 'referenced', inconsistent };
+          }
+
+          let currentObject;
+          try {
+            currentObject = await objectStore.statObject(bucket, objectKey);
+          } catch (error) {
+            if (isMissingObjectError(error)) {
+              return { state: 'missing' };
+            }
+            throw error;
+          }
+
+          if (!isOlderThanGrace(currentObject.lastModified, config.blobGcGraceSeconds)) {
+            return { state: 'recent' };
+          }
+
+          await objectStore.removeObject(bucket, objectKey);
+          return { state: 'deleted' };
+        });
+
+        if (outcome.state === 'deleted') summary.deleted += 1;
+        if (outcome.state === 'recent') summary.recent += 1;
+        if (outcome.state === 'missing') summary.missing += 1;
+        if (outcome.state === 'referenced') summary.referenced += 1;
+        if (outcome.inconsistent) summary.inconsistent += 1;
+      } catch {
+        summary.failed += 1;
+      }
+    }
+
+    logger.info?.('[ATTACHMENT_UNTRACKED_BLOB_SCAN] bounded scan completed', {
+      selected: summary.selected,
+      deleted: summary.deleted,
+      recent: summary.recent,
+      referenced: summary.referenced,
+      inconsistent: summary.inconsistent,
+      malformed: summary.malformed,
+      missing: summary.missing,
+      failed: summary.failed,
+      scan_complete: summary.scanComplete,
+    });
+
+    return summary;
+  }
+
   return Object.freeze({
     config,
     assertUploadAllowed,
@@ -1016,6 +1158,7 @@ export function createAttachmentLifecycle({
     releaseReservation,
     cleanupExpiredStaged,
     cleanupOrphanedBlobs,
+    cleanupUntrackedContentAddressedObjects,
   });
 }
 

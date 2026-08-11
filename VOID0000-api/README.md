@@ -75,6 +75,10 @@ npm run migrate
 pm2 start ecosystem.config.cjs --update-env
 ```
 
+For an existing deployment that has not applied attachment migration `0011`,
+do not run that generic sequence while an old message service is online. Follow
+the stop-before-migrate rollout in `docs/database-migrations.md` instead.
+
 Expected PM2 apps:
 
 - `voidapp-api`
