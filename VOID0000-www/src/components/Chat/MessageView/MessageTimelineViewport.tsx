@@ -1,8 +1,7 @@
 import type { ReactNode, RefObject, UIEventHandler } from 'react';
-import { Loader2 } from 'lucide-react';
 import type { Density } from '../../../Services/hooks/Settings/useTheme';
 import type { HistoryRangeStatus } from './useMessageScrollGeometry';
-import OlderHistorySkeleton from './HistorySkeleton';
+import HistorySkeleton from './HistorySkeleton';
 
 interface MessageTimelineViewportProps {
   setScrollerRef: (element: HTMLDivElement | null) => void;
@@ -19,8 +18,10 @@ interface MessageTimelineViewportProps {
   children: ReactNode;
   bottomLogicalRangeHeight: number;
   renderedBottomSpacerHeight: number;
+  bottomHistorySkeletonRowCount: number;
+  newerRangeStatus: HistoryRangeStatus;
   hasNewer: boolean;
-  showNewerLoader: boolean;
+  loadingNewer: boolean;
   newerSentinelRef: RefObject<HTMLDivElement | null>;
   density: Density;
 }
@@ -40,8 +41,10 @@ export default function MessageTimelineViewport({
   children,
   bottomLogicalRangeHeight,
   renderedBottomSpacerHeight,
+  bottomHistorySkeletonRowCount,
+  newerRangeStatus,
   hasNewer,
-  showNewerLoader,
+  loadingNewer,
   newerSentinelRef,
   density,
 }: MessageTimelineViewportProps) {
@@ -59,8 +62,8 @@ export default function MessageTimelineViewport({
           className="relative flex w-full items-start justify-center"
           style={{ height: `${renderedTopSpacerHeight}px` }}
         >
-          <div className="absolute inset-0 w-full">
-            <OlderHistorySkeleton
+          <div data-message-older-skeleton className="absolute inset-0 w-full">
+            <HistorySkeleton
               density={density}
               rowCount={topHistorySkeletonRowCount}
               active={olderRangeStatus === 'loading'}
@@ -75,25 +78,22 @@ export default function MessageTimelineViewport({
 
       {children}
 
-      {/* Keep the newer boundary compact so pagination never visually replaces the timeline. */}
-      {bottomLogicalRangeHeight > 1 && (hasNewer || showNewerLoader) && (
+      {/* Newer logical range mirrors the older history rows at the opposite edge. */}
+      {bottomLogicalRangeHeight > 1 && (hasNewer || loadingNewer) && (
         <div
           data-message-newer-range
-          className="relative flex w-full items-center justify-center"
+          className="relative flex w-full items-start justify-center"
           style={{ height: `${renderedBottomSpacerHeight}px` }}
         >
           {hasNewer && <div ref={newerSentinelRef} className="absolute inset-x-0 top-0 h-px w-full" />}
-          {showNewerLoader && (
-            <div
-              data-message-newer-loader
-              role="status"
-              aria-live="polite"
-              className="flex items-center gap-2 text-xs text-void-text-muted"
-            >
-              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-              <span>Loading newer messages...</span>
-            </div>
-          )}
+          <div data-message-newer-skeleton className="absolute inset-0 w-full">
+            <HistorySkeleton
+              density={density}
+              rowCount={bottomHistorySkeletonRowCount}
+              active={newerRangeStatus === 'loading'}
+              anchorEdge="start"
+            />
+          </div>
         </div>
       )}
     </div>

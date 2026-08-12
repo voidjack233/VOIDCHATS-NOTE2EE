@@ -3,7 +3,7 @@ import type { Density } from '../../../Services/hooks/Settings/useTheme';
 import { Skeleton } from '../../common/Skeleton';
 import { HISTORY_SKELETON_ROW_HEIGHT } from './historySkeletonConstants';
 
-const OLDER_SKELETON_BUBBLE_WIDTHS = [
+const HISTORY_SKELETON_BUBBLE_WIDTHS = [
   'w-[54%] sm:w-[42%]',
   'w-[72%] sm:w-[56%]',
   'w-[46%] sm:w-[36%]',
@@ -12,14 +12,14 @@ const OLDER_SKELETON_BUBBLE_WIDTHS = [
   'w-[38%] sm:w-[30%]',
 ];
 
-const OLDER_SKELETON_META_WIDTHS = [
+const HISTORY_SKELETON_META_WIDTHS = [
   'w-16',
   'w-20',
   'w-24',
   'w-14',
 ];
 
-const OlderHistorySkeleton = memo(function OlderHistorySkeleton({
+const HistorySkeleton = memo(function HistorySkeleton({
   density,
   rowCount,
   active = false,
@@ -34,7 +34,11 @@ const OlderHistorySkeleton = memo(function OlderHistorySkeleton({
   const rowHeight = HISTORY_SKELETON_ROW_HEIGHT[density];
 
   return (
-    <div className={`pointer-events-none flex h-full w-full flex-col overflow-hidden px-2 transition-opacity ${active ? 'opacity-100' : 'opacity-75'} ${anchorEdge === 'end' ? 'justify-end' : 'justify-start'}`}>
+    <div
+      data-history-skeleton
+      data-history-skeleton-anchor={anchorEdge}
+      className={`pointer-events-none flex h-full w-full flex-col overflow-hidden px-2 transition-opacity ${active ? 'opacity-100' : 'opacity-75'} ${anchorEdge === 'end' ? 'justify-end' : 'justify-start'}`}
+    >
       {rows.map((rowIndex) => {
         const patternIndex = anchorEdge === 'end'
           ? rowCount - rowIndex - 1
@@ -46,13 +50,14 @@ const OlderHistorySkeleton = memo(function OlderHistorySkeleton({
         const bubbleHeight = density === 'comfortable' ? 'h-10' : 'h-8';
         const avatarSize = 'h-8 w-8';
         const bubbleWidth =
-          OLDER_SKELETON_BUBBLE_WIDTHS[patternIndex % OLDER_SKELETON_BUBBLE_WIDTHS.length];
+          HISTORY_SKELETON_BUBBLE_WIDTHS[patternIndex % HISTORY_SKELETON_BUBBLE_WIDTHS.length];
         const metaWidth =
-          OLDER_SKELETON_META_WIDTHS[patternIndex % OLDER_SKELETON_META_WIDTHS.length];
+          HISTORY_SKELETON_META_WIDTHS[patternIndex % HISTORY_SKELETON_META_WIDTHS.length];
 
         return (
           <div
             key={rowIndex}
+            data-history-skeleton-row
             className={`flex w-full max-w-full shrink-0 items-center ${isOutgoing ? 'justify-end' : 'justify-start'}`}
             style={{ height: `${rowHeight}px` }}
           >
@@ -79,4 +84,4 @@ const OlderHistorySkeleton = memo(function OlderHistorySkeleton({
   );
 });
 
-export default OlderHistorySkeleton;
+export default HistorySkeleton;

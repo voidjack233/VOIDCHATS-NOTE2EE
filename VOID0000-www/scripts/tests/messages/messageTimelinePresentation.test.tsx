@@ -5,22 +5,29 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { Message } from '../../../src/Services/Chat/chatService';
 import { mergeMessagesWithReconciliation } from '../../../src/Services/hooks/Chats/MessageList/messageListReconciliation';
 import MessageTimelineViewport from '../../../src/components/Chat/MessageView/MessageTimelineViewport';
+import { HISTORY_SKELETON_ROW_HEIGHT } from '../../../src/components/Chat/MessageView/historySkeletonConstants';
 import {
-  MAX_RENDERED_NEWER_RANGE_HEIGHT,
+  getRenderedNewerHistoryRangeLimit,
   shouldShowInitialMessageTimelineSkeleton,
-  shouldShowNewerHistoryLoader,
 } from '../../../src/components/Chat/MessageView/messageTimelinePresentation';
+
+Object.defineProperty(globalThis, 'React', {
+  configurable: true,
+  value: React,
+});
 
 const renderTimeline = ({
   children,
   loadingOlder = false,
-  showNewerLoader = false,
-  hasNewer = showNewerLoader,
+  loadingNewer = false,
+  hasNewer = loadingNewer,
+  density = 'compact',
 }: {
   children: ReactNode;
   loadingOlder?: boolean;
-  showNewerLoader?: boolean;
+  loadingNewer?: boolean;
   hasNewer?: boolean;
+  density?: 'compact' | 'comfortable';
 }) => renderToStaticMarkup(
   <MessageTimelineViewport
     setScrollerRef={() => undefined}
@@ -35,11 +42,23 @@ const renderTimeline = ({
     showHeader={false}
     header={null}
     bottomLogicalRangeHeight={hasNewer ? 4_000 : 0}
-    renderedBottomSpacerHeight={hasNewer ? MAX_RENDERED_NEWER_RANGE_HEIGHT : 0}
+    renderedBottomSpacerHeight={hasNewer || loadingNewer
+      ? getRenderedNewerHistoryRangeLimit({
+          historyLogicalSlotHeight: 4_000,
+          prefetchDistance: density === 'compact' ? 720 : 640,
+        })
+      : 0}
+    bottomHistorySkeletonRowCount={Math.max(
+      4,
+      Math.ceil(
+        (density === 'compact' ? 720 : 640) / HISTORY_SKELETON_ROW_HEIGHT[density],
+      ) + 1,
+    )}
+    newerRangeStatus={loadingNewer ? 'loading' : 'loaded'}
     hasNewer={hasNewer}
-    showNewerLoader={showNewerLoader}
+    loadingNewer={loadingNewer}
     newerSentinelRef={createRef<HTMLDivElement>()}
-    density="compact"
+    density={density}
   >
     {children}
   </MessageTimelineViewport>,
@@ -61,9 +80,10 @@ const makeMessage = (overrides: Partial<Message> = {}): Message => ({
   ...overrides,
 });
 
-test('existing messages remain rendered with a localized newer loader', () => {
+test('older and newer pagination use the same history skeleton at opposite edges', () => {
   const markup = renderTimeline({
-    showNewerLoader: true,
+    loadingOlder: true,
+    loadingNewer: true,
     children: <div data-message-id="existing-message">Existing message</div>,
   });
 
@@ -72,14 +92,23 @@ test('existing messages remain rendered with a localized newer loader', () => {
     initialHydrationSettled: true,
     visibleMessageCount: 1,
   }), false);
-  assert.equal(shouldShowNewerHistoryLoader({
-    loadingNewer: true,
-    visibleMessageCount: 1,
-  }), true);
   assert.match(markup, /data-message-timeline/);
   assert.match(markup, /data-message-id="existing-message"/);
-  assert.match(markup, /data-message-newer-loader/);
-  assert.doesNotMatch(markup, /Loading older messages/);
+  assert.match(markup, /data-message-older-skeleton/);
+  assert.match(markup, /data-message-newer-skeleton/);
+  assert.equal(markup.match(/data-history-skeleton=/g)?.length, 2);
+  assert.match(markup, /data-history-skeleton-anchor="end"/);
+  assert.match(markup, /data-history-skeleton-anchor="start"/);
+
+  const olderIndex = markup.indexOf('data-message-older-skeleton');
+  const messageIndex = markup.indexOf('data-message-id="existing-message"');
+  const newerIndex = markup.indexOf('data-message-newer-skeleton');
+  assert.ok(olderIndex < messageIndex);
+  assert.ok(messageIndex < newerIndex);
+  assert.doesNotMatch(markup, /Loading newer messages\.\.\./);
+  assert.doesNotMatch(markup, /animate-spin/);
+  assert.doesNotMatch(markup, /<svg/);
+  assert.doesNotMatch(markup, /data-message-newer-loader/);
 });
 
 test('older pagination preserves existing timeline rows', () => {
@@ -95,6 +124,41 @@ test('older pagination preserves existing timeline rows', () => {
   }), false);
   assert.match(markup, /data-message-timeline/);
   assert.match(markup, /data-message-id="existing-message"/);
+  assert.match(markup, /data-message-older-skeleton/);
+  assert.match(markup, /data-history-skeleton-anchor="end"/);
+});
+
+test('unloaded newer range shows full history rows before its fetch starts', () => {
+  const markup = renderTimeline({
+    loadingNewer: false,
+    hasNewer: true,
+    children: <div data-message-id="existing-message">Existing message</div>,
+  });
+
+  assert.match(markup, /data-message-newer-skeleton/);
+  assert.match(markup, /data-history-skeleton-anchor="start"/);
+  assert.match(markup, /height:75px/);
+  assert.match(markup, /height:720px/);
+  assert.equal(markup.match(/data-history-skeleton-row/g)?.length, 11);
+});
+
+test('newer history uses one bounded prefetch window instead of a fixed row count', () => {
+  assert.equal(getRenderedNewerHistoryRangeLimit({
+    historyLogicalSlotHeight: 4_000,
+    prefetchDistance: 720,
+  }), 720);
+  assert.equal(getRenderedNewerHistoryRangeLimit({
+    historyLogicalSlotHeight: 500,
+    prefetchDistance: 720,
+  }), 500);
+
+  const comfortableMarkup = renderTimeline({
+    hasNewer: true,
+    density: 'comfortable',
+    children: <div data-message-id="existing-message">Existing message</div>,
+  });
+  assert.match(comfortableMarkup, /height:640px/);
+  assert.match(comfortableMarkup, /height:98px/);
 });
 
 test('genuine initial loading without messages shows the initial skeleton policy', () => {
@@ -135,7 +199,7 @@ test('incoming realtime reconciliation stays singular while newer pagination is 
     trimFrom: 'old',
   });
   const markup = renderTimeline({
-    showNewerLoader: true,
+    loadingNewer: true,
     children: replayMerge.messages.map((message) => (
       <div key={message.message_id} data-message-id={message.message_id}>
         {message.content}
@@ -145,7 +209,7 @@ test('incoming realtime reconciliation stays singular while newer pagination is 
 
   assert.match(markup, /data-message-id="existing-message"/);
   assert.equal(markup.match(/data-message-id="incoming-message"/g)?.length, 1);
-  assert.match(markup, /data-message-newer-loader/);
+  assert.match(markup, /data-message-newer-skeleton/);
 });
 
 test('conversation change without cached messages retains initial skeleton behavior', () => {
@@ -156,22 +220,30 @@ test('conversation change without cached messages retains initial skeleton behav
   }), true);
 });
 
-test('loading completion keeps the timeline structure and removes only the localized loader', () => {
+test('loading completion replaces only the bottom range with reconciled newer rows', () => {
   const children = <div data-message-id="stable-message">Stable message</div>;
   const loadingMarkup = renderTimeline({
-    showNewerLoader: true,
+    loadingNewer: true,
     children,
   });
   const loadedMarkup = renderTimeline({
-    showNewerLoader: false,
+    loadingNewer: false,
     hasNewer: false,
-    children,
+    children: (
+      <>
+        {children}
+        <div data-message-id="newer-message">Newer message</div>
+      </>
+    ),
   });
 
   assert.match(loadingMarkup, /data-message-timeline/);
   assert.match(loadedMarkup, /data-message-timeline/);
   assert.match(loadingMarkup, /data-message-id="stable-message"/);
   assert.match(loadedMarkup, /data-message-id="stable-message"/);
-  assert.match(loadingMarkup, /height:72px/);
-  assert.doesNotMatch(loadedMarkup, /data-message-newer-loader/);
+  assert.equal(loadedMarkup.match(/data-message-id="stable-message"/g)?.length, 1);
+  assert.equal(loadedMarkup.match(/data-message-id="newer-message"/g)?.length, 1);
+  assert.match(loadingMarkup, /height:720px/);
+  assert.match(loadingMarkup, /data-message-newer-skeleton/);
+  assert.doesNotMatch(loadedMarkup, /data-message-newer-skeleton/);
 });

@@ -1,4 +1,10 @@
-export const MAX_RENDERED_NEWER_RANGE_HEIGHT = 72;
+export const getRenderedNewerHistoryRangeLimit = ({
+  historyLogicalSlotHeight,
+  prefetchDistance,
+}: {
+  historyLogicalSlotHeight: number;
+  prefetchDistance: number;
+}) => Math.min(historyLogicalSlotHeight, prefetchDistance);
 
 interface InitialSkeletonState {
   loading: boolean;
@@ -15,11 +21,3 @@ export const shouldShowInitialMessageTimelineSkeleton = ({
   !initialHydrationSettled &&
   visibleMessageCount === 0
 );
-
-export const shouldShowNewerHistoryLoader = ({
-  loadingNewer,
-  visibleMessageCount,
-}: {
-  loadingNewer: boolean;
-  visibleMessageCount: number;
-}) => loadingNewer && visibleMessageCount > 0;

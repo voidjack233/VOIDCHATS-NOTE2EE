@@ -59,9 +59,8 @@ import {
   saveConversationScrollPosition,
 } from '../../../Services/hooks/Chats/MessageList/messageListWindowCache';
 import {
-  MAX_RENDERED_NEWER_RANGE_HEIGHT,
+  getRenderedNewerHistoryRangeLimit,
   shouldShowInitialMessageTimelineSkeleton,
-  shouldShowNewerHistoryLoader,
 } from './messageTimelinePresentation';
 import { selectLiveMessageArrivals } from './liveMessageArrival';
 import { markStartupPerformanceOnce } from '../../../Services/Performance/startupPerformance';
@@ -289,10 +288,10 @@ const MessageViewV2 = memo(function MessageViewV2({
   const historyLogicalSlotHeight = useMemo(() => (
     MESSAGE_PAGE_SIZE * estimateHistoryLogicalRowHeight(visualMessages, density)
   ), [density, visualMessages]);
-  const maxPhysicalBottomSpacerHeight = Math.min(
-    MAX_RENDERED_NEWER_RANGE_HEIGHT,
+  const maxPhysicalBottomSpacerHeight = getRenderedNewerHistoryRangeLimit({
     historyLogicalSlotHeight,
-  );
+    prefetchDistance: newerBottomLoadThreshold,
+  });
   const nearViewportMessageIds = useNearViewportMessages(scrollerElement, conversation.id);
   const firstVisualMessageId = visualMessages[0]?.message_id;
   const lastVisualMessageId = visualMessages[visualMessages.length - 1]?.message_id;
@@ -334,6 +333,10 @@ const MessageViewV2 = memo(function MessageViewV2({
   const topHistorySkeletonRowCount = Math.max(
     4,
     Math.ceil(renderedTopSpacerHeight / historySkeletonRowHeight) + 1,
+  );
+  const bottomHistorySkeletonRowCount = Math.max(
+    4,
+    Math.ceil(renderedBottomSpacerHeight / historySkeletonRowHeight) + 1,
   );
 
   const {
@@ -1390,11 +1393,10 @@ const MessageViewV2 = memo(function MessageViewV2({
         )}
         bottomLogicalRangeHeight={bottomLogicalRangeHeight}
         renderedBottomSpacerHeight={renderedBottomSpacerHeight}
+        bottomHistorySkeletonRowCount={bottomHistorySkeletonRowCount}
+        newerRangeStatus={newerRangeStatus}
         hasNewer={hasNewer}
-        showNewerLoader={shouldShowNewerHistoryLoader({
-          loadingNewer,
-          visibleMessageCount: messages.length,
-        })}
+        loadingNewer={loadingNewer}
         newerSentinelRef={newerSentinelRef}
         density={density}
       >
