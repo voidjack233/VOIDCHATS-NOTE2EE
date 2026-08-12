@@ -1,4 +1,5 @@
 import type { RefreshResult, User } from '../types';
+import { markStartupPerformance } from '../../Performance/startupPerformance';
 
 export type AuthStartupResult =
   | { status: 'authenticated'; user: User }
@@ -9,27 +10,48 @@ interface AuthStartupDependencies {
   refreshSession: () => Promise<RefreshResult>;
   loadUser: () => Promise<User | null>;
   ensureCSRF: () => Promise<string | null>;
+  preloadAuthenticatedRoute?: () => Promise<unknown> | unknown;
+}
+
+function startNonBlockingWarmup(task: () => Promise<unknown> | unknown): void {
+  try {
+    void Promise.resolve(task()).catch(() => undefined);
+  } catch {
+    // Route and CSRF warm-ups must never block authenticated read-only rendering.
+  }
 }
 
 export const runAuthStartup = async ({
   refreshSession,
   loadUser,
   ensureCSRF,
+  preloadAuthenticatedRoute,
 }: AuthStartupDependencies): Promise<AuthStartupResult> => {
   try {
-    const refreshResult = await refreshSession();
+    markStartupPerformance('auth-refresh-start');
+    let refreshResult: RefreshResult;
+    try {
+      refreshResult = await refreshSession();
+    } finally {
+      markStartupPerformance('auth-refresh-end');
+    }
     if (!refreshResult.success) {
       return refreshResult.failureKind === 'invalid'
         ? { status: 'logged_out', user: null }
         : { status: 'unavailable', user: null };
     }
 
-    const user = await loadUser();
+    const userRequest = loadUser();
+    startNonBlockingWarmup(ensureCSRF);
+    if (preloadAuthenticatedRoute) {
+      startNonBlockingWarmup(preloadAuthenticatedRoute);
+    }
+
+    const user = await userRequest;
     if (!user) {
       return { status: 'logged_out', user: null };
     }
 
-    await ensureCSRF();
     return { status: 'authenticated', user };
   } catch {
     return { status: 'unavailable', user: null };

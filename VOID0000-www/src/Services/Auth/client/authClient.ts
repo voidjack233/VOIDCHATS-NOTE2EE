@@ -292,6 +292,7 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
 export async function fetchWithAuth(
   url: string,
   options: RequestInit = {},
+  policy: { retryUnauthorized?: boolean } = {},
 ): Promise<Response> {
   const fullUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
   const method = options.method?.toUpperCase() || 'GET';
@@ -316,7 +317,7 @@ export async function fetchWithAuth(
 
   let response = await performRequest();
 
-  if (response.status === 401 && !isLoggingOut) {
+  if (response.status === 401 && !isLoggingOut && policy.retryUnauthorized !== false) {
     const refreshResult = await refreshAuthSession();
 
     if (refreshResult.success) {

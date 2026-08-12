@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, createContext, useContext } from 'rea
 
 const NOTIFICATION_ENABLED_KEY = 'void_message_notifications_enabled';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
+import { fetchAppBootstrap } from '../../bootstrap';
 
 export type Theme = 'void' | 'ocean' | 'forest' | 'sunset' | 'midnight';
 export type MessageGroupSpacing = 0 | 4 | 8 | 16 | 24;
@@ -245,10 +246,15 @@ export function useThemeProvider(remotePreferencesEnabled = false): ThemeContext
 
       if (remotePreferencesEnabled) {
         try {
-          const res = await fetchWithAuth('/api/users/preferences');
-          const data = await res.json();
+          const bootstrap = await fetchAppBootstrap();
+          let serverPreferences = bootstrap?.preferences ?? null;
+          if (!bootstrap) {
+            const res = await fetchWithAuth('/api/users/preferences');
+            const data = await res.json();
+            serverPreferences = data.success ? data.preferences : null;
+          }
 
-          if (data.success && data.preferences) {
+          if (serverPreferences) {
             const {
               accent_color,
               bg_color,
@@ -258,7 +264,7 @@ export function useThemeProvider(remotePreferencesEnabled = false): ThemeContext
               density: serverDensityRaw,
               message_group_spacing: serverMessageGroupSpacingRaw,
               chat_font_scale: serverChatFontScaleRaw,
-            } = data.preferences;
+            } = serverPreferences;
             const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
             const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
             const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;

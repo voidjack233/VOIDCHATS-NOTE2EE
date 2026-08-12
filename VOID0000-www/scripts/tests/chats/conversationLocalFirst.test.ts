@@ -17,6 +17,7 @@ import {
 import {
   CONVERSATION_DETAIL_FRESHNESS_MS,
   createDmConversationSeed,
+  findBootstrapDmConversation,
   isConversationDetailAuthorizationFailure,
   prepareDmConversationNavigation,
   resolveNewDmIdentifiers,
@@ -141,6 +142,26 @@ test('known DM summary remains available while its detail request is pending', a
   await pendingRequest;
   assert.equal(getConversationDetails(summary.id)?.unread_count, 2);
   assert.equal(getConversationDetails(summary.id)?.last_message_preview, 'latest preview');
+});
+
+test('hard-refresh DM route selects its bootstrap shell by public or internal ID', () => {
+  const conversationA = makeConversation('bootstrap-route-a', '910000000000000023');
+  const conversationB = makeConversation('bootstrap-route-b', '910000000000000024');
+  const group = makeConversation('bootstrap-group', '910000000000000025', {
+    type: 'group',
+  });
+  const conversations = [conversationA, group, conversationB];
+
+  assert.strictEqual(
+    findBootstrapDmConversation(conversations, conversationB.public_id),
+    conversationB,
+  );
+  assert.strictEqual(
+    findBootstrapDmConversation(conversations, conversationA.id),
+    conversationA,
+  );
+  assert.equal(findBootstrapDmConversation(conversations, group.public_id), null);
+  assert.equal(findBootstrapDmConversation(conversations, 'missing'), null);
 });
 
 test('saved runtime is selected synchronously and suppresses the full timeline skeleton', () => {

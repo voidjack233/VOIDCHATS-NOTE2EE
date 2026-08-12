@@ -13,6 +13,7 @@ import {
   getSavedConversationRuntime,
   type ConversationRuntime,
 } from './messageListRuntime';
+import { markStartupPerformanceOnce } from '../../../Performance/startupPerformance';
 
 interface UseMessageListLoadingParams {
   conversationId: string;
@@ -128,6 +129,7 @@ const useMessageListLoading = ({
         isAtPresent: !savedRuntime.hasNewer,
       });
       onMessagesLoaded?.(savedMessages);
+      markStartupPerformanceOnce('cached-messages-ready');
       settleInitialHydration();
       return savedRuntime;
     };
@@ -165,6 +167,7 @@ const useMessageListLoading = ({
     };
 
     const load = async () => {
+      markStartupPerformanceOnce('message-hydration-start');
       const shouldPreserveMessages =
         lastLoadedConversationIdRef.current === conversationId &&
         lastLoadedHistoryFenceSignatureRef.current === historyAccessFenceSignature;
@@ -211,6 +214,7 @@ const useMessageListLoading = ({
             loading: false,
           });
           onMessagesLoaded?.(cachedUI);
+          markStartupPerformanceOnce('cached-messages-ready');
         }
 
         setSyncing(true);
@@ -243,6 +247,9 @@ const useMessageListLoading = ({
           syncing: false,
         });
         onMessagesLoaded?.(freshUI);
+        if (freshUI.length > 0) {
+          markStartupPerformanceOnce('messages-ready');
+        }
         settleInitialHydration();
       } catch (error) {
         if (ignore) return;

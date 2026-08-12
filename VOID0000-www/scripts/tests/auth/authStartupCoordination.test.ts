@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { createSingleFlightValue } from '../../../src/Services/Auth/client/singleFlightValue';
 import { canStartAuthenticatedProviders } from '../../../src/Services/Auth/services/authStartupPolicy';
+import {
+  classifyAppBootstrapResponse,
+  createAppBootstrapStore,
+  type AppBootstrap,
+  type AppBootstrapFetchResult,
+} from '../../../src/Services/bootstrap';
 import {
   createAuthStartupCoordinator,
   runAuthStartup,
@@ -15,6 +22,16 @@ const user: User = {
   username: 'user',
 };
 
+const appBootstrap: AppBootstrap = {
+  success: true,
+  user,
+  account: { display_name: 'User' },
+  preferences: { theme: 'void' },
+  friends: [],
+  friend_requests: { incoming: [], outgoing: [] },
+  conversations: [],
+};
+
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((nextResolve) => {
@@ -23,33 +40,34 @@ const deferred = <T>() => {
   return { promise, resolve };
 };
 
-test('stale access with a valid refresh runs one ordered startup sequence for concurrent callers', async () => {
+test('valid refresh starts one bootstrap, CSRF warm-up, and route preload for concurrent callers', async () => {
   const refreshGate = deferred<void>();
-  const events: string[] = [];
+  const bootstrapGate = deferred<User | null>();
+  const csrfGate = deferred<string | null>();
   let refreshCalls = 0;
-  let userCalls = 0;
+  let bootstrapCalls = 0;
   let csrfCalls = 0;
+  let preloadCalls = 0;
   let refreshResolved = false;
 
   const coordinator = createAuthStartupCoordinator(() => runAuthStartup({
     refreshSession: async () => {
       refreshCalls += 1;
-      events.push('refresh:start');
       await refreshGate.promise;
       refreshResolved = true;
-      events.push('refresh:success');
       return { success: true, status: 200 };
     },
     loadUser: async () => {
       assert.equal(refreshResolved, true);
-      userCalls += 1;
-      events.push('user');
-      return user;
+      bootstrapCalls += 1;
+      return bootstrapGate.promise;
     },
     ensureCSRF: async () => {
       csrfCalls += 1;
-      events.push('csrf');
-      return 'csrf-token';
+      return csrfGate.promise;
+    },
+    preloadAuthenticatedRoute: async () => {
+      preloadCalls += 1;
     },
   }));
 
@@ -61,13 +79,19 @@ test('stale access with a valid refresh runs one ordered startup sequence for co
   assert.equal(refreshCalls, 1);
 
   refreshGate.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(bootstrapCalls, 1);
+  assert.equal(csrfCalls, 1);
+  assert.equal(preloadCalls, 1);
+
+  bootstrapGate.resolve(user);
   const results = await Promise.all(requests);
 
-  assert.deepEqual(events, ['refresh:start', 'refresh:success', 'user', 'csrf']);
   assert.equal(refreshCalls, 1);
-  assert.equal(userCalls, 1);
+  assert.equal(bootstrapCalls, 1);
   assert.equal(csrfCalls, 1);
   assert.ok(results.every((result) => result.status === 'authenticated'));
+  csrfGate.resolve('csrf-token');
 });
 
 test('concurrent CSRF callers share one request and reuse the cached token', async () => {
@@ -99,6 +123,7 @@ test('concurrent CSRF callers share one request and reuse the cached token', asy
 test('an invalid refresh resolves logged out without starting protected requests', async () => {
   let userCalls = 0;
   let csrfCalls = 0;
+  let preloadCalls = 0;
   const result = await runAuthStartup({
     refreshSession: async () => ({
       success: false,
@@ -114,11 +139,153 @@ test('an invalid refresh resolves logged out without starting protected requests
       csrfCalls += 1;
       return 'csrf-token';
     },
+    preloadAuthenticatedRoute: () => {
+      preloadCalls += 1;
+    },
   });
 
   assert.deepEqual(result, { status: 'logged_out', user: null });
   assert.equal(userCalls, 0);
   assert.equal(csrfCalls, 0);
+  assert.equal(preloadCalls, 0);
+});
+
+test('an unavailable refresh preserves the session without starting protected requests', async () => {
+  let protectedCalls = 0;
+  const result = await runAuthStartup({
+    refreshSession: async () => ({ success: false, failureKind: 'unavailable' }),
+    loadUser: async () => {
+      protectedCalls += 1;
+      return user;
+    },
+    ensureCSRF: async () => {
+      protectedCalls += 1;
+      return null;
+    },
+    preloadAuthenticatedRoute: () => {
+      protectedCalls += 1;
+    },
+  });
+
+  assert.deepEqual(result, { status: 'unavailable', user: null });
+  assert.equal(protectedCalls, 0);
+});
+
+test('bootstrap invalid and unavailable outcomes preserve distinct auth semantics', async (t) => {
+  await t.test('bootstrap 401 logs out', async () => {
+    const result = await runAuthStartup({
+      refreshSession: async () => ({ success: true, status: 200 }),
+      loadUser: async () => null,
+      ensureCSRF: async () => null,
+    });
+    assert.deepEqual(result, { status: 'logged_out', user: null });
+  });
+
+  for (const name of ['bootstrap 500', 'bootstrap network failure']) {
+    await t.test(`${name} preserves the local session`, async () => {
+      const result = await runAuthStartup({
+        refreshSession: async () => ({ success: true, status: 200 }),
+        loadUser: async () => {
+          throw new Error(name);
+        },
+        ensureCSRF: async () => null,
+      });
+      assert.deepEqual(result, { status: 'unavailable', user: null });
+    });
+  }
+});
+
+test('CSRF warm-up failure does not block authenticated read-only rendering', async () => {
+  const result = await runAuthStartup({
+    refreshSession: async () => ({ success: true, status: 200 }),
+    loadUser: async () => user,
+    ensureCSRF: async () => {
+      throw new Error('csrf unavailable');
+    },
+  });
+
+  assert.deepEqual(result, { status: 'authenticated', user });
+});
+
+test('bootstrap HTTP responses distinguish invalid sessions from temporary failures', async () => {
+  assert.deepEqual(
+    await classifyAppBootstrapResponse(new Response(null, { status: 401 })),
+    { status: 'invalid', bootstrap: null },
+  );
+  assert.deepEqual(
+    await classifyAppBootstrapResponse(new Response(null, { status: 500 })),
+    { status: 'unavailable', bootstrap: null },
+  );
+  assert.deepEqual(
+    await classifyAppBootstrapResponse(new Response('not json', { status: 200 })),
+    { status: 'unavailable', bootstrap: null },
+  );
+
+  const success = await classifyAppBootstrapResponse(new Response(
+    JSON.stringify(appBootstrap),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  ));
+  assert.deepEqual(success, { status: 'success', bootstrap: appBootstrap });
+});
+
+test('concurrent bootstrap consumers share one request and reuse its cache', async () => {
+  const bootstrapGate = deferred<AppBootstrapFetchResult>();
+  let requests = 0;
+  const store = createAppBootstrapStore(async () => {
+    requests += 1;
+    return bootstrapGate.promise;
+  });
+
+  const consumers = [store.load(), store.load(), store.load()];
+  assert.equal(requests, 1);
+  bootstrapGate.resolve({ status: 'success', bootstrap: appBootstrap });
+  assert.ok((await Promise.all(consumers)).every((result) => result.status === 'success'));
+  assert.equal(store.getCached(), appBootstrap);
+  assert.equal((await store.load()).status, 'success');
+  assert.equal(requests, 1);
+});
+
+test('clearing bootstrap during a request prevents stale startup data from being restored', async () => {
+  const firstGate = deferred<AppBootstrapFetchResult>();
+  const secondBootstrap = { ...appBootstrap, user: { ...user, id: 'user-2' } };
+  let requests = 0;
+  const store = createAppBootstrapStore(async () => {
+    requests += 1;
+    return requests === 1
+      ? firstGate.promise
+      : { status: 'success', bootstrap: secondBootstrap };
+  });
+
+  const staleRequest = store.load();
+  store.clear();
+  const freshResult = await store.load();
+  firstGate.resolve({ status: 'success', bootstrap: appBootstrap });
+  await staleRequest;
+
+  assert.deepEqual(freshResult, { status: 'success', bootstrap: secondBootstrap });
+  assert.equal(store.getCached(), secondBootstrap);
+  assert.equal(requests, 2);
+});
+
+test('forced bootstrap refresh supersedes an older in-flight request', async () => {
+  const firstGate = deferred<AppBootstrapFetchResult>();
+  const freshBootstrap = { ...appBootstrap, user: { ...user, id: 'user-2' } };
+  let requests = 0;
+  const store = createAppBootstrapStore(async () => {
+    requests += 1;
+    return requests === 1
+      ? firstGate.promise
+      : { status: 'success', bootstrap: freshBootstrap };
+  });
+
+  const olderRequest = store.load();
+  const forcedResult = await store.load({ force: true });
+  firstGate.resolve({ status: 'success', bootstrap: appBootstrap });
+  await olderRequest;
+
+  assert.deepEqual(forcedResult, { status: 'success', bootstrap: freshBootstrap });
+  assert.equal(store.getCached(), freshBootstrap);
+  assert.equal(requests, 2);
 });
 
 test('successful initialization enables protected startup providers once', () => {
@@ -199,4 +366,14 @@ test('reset during an in-flight startup cannot overwrite a newer result', async 
   assert.deepEqual(second, { status: 'logged_out', user: null });
   assert.deepEqual(cached, second);
   assert.equal(attempts, 2);
+});
+
+test('logout and session invalidation clear bootstrap and startup coordinator state', async () => {
+  const userContextSource = await readFile(
+    new URL('../../../src/Services/Auth/context/UserContext.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(userContextSource, /const logout = async \(\) => \{[\s\S]*clearAppBootstrap\(\);[\s\S]*resetAuthStartupSession\(\);/);
+  assert.match(userContextSource, /const handleSessionInvalidated = \(\) => \{[\s\S]*clearAppBootstrap\(\);[\s\S]*resetAuthStartupSession\(\);/);
 });

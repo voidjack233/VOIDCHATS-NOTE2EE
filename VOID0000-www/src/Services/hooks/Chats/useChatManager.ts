@@ -21,8 +21,13 @@ import { useConversationMembers } from './useConversationMembers';
 import { useMessageStream } from './useMessageStream';
 import { useConversationSync } from './useConversationSync';
 
-export const useChatManager = (user: any) => {
-  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+export const useChatManager = (
+  user: any,
+  initialConversation: Conversation | null = null,
+) => {
+  const [activeConversation, setActiveConversation] = useState<Conversation | null>(
+    () => initialConversation,
+  );
   const [activeGroup, setActiveGroup] = useState<Conversation | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);

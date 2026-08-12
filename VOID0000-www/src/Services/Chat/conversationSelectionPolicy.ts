@@ -86,6 +86,17 @@ export const prepareDmConversationNavigation = (
     : conversation
 );
 
+export const findBootstrapDmConversation = (
+  conversations: Conversation[] | null | undefined,
+  routeIdentifier: string | null | undefined,
+): Conversation | null => {
+  if (!routeIdentifier || !Array.isArray(conversations)) return null;
+  return conversations.find((conversation) => (
+    conversation.type === 'dm' &&
+    matchesConversationIdentifier(conversation, routeIdentifier)
+  )) || null;
+};
+
 export const shouldSynchronizeDmRoute = ({
   routeIdentifier,
   activeConversation,

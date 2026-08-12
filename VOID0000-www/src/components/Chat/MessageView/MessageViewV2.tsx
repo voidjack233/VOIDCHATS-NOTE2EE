@@ -64,6 +64,7 @@ import {
   shouldShowNewerHistoryLoader,
 } from './messageTimelinePresentation';
 import { selectLiveMessageArrivals } from './liveMessageArrival';
+import { markStartupPerformanceOnce } from '../../../Services/Performance/startupPerformance';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -270,6 +271,21 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
+  useEffect(() => {
+    if (
+      visualMessages.length > 0 &&
+      initialHydrationSettled &&
+      initialLatestRestoreDoneRef.current
+    ) {
+      markStartupPerformanceOnce('first-message-paint');
+    }
+  }, [initialHydrationSettled, visualMessages.length]);
+
+  useEffect(() => {
+    if (initialHydrationSettled) {
+      markStartupPerformanceOnce('message-timeline-ready');
+    }
+  }, [initialHydrationSettled]);
   const historyLogicalSlotHeight = useMemo(() => (
     MESSAGE_PAGE_SIZE * estimateHistoryLogicalRowHeight(visualMessages, density)
   ), [density, visualMessages]);

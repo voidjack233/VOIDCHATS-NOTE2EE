@@ -28,7 +28,6 @@ import {
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../../Services/Chat/reactionLimits';
 import type { Friend } from '../../../Services/hooks/Friends/useFriends';
 import FriendProfile from '../../common/Friends/FriendProfile';
-import UserProfileModal from '../../common/Profile/UserProfileModal';
 import EmojiGlyph from './EmojiGlyph';
 import type {
   ContextMenuState,
@@ -37,6 +36,7 @@ import type {
 } from './useMessageActions';
 
 const EmojiPicker = lazy(() => import('./EmojiPicker'));
+const UserProfileModal = lazy(() => import('../../common/Profile/UserProfileModal'));
 
 interface MessageOverlaysProps {
   contextMenu: ContextMenuState | null;
@@ -787,7 +787,9 @@ export default function MessageOverlays({
       )}
 
       {selectedProfileId && (
-        <UserProfileModal profileId={selectedProfileId} onClose={onCloseProfile} />
+        <Suspense fallback={null}>
+          <UserProfileModal profileId={selectedProfileId} onClose={onCloseProfile} />
+        </Suspense>
       )}
 
       {selectedFriend && (

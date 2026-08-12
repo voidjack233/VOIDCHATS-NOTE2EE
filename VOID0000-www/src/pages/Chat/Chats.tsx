@@ -1,25 +1,21 @@
 // src/pages/Chat/Chats.tsx
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import ConversationSettings from '../../components/Chat/Conversation/ConversationSettings';
 import { useAuth } from '../../Services/hooks/Auth/useAuth';
 import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
 import { useChatManager } from '../../Services/hooks/Chats/useChatManager';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
-import UserProfileModal from '../../components/common/Profile/UserProfileModal';
-import SettingsModal from '../../components/common/Settings/SettingsModal';
 import ConversationList from '../../components/Chat/Conversation/ConversationList';
 import MessageView from '../../components/Chat/MessageView/MessageViewV2';
 import MessageInput from '../../components/Chat/Composer/MessageInput';
-import ForwardMessageModal from '../../components/Chat/Conversation/ForwardMessageModal';
-import GroupCreateModal from '../../components/Chat/Groups/GroupCreateModal';
 import FriendsView from '../../components/common/Friends/FriendsView';
 import { gateway } from '../../Services/Gateway/gateway';
 import { Message, Conversation, ConversationMember, forwardMessageToConversation } from '../../Services/Chat/chatService';
 import {
   CONVERSATION_DETAIL_FRESHNESS_MS,
   createDmConversationSeed,
+  findBootstrapDmConversation,
   isConversationDetailAuthorizationFailure,
   prepareDmConversationNavigation,
   synchronizeDmRouteSelection,
@@ -31,6 +27,14 @@ import { useConnectionStatus } from '../../Services/hooks/common/useConnectionSt
 import ChatSidebar from './ChatSidebar';
 import ConversationHeader from './ConversationHeader';
 import ChatStatusBanners from './ChatStatusBanners';
+import { markStartupPerformanceOnce } from '../../Services/Performance/startupPerformance';
+import { getCachedAppBootstrap } from '../../Services/bootstrap';
+
+const ConversationSettings = lazy(() => import('../../components/Chat/Conversation/ConversationSettings'));
+const ForwardMessageModal = lazy(() => import('../../components/Chat/Conversation/ForwardMessageModal'));
+const GroupCreateModal = lazy(() => import('../../components/Chat/Groups/GroupCreateModal'));
+const SettingsModal = lazy(() => import('../../components/common/Settings/SettingsModal'));
+const UserProfileModal = lazy(() => import('../../components/common/Profile/UserProfileModal'));
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -49,6 +53,17 @@ const ChatDashboard = () => {
   }>();
   const { loading, user } = useAuth();
   const { isLoggingOut } = useUser();
+  // Group summaries lack joined_at, so only DMs can safely hydrate before details arrive.
+  const [initialDmConversation] = useState<Conversation | null>(() => (
+    findBootstrapDmConversation(
+      getCachedAppBootstrap()?.conversations as Conversation[] | undefined,
+      dmConversationId,
+    )
+  ));
+
+  useEffect(() => {
+    markStartupPerformanceOnce('chat-route-rendered');
+  }, []);
 
   const { profile: loadedMyProfile } = useProfileRecord(user?.profile_id || '');
   const myProfile = loadedMyProfile || (user ? {
@@ -126,7 +141,7 @@ const ChatDashboard = () => {
     openConversationByIdentifier,
     refreshConversationByIdentifier,
     openGroupByIdentifier,
-  } = useChatManager(user);
+  } = useChatManager(user, initialDmConversation);
   const backgroundDetailActionsRef = useRef({
     handleBackToMe,
     refreshConversationByIdentifier,
@@ -239,6 +254,9 @@ const ChatDashboard = () => {
 
     const syncRouteState = async () => {
       if (loading || !user?.id) return;
+      if (dmConversationId || groupConversationId) {
+        markStartupPerformanceOnce('conversation-route-resolution-start');
+      }
 
       try {
         if (dmConversationId) {
@@ -309,6 +327,30 @@ const ChatDashboard = () => {
     matchesConversationIdentifier(activeConversation, dmConversationId),
   );
 
+  useLayoutEffect(() => {
+    const routeIdentifier = dmConversationId || groupConversationId;
+    if (
+      !routeIdentifier ||
+      !activeConversation ||
+      !matchesConversationIdentifier(activeConversation, routeIdentifier)
+    ) {
+      return;
+    }
+
+    if (
+      initialDmConversation &&
+      activeConversation.id === initialDmConversation.id
+    ) {
+      markStartupPerformanceOnce('conversation-bootstrap-seed-used');
+    }
+    markStartupPerformanceOnce('active-conversation-ready');
+  }, [
+    activeConversation,
+    dmConversationId,
+    groupConversationId,
+    initialDmConversation,
+  ]);
+
   useEffect(() => {
     if (
       loading ||
@@ -320,6 +362,7 @@ const ChatDashboard = () => {
     }
 
     let cancelled = false;
+    markStartupPerformanceOnce('conversation-detail-refresh-start');
     void backgroundDetailActionsRef.current
       .refreshConversationByIdentifier(dmConversationId, {
         maxFreshAgeMs: CONVERSATION_DETAIL_FRESHNESS_MS,
@@ -339,6 +382,11 @@ const ChatDashboard = () => {
         }
 
         console.warn('Failed to refresh conversation details in the background:', error);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          markStartupPerformanceOnce('conversation-detail-refresh-end');
+        }
       });
 
     return () => {
@@ -584,49 +632,53 @@ const ChatDashboard = () => {
       />
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
       {/* Modals */}
-      {showProfile && user?.profile_id && (
-        <UserProfileModal profileId={user.profile_id} onClose={() => setShowProfile(false)} />
-      )}
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
-      
-      {showCreateGroup && user?.id && (
-        <GroupCreateModal
-          onClose={() => setShowCreateGroup(false)}
-          onCreated={() => {
-            setShowCreateGroup(false);
-            setConvRefresh((n) => n + 1);
-          }}
-        />
-      )}
-      {showConvSettings && displayConversation && user?.id && (
-        <ConversationSettings
-          conversation={displayConversation}
-          currentUserId={user.id}
-          members={Object.values(members)}
-          onMessageCreated={handleMessageSent}
-          onConversationUpdated={async (nextConversation) => {
-            patchConversationInState(nextConversation);
-            setConvRefresh((n) => n + 1);
-          }}
-          onMembershipChanged={() => {
-            setConvRefresh((n) => n + 1);
-          }}
-          onConversationLeft={() => {
-            setShowConvSettings(false);
-            handleBackToMe();
-            navigate('/chats', { replace: true });
-            setConvRefresh((n) => n + 1);
-          }}
-          onClose={() => setShowConvSettings(false)}
-        />
-      )}
-      <ForwardMessageModal
-        isOpen={Boolean(forwardingMessage)}
-        message={forwardingMessage}
-        currentConversationId={displayConversation?.id}
-        onClose={() => setForwardingMessage(null)}
-        onForward={handleForwardToConversation}
-      />
+      <Suspense fallback={null}>
+        {showProfile && user?.profile_id && (
+          <UserProfileModal profileId={user.profile_id} onClose={() => setShowProfile(false)} />
+        )}
+        {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+
+        {showCreateGroup && user?.id && (
+          <GroupCreateModal
+            onClose={() => setShowCreateGroup(false)}
+            onCreated={() => {
+              setShowCreateGroup(false);
+              setConvRefresh((n) => n + 1);
+            }}
+          />
+        )}
+        {showConvSettings && displayConversation && user?.id && (
+          <ConversationSettings
+            conversation={displayConversation}
+            currentUserId={user.id}
+            members={Object.values(members)}
+            onMessageCreated={handleMessageSent}
+            onConversationUpdated={async (nextConversation) => {
+              patchConversationInState(nextConversation);
+              setConvRefresh((n) => n + 1);
+            }}
+            onMembershipChanged={() => {
+              setConvRefresh((n) => n + 1);
+            }}
+            onConversationLeft={() => {
+              setShowConvSettings(false);
+              handleBackToMe();
+              navigate('/chats', { replace: true });
+              setConvRefresh((n) => n + 1);
+            }}
+            onClose={() => setShowConvSettings(false)}
+          />
+        )}
+        {forwardingMessage && (
+          <ForwardMessageModal
+            isOpen
+            message={forwardingMessage}
+            currentConversationId={displayConversation?.id}
+            onClose={() => setForwardingMessage(null)}
+            onForward={handleForwardToConversation}
+          />
+        )}
+      </Suspense>
 
       <ChatSidebar
         isOpen={isMobileSidebarOpen}

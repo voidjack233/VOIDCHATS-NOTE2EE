@@ -11,11 +11,12 @@ import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTh
 import { useVersionCheck } from './Services/hooks/common/useVersionCheck';
 import AppBootScreen from './components/common/AppBootScreen';
 import QueuedSendRecoveryAgent from './components/Chat/QueuedSendRecoveryAgent';
+import { loadChatPage } from './routeLoaders';
 
 // Lazy-loaded pages
 const Auth = lazy(() => import('./pages/Auth'));
 const ResetPassword = lazy(() => import('./pages/Auth/ResetPassword'));
-const Chat = lazy(() => import('./pages/Chat/Chats'));
+const Chat = lazy(loadChatPage);
 const Invite = lazy(() => import('./pages/Invite'));
 const TermsOfUse = lazy(() => import('./pages/TermsOfUse'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));

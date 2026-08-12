@@ -1,4 +1,8 @@
-import { fetchAppBootstrap } from '../../bootstrap';
+import {
+  fetchAppBootstrap,
+  fetchAppBootstrapForAuthStartup,
+} from '../../bootstrap';
+import { preloadDefaultAuthenticatedChatRoute } from '../../../routeLoaders';
 import {
   AuthSessionUnavailableError,
   ensureCSRFToken,
@@ -42,10 +46,28 @@ export const fetchFullUser = async (force = false): Promise<User | null> => {
     : authData.user;
 };
 
+const fetchBootstrapUser = async (): Promise<User | null> => {
+  const result = await fetchAppBootstrapForAuthStartup();
+  if (result.status === 'invalid') return null;
+  if (result.status === 'unavailable') {
+    throw new AuthSessionUnavailableError();
+  }
+
+  const { bootstrap } = result;
+  if (!bootstrap.user?.username) {
+    throw new AuthSessionUnavailableError();
+  }
+  return {
+    ...bootstrap.user,
+    ...(bootstrap.account || {}),
+  } as User;
+};
+
 const startupCoordinator = createAuthStartupCoordinator(() => runAuthStartup({
   refreshSession: refreshAuthSession,
-  loadUser: () => fetchFullUser(true),
+  loadUser: fetchBootstrapUser,
   ensureCSRF: ensureCSRFToken,
+  preloadAuthenticatedRoute: preloadDefaultAuthenticatedChatRoute,
 }));
 
 export const resolveAuthStartupSession = () => startupCoordinator.resolve();

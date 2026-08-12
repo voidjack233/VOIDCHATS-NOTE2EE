@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { clearAppBootstrap } from '../../bootstrap';
 import { gateway } from '../../Gateway/gateway';
+import { markStartupPerformanceOnce } from '../../Performance/startupPerformance';
 import {
   AUTH_SESSION_INVALIDATED_EVENT,
   isAuthSessionUnavailableError,
@@ -155,6 +156,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
       });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!loading && !authUnavailable && user?.id) {
+      markStartupPerformanceOnce('authenticated-render-ready');
+    }
+  }, [authUnavailable, loading, user?.id]);
 
   useEffect(() => {
     if (loading || authUnavailable || !user?.id) {
