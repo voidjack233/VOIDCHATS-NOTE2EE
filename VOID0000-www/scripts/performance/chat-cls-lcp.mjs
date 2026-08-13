@@ -209,6 +209,8 @@ function describeHistoryRequest(rawUrl) {
     before: url.searchParams.get('before'),
     after: url.searchParams.get('after'),
     limit: url.searchParams.get('limit'),
+    completedAt: null,
+    status: null,
     mode: url.searchParams.has('before')
       ? 'older'
       : url.searchParams.has('after')
@@ -224,16 +226,20 @@ function createPageTelemetry(page) {
     consoleErrors: [],
     pageErrors: [],
   };
+  const historyRequestRecords = new WeakMap();
 
   page.on('request', (request) => {
     if (request.method() === 'GET' && isMessageHistoryUrl(request.url())) {
-      telemetry.messageRequests.push(describeHistoryRequest(request.url()));
+      const record = describeHistoryRequest(request.url());
+      historyRequestRecords.set(request, record);
+      telemetry.messageRequests.push(record);
     }
   });
   page.on('response', async (response) => {
     if (response.request().method() !== 'GET' || !isMessageHistoryUrl(response.url())) return;
+    const request = historyRequestRecords.get(response.request()) || describeHistoryRequest(response.url());
+    request.status = response.status();
     try {
-      const request = describeHistoryRequest(response.url());
       const payload = await response.json();
       for (const message of payload.messages || []) {
         const attachments = Array.isArray(message.attachments) ? message.attachments : [];
@@ -251,6 +257,8 @@ function createPageTelemetry(page) {
       }
     } catch {
       // A failed/non-JSON response remains visible in the request/error report.
+    } finally {
+      request.completedAt = Date.now();
     }
   });
   page.on('console', (message) => {
@@ -273,7 +281,9 @@ async function createMeasuredContext(browser, viewportName) {
     locale: 'en-US',
     serviceWorkers: 'block',
   });
-  await context.addInitScript(installChatPerformanceCollector);
+  await context.addInitScript(installChatPerformanceCollector, {
+    enableRestoreTrace: process.env.CHAT_PERF_RESTORE_TRACE === '1',
+  });
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   await cdp.send('Network.enable');
@@ -685,12 +695,22 @@ async function runRestoreScenario({
   const before = targetMessageId
     ? await positionAtHistoricalMessage(page, targetMessageId)
     : await ensurePresent(page);
+  const traceRestore = process.env.CHAT_PERF_RESTORE_TRACE === '1' && Boolean(targetMessageId);
+  if (traceRestore) {
+    await page.evaluate(({ label, messageId }) => {
+      window.__voidChatPerf.beginRestoreTrace(label, messageId);
+      window.__voidChatPerf.markRestoreTrace('route-away-requested');
+    }, { label: scenario.name, messageId: targetMessageId });
+  }
 
   await navigateSpaAsUser(page, '/chats');
   await page.locator(MESSAGE_TIMELINE_SELECTOR).waitFor({ state: 'detached', timeout: 15_000 });
   await sleep(250);
 
   const startTime = await page.evaluate((label) => window.__voidChatPerf.startWindow(label), scenario.name);
+  if (traceRestore) {
+    await page.evaluate(() => window.__voidChatPerf.markRestoreTrace('route-back-requested'));
+  }
   await navigateSpaAsUser(page, config.conversationRoute);
   const afterSnapshot = await waitForTimelineStable(page);
   const after = targetMessageId
@@ -700,7 +720,21 @@ async function runRestoreScenario({
       }
     : afterSnapshot;
   await sleep(500);
+  if (traceRestore) {
+    const traceSettleMs = parsePositiveInteger(
+      process.env.CHAT_PERF_RESTORE_TRACE_SETTLE_MS,
+      1_500,
+      'CHAT_PERF_RESTORE_TRACE_SETTLE_MS',
+      10_000,
+    );
+    await page.evaluate(() => window.__voidChatPerf.markRestoreTrace('stable-position-observed'));
+    await sleep(traceSettleMs);
+    await page.evaluate(() => window.__voidChatPerf.markRestoreTrace('final-position-observed'));
+  }
   const endTime = await page.evaluate((label) => window.__voidChatPerf.endWindow(label), scenario.name);
+  const restoreTrace = traceRestore
+    ? await page.evaluate(() => window.__voidChatPerf.endRestoreTrace())
+    : null;
   const raw = await page.evaluate(() => window.__voidChatPerf.export());
   const metrics = extractMetricWindow(raw, {
     startTime,
@@ -734,6 +768,7 @@ async function runRestoreScenario({
     largestShiftIncludingInput: metrics.largestShiftIncludingInput,
     individualLayoutShifts: metrics.layoutShifts,
     maximumScrollDeltaPx: metrics.maximumScrollDeltaPx,
+    restoreTrace,
     anchor,
     failures,
   };
@@ -744,6 +779,15 @@ async function waitForHistoryRequest(telemetry, mode, previousCount, timeoutMs =
   while (Date.now() - startedAt < timeoutMs) {
     const matching = telemetry.messageRequests.filter((request) => request.mode === mode);
     if (matching.length > previousCount) return matching.at(-1);
+    await sleep(50);
+  }
+  return null;
+}
+
+async function waitForHistoryRequestCompletion(request, timeoutMs = 15_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (request.completedAt !== null) return request;
     await sleep(50);
   }
   return null;
@@ -822,6 +866,7 @@ async function runRuntimeContracts(browser, config, viewportName) {
       const before = await getBoundaryMessageAnchor(page, 'top');
       const request = await waitForHistoryRequest(telemetry, 'older', priorRequests);
       if (!request) break;
+      if (!await waitForHistoryRequestCompletion(request)) break;
       const after = await waitForTimelineStable(page, { stableMs: 500 });
       olderRowCounts.push(after.rowCount);
       const restored = await getBoundaryMessageAnchor(page, 'top', before?.messageId);
@@ -838,6 +883,7 @@ async function runRuntimeContracts(browser, config, viewportName) {
       const before = await getBoundaryMessageAnchor(page, 'bottom');
       const request = await waitForHistoryRequest(telemetry, 'newer', priorRequests);
       if (!request) break;
+      if (!await waitForHistoryRequestCompletion(request)) break;
       const after = await waitForTimelineStable(page, { stableMs: 500 });
       newerRowCounts.push(after.rowCount);
       const restored = await getBoundaryMessageAnchor(page, 'bottom', before?.messageId);

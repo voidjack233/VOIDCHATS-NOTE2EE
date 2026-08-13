@@ -26,7 +26,11 @@ Useful local overrides:
 CHAT_PERF_RUNS=3 CHAT_PERF_VIEWPORTS=desktop npm run perf:chat
 CHAT_PERF_DISABLE_CACHE=0 npm run perf:chat
 CHAT_PERF_SKIP_CONTRACTS=1 npm run perf:chat
+CHAT_PERF_RUNS=1 CHAT_PERF_RESTORE_TRACE=1 npm run perf:chat
 ```
+
+`CHAT_PERF_RESTORE_TRACE=1` adds detailed saved-window, scroll-write,
+ResizeObserver and visual-viewport events to each historical scenario result.
 
 Historical scroll state belongs to the live conversation runtime and is not
 persisted across F5. Therefore the historical scenarios use a genuine

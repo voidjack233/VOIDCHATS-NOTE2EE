@@ -27,6 +27,7 @@ import {
 } from '../../../src/Services/Chat/conversationSelectionPolicy';
 import {
   getConversationWindowSnapshot,
+  hasStableConversationScrollGeometry,
   saveConversationScrollPosition,
   setConversationWindowSnapshot,
 } from '../../../src/Services/hooks/Chats/MessageList/messageListWindowCache';
@@ -323,6 +324,21 @@ test('each conversation retains an independent saved viewport', () => {
   assert.equal(getConversationWindowSnapshot(conversationA)?.scrollTop, 800);
   assert.equal(getConversationWindowSnapshot(conversationB)?.topVisibleMessageId, 'b-message');
   assert.equal(getConversationWindowSnapshot(conversationB)?.wasAtBottom, true);
+});
+
+test('collapsed mobile scroller geometry is not safe for viewport capture', () => {
+  assert.equal(hasStableConversationScrollGeometry({
+    clientWidth: 390,
+    clientHeight: 695,
+    rectWidth: 390,
+    rectHeight: 695,
+  }), true);
+  assert.equal(hasStableConversationScrollGeometry({
+    clientWidth: 0,
+    clientHeight: 695,
+    rectWidth: 0,
+    rectHeight: 695,
+  }), false);
 });
 
 test('a newly resolved DM ID can seed its local shell without another creation request', () => {

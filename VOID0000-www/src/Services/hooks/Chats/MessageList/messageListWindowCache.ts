@@ -14,7 +14,26 @@ interface ConversationScrollPosition {
   wasAtBottom: boolean;
 }
 
+interface ConversationScrollGeometry {
+  clientWidth: number;
+  clientHeight: number;
+  rectWidth: number;
+  rectHeight: number;
+}
+
 const conversationWindowCache = new Map<string, ConversationWindowSnapshot>();
+
+export const hasStableConversationScrollGeometry = ({
+  clientWidth,
+  clientHeight,
+  rectWidth,
+  rectHeight,
+}: ConversationScrollGeometry) => (
+  clientWidth > 1 &&
+  clientHeight > 1 &&
+  rectWidth > 1 &&
+  rectHeight > 1
+);
 
 export const getConversationWindowSnapshot = (conversationId: string) =>
   conversationWindowCache.get(conversationId);
@@ -59,4 +78,8 @@ export const resolveInitialHasOlder = ({
   );
 };
 
-export type { ConversationScrollPosition, ConversationWindowSnapshot };
+export type {
+  ConversationScrollGeometry,
+  ConversationScrollPosition,
+  ConversationWindowSnapshot,
+};

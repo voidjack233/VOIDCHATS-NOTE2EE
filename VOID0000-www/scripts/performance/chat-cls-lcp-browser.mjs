@@ -1,4 +1,4 @@
-export function installChatPerformanceCollector() {
+export function installChatPerformanceCollector({ enableRestoreTrace = false } = {}) {
   if (window.__voidChatPerf) return;
 
   const state = {
@@ -8,6 +8,11 @@ export function installChatPerformanceCollector() {
     interactionPaints: [],
     timelineSamples: [],
     rowCounts: [],
+    restoreTraces: [],
+    activeRestoreTrace: null,
+    recentWindowSnapshot: null,
+    observedTimeline: null,
+    observedScrollTop: null,
     activeSampleTimer: null,
   };
 
@@ -76,6 +81,99 @@ export function installChatPerformanceCollector() {
       olderSkeleton: Boolean(timeline.querySelector('[data-history-skeleton-anchor="end"]')),
       newerSkeleton: Boolean(timeline.querySelector('[data-history-skeleton-anchor="start"]')),
       newerRange: Boolean(timeline.querySelector('[data-message-newer-range]')),
+    };
+  };
+  const cloneWindowSnapshot = (value) => ({
+    loadedCount: value.loadedCount,
+    hasOlder: value.hasOlder,
+    topVisibleMessageId: value.topVisibleMessageId ?? null,
+    topVisibleMessageOffset: Number.isFinite(value.topVisibleMessageOffset)
+      ? round(value.topVisibleMessageOffset)
+      : null,
+    scrollTop: Number.isFinite(value.scrollTop) ? round(value.scrollTop) : null,
+    wasAtBottom: value.wasAtBottom,
+  });
+  const isConversationWindowSnapshot = (value) => Boolean(
+    value &&
+    typeof value === 'object' &&
+    Number.isFinite(value.loadedCount) &&
+    typeof value.hasOlder === 'boolean' &&
+    typeof value.wasAtBottom === 'boolean' &&
+    Number.isFinite(value.scrollTop),
+  );
+  const targetSnapshot = (targetMessageId) => {
+    if (!targetMessageId) return null;
+    const timeline = document.querySelector('[data-message-timeline]');
+    const row = [...document.querySelectorAll('[data-message-id]')]
+      .find((element) => element.getAttribute('data-message-id') === targetMessageId);
+    if (!(timeline instanceof HTMLElement) || !(row instanceof HTMLElement)) return null;
+    const scrollerRect = timeline.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    return {
+      messageId: targetMessageId,
+      offsetTop: round(row.offsetTop),
+      viewportOffset: round(rowRect.top - scrollerRect.top),
+      rect: serializeRect(rowRect),
+      visible: rowRect.bottom > scrollerRect.top && rowRect.top < scrollerRect.bottom,
+    };
+  };
+  const viewportSnapshot = () => {
+    const timeline = document.querySelector('[data-message-timeline]');
+    const scrollerRect = timeline instanceof HTMLElement
+      ? timeline.getBoundingClientRect()
+      : null;
+    return {
+      window: {
+        innerWidth: round(window.innerWidth),
+        innerHeight: round(window.innerHeight),
+        scrollX: round(window.scrollX),
+        scrollY: round(window.scrollY),
+      },
+      document: {
+        clientWidth: round(document.documentElement?.clientWidth),
+        clientHeight: round(document.documentElement?.clientHeight),
+      },
+      visualViewport: window.visualViewport ? {
+        width: round(window.visualViewport.width),
+        height: round(window.visualViewport.height),
+        offsetLeft: round(window.visualViewport.offsetLeft),
+        offsetTop: round(window.visualViewport.offsetTop),
+        pageLeft: round(window.visualViewport.pageLeft),
+        pageTop: round(window.visualViewport.pageTop),
+        scale: round(window.visualViewport.scale),
+      } : null,
+      scroller: timeline instanceof HTMLElement ? {
+        rect: serializeRect(scrollerRect),
+        scrollTop: round(timeline.scrollTop),
+        scrollHeight: round(timeline.scrollHeight),
+        clientHeight: round(timeline.clientHeight),
+      } : null,
+    };
+  };
+  const restoreTraceEvent = (type, detail = {}) => {
+    const trace = state.activeRestoreTrace;
+    if (!trace) return;
+    trace.events.push({
+      index: trace.events.length,
+      time: round(performance.now()),
+      type,
+      ...viewportSnapshot(),
+      target: targetSnapshot(trace.targetMessageId),
+      ...detail,
+    });
+  };
+  const savedAnchorCalculation = (timeline) => {
+    const snapshot = state.recentWindowSnapshot;
+    if (!snapshot?.topVisibleMessageId || snapshot.topVisibleMessageOffset === null) return null;
+    const row = [...timeline.querySelectorAll('[data-message-id]')]
+      .find((element) => element.getAttribute('data-message-id') === snapshot.topVisibleMessageId);
+    if (!(row instanceof HTMLElement)) return null;
+    const currentOffset = row.getBoundingClientRect().top - timeline.getBoundingClientRect().top;
+    return {
+      messageId: snapshot.topVisibleMessageId,
+      savedOffset: round(snapshot.topVisibleMessageOffset),
+      currentOffset: round(currentOffset),
+      calculatedDelta: round(currentOffset - snapshot.topVisibleMessageOffset),
     };
   };
   const sample = (reason) => {
@@ -161,9 +259,144 @@ export function installChatPerformanceCollector() {
 
   document.addEventListener('scroll', (event) => {
     if (event.target instanceof Element && event.target.matches('[data-message-timeline]')) {
+      restoreTraceEvent('scroll-event');
       sample('scroll');
     }
   }, true);
+
+  if (enableRestoreTrace) {
+    const nativeMapGet = Map.prototype.get;
+    const nativeMapSet = Map.prototype.set;
+    Map.prototype.get = function tracedMapGet(key) {
+      const value = nativeMapGet.call(this, key);
+      if (state.activeRestoreTrace && isConversationWindowSnapshot(value)) {
+        state.recentWindowSnapshot = cloneWindowSnapshot(value);
+        restoreTraceEvent('saved-window-read', {
+          cacheKey: String(key),
+          savedWindow: state.recentWindowSnapshot,
+        });
+      }
+      return value;
+    };
+    Map.prototype.set = function tracedMapSet(key, value) {
+      if (state.activeRestoreTrace && isConversationWindowSnapshot(value)) {
+        state.recentWindowSnapshot = cloneWindowSnapshot(value);
+        restoreTraceEvent('saved-window-write', {
+          cacheKey: String(key),
+          savedWindow: state.recentWindowSnapshot,
+        });
+      }
+      return nativeMapSet.call(this, key, value);
+    };
+
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+    if (scrollTopDescriptor?.get && scrollTopDescriptor?.set && scrollTopDescriptor.configurable) {
+      Object.defineProperty(Element.prototype, 'scrollTop', {
+        ...scrollTopDescriptor,
+        set(value) {
+          const isTimeline = this instanceof HTMLElement && this.matches('[data-message-timeline]');
+          const before = isTimeline ? scrollTopDescriptor.get.call(this) : null;
+          const anchorCalculation = isTimeline ? savedAnchorCalculation(this) : null;
+          scrollTopDescriptor.set.call(this, value);
+          if (isTimeline && state.activeRestoreTrace) {
+            const after = scrollTopDescriptor.get.call(this);
+            restoreTraceEvent('scrollTop-set', {
+              requestedScrollTop: round(value),
+              beforeScrollTop: round(before),
+              afterScrollTop: round(after),
+              requestedDelta: round(after - before),
+              savedAnchorCalculation: anchorCalculation,
+              stack: new Error().stack?.split('\n').slice(1, 7) || [],
+            });
+          }
+        },
+      });
+    }
+
+    for (const methodName of ['scrollTo', 'scrollBy']) {
+      const nativeMethod = Element.prototype[methodName];
+      if (typeof nativeMethod !== 'function') continue;
+      Element.prototype[methodName] = function tracedScrollMethod(...args) {
+        const isTimeline = this instanceof HTMLElement && this.matches('[data-message-timeline]');
+        const before = isTimeline ? this.scrollTop : null;
+        const result = nativeMethod.apply(this, args);
+        if (isTimeline && state.activeRestoreTrace) {
+          restoreTraceEvent(methodName, {
+            arguments: args.map((argument) => (
+              argument && typeof argument === 'object' ? { ...argument } : argument
+            )),
+            beforeScrollTop: round(before),
+            afterScrollTop: round(this.scrollTop),
+            savedAnchorCalculation: savedAnchorCalculation(this),
+            stack: new Error().stack?.split('\n').slice(1, 7) || [],
+          });
+        }
+        return result;
+      };
+    }
+  }
+
+  if (enableRestoreTrace && typeof window.ResizeObserver === 'function') {
+    const NativeResizeObserver = window.ResizeObserver;
+    window.ResizeObserver = class TracedResizeObserver extends NativeResizeObserver {
+      constructor(callback) {
+        super((entries, observer) => {
+          const relevantEntries = entries.filter((entry) => (
+            entry.target instanceof Element &&
+            (entry.target.matches('[data-message-timeline]') || entry.target.matches('[data-message-id]'))
+          ));
+          if (relevantEntries.length > 0) {
+            restoreTraceEvent('resize-observer-before', {
+              entries: relevantEntries.map((entry) => ({
+                node: describeNode(entry.target),
+                contentRect: serializeRect(entry.contentRect),
+              })),
+            });
+          }
+          callback(entries, observer);
+          if (relevantEntries.length > 0) {
+            restoreTraceEvent('resize-observer-after', {
+              entries: relevantEntries.map((entry) => describeNode(entry.target)),
+            });
+          }
+        });
+      }
+    };
+  }
+
+  const handleViewportChange = (event) => {
+    restoreTraceEvent(`viewport-${event.type}`);
+  };
+  if (enableRestoreTrace) {
+    window.addEventListener('resize', handleViewportChange);
+    window.visualViewport?.addEventListener('resize', handleViewportChange);
+    window.visualViewport?.addEventListener('scroll', handleViewportChange);
+  }
+
+  const monitorRestore = () => {
+    if (state.activeRestoreTrace) {
+      const timeline = document.querySelector('[data-message-timeline]');
+      if (timeline !== state.observedTimeline) {
+        state.observedTimeline = timeline;
+        state.observedScrollTop = timeline instanceof HTMLElement ? timeline.scrollTop : null;
+        restoreTraceEvent(timeline ? 'message-view-mounted' : 'message-view-unmounted');
+      } else if (
+        timeline instanceof HTMLElement &&
+        state.observedScrollTop !== null &&
+        Math.abs(timeline.scrollTop - state.observedScrollTop) > 0.5
+      ) {
+        restoreTraceEvent('observed-scroll-change', {
+          beforeScrollTop: round(state.observedScrollTop),
+          afterScrollTop: round(timeline.scrollTop),
+          observedDelta: round(timeline.scrollTop - state.observedScrollTop),
+        });
+        state.observedScrollTop = timeline.scrollTop;
+      }
+      if (timeline instanceof HTMLElement) state.observedScrollTop = timeline.scrollTop;
+    }
+    if (enableRestoreTrace) requestAnimationFrame(monitorRestore);
+  };
+  if (enableRestoreTrace) requestAnimationFrame(monitorRestore);
 
   window.__voidChatPerf = {
     startWindow(label) {
@@ -182,6 +415,32 @@ export function installChatPerformanceCollector() {
       return round(performance.now());
     },
     snapshot: timelineSnapshot,
+    beginRestoreTrace(label, targetMessageId) {
+      state.activeRestoreTrace = {
+        label,
+        targetMessageId: targetMessageId || null,
+        startedAt: round(performance.now()),
+        events: [],
+      };
+      state.recentWindowSnapshot = null;
+      state.observedTimeline = document.querySelector('[data-message-timeline]');
+      state.observedScrollTop = state.observedTimeline instanceof HTMLElement
+        ? state.observedTimeline.scrollTop
+        : null;
+      restoreTraceEvent('trace-start');
+    },
+    markRestoreTrace(label, detail = {}) {
+      restoreTraceEvent(label, detail);
+    },
+    endRestoreTrace() {
+      if (!state.activeRestoreTrace) return null;
+      restoreTraceEvent('trace-end');
+      const completed = state.activeRestoreTrace;
+      state.restoreTraces.push(completed);
+      state.activeRestoreTrace = null;
+      state.recentWindowSnapshot = null;
+      return completed;
+    },
     export() {
       return {
         supportedEntryTypes: [...PerformanceObserver.supportedEntryTypes],
@@ -191,6 +450,7 @@ export function installChatPerformanceCollector() {
         interactionPaints: state.interactionPaints,
         timelineSamples: state.timelineSamples,
         rowCounts: state.rowCounts,
+        restoreTraces: state.restoreTraces,
       };
     },
   };

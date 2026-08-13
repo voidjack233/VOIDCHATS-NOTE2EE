@@ -56,7 +56,9 @@ import type {
 } from '../../../Services/hooks/Chats/MessageList/messageListTypes';
 import {
   getConversationWindowSnapshot,
+  hasStableConversationScrollGeometry,
   saveConversationScrollPosition,
+  type ConversationScrollPosition,
 } from '../../../Services/hooks/Chats/MessageList/messageListWindowCache';
 import {
   getRenderedNewerHistoryRangeLimit,
@@ -158,6 +160,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const loadingNewerRequestInFlightRef = useRef(false);
   const autofillOlderRequestInFlightRef = useRef(false);
   const messageHeightCacheRef = useRef<Map<string, number>>(new Map());
+  const lastStableConversationScrollPositionRef = useRef<ConversationScrollPosition | null>(null);
   const historyLoadPausedUntilRef = useRef(0);
   const ownSendJumpRequestRef = useRef(ownSendJumpRequest);
   const onOwnSendHistoryModeChangeRef = useRef(onOwnSendHistoryModeChange);
@@ -482,6 +485,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     loadingNewerRequestInFlightRef.current = false;
     autofillOlderRequestInFlightRef.current = false;
     messageHeightCacheRef.current.clear();
+    lastStableConversationScrollPositionRef.current = null;
     historyLoadPausedUntilRef.current = 0;
     lastOwnSendJumpRequestRef.current = ownSendJumpRequestRef.current;
     onOwnSendHistoryModeChangeRef.current?.(false);
@@ -689,6 +693,36 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     viewportAnchorLockRef.current = { anchors };
     return true;
+  }, []);
+
+  const captureStableConversationScrollPosition = useCallback((
+    scroller = scrollerRef.current,
+  ): ConversationScrollPosition | null => {
+    if (!scroller || !initialLatestRestoreDoneRef.current) {
+      return lastStableConversationScrollPositionRef.current;
+    }
+
+    const rect = scroller.getBoundingClientRect();
+    if (!hasStableConversationScrollGeometry({
+      clientWidth: scroller.clientWidth,
+      clientHeight: scroller.clientHeight,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+    })) {
+      // Mobile route transitions collapse the pane before unmount; keep the
+      // last position measured before zero-width text reflow corrupts anchors.
+      return lastStableConversationScrollPositionRef.current;
+    }
+
+    const anchor = getMessageAnchorsAroundViewport(scroller)[0] || null;
+    const position: ConversationScrollPosition = {
+      messageId: anchor?.messageId,
+      offsetTop: anchor?.offsetTop,
+      scrollTop: scroller.scrollTop,
+      wasAtBottom: atBottomRef.current,
+    };
+    lastStableConversationScrollPositionRef.current = position;
+    return position;
   }, []);
 
   const restoreViewportAnchorLock = useCallback(() => {
@@ -968,6 +1002,10 @@ const MessageViewV2 = memo(function MessageViewV2({
     loadNewerPreservingViewport,
     syncScrollState,
   });
+  const handleTimelineScroll = useCallback(() => {
+    handleScroll();
+    captureStableConversationScrollPosition();
+  }, [captureStableConversationScrollPosition, handleScroll]);
 
   useMessageHistoryBoundaryLock({
     scrollerRef,
@@ -1040,10 +1078,12 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
     syncScrollState();
     initialLatestRestoreDoneRef.current = true;
+    captureStableConversationScrollPosition(scroller);
     if (scroller) scroller.style.opacity = '1';
     return true;
   }, [
     conversation.id,
+    captureStableConversationScrollPosition,
     initialHydrationSettled,
     scrollToBottom,
     syncScrollState,
@@ -1056,14 +1096,11 @@ const MessageViewV2 = memo(function MessageViewV2({
       return;
     }
 
-    const anchor = getMessageAnchorsAroundViewport(scroller)[0] || null;
-    saveConversationScrollPosition(conversation.id, {
-      messageId: anchor?.messageId,
-      offsetTop: anchor?.offsetTop,
-      scrollTop: scroller.scrollTop,
-      wasAtBottom: atBottomRef.current,
-    });
-  }, [conversation.id]);
+    const stablePosition = captureStableConversationScrollPosition(scroller);
+    if (stablePosition) {
+      saveConversationScrollPosition(conversation.id, stablePosition);
+    }
+  }, [captureStableConversationScrollPosition, conversation.id]);
 
   useMessageHistorySentinels({
     scrollerRef,
@@ -1375,7 +1412,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       <MessageJumpNotice message={messageJumpNotice} />
       <MessageTimelineViewport
         setScrollerRef={setScrollerRef}
-        onScroll={handleScroll}
+        onScroll={handleTimelineScroll}
         initialRestoreDone={initialLatestRestoreDoneRef.current}
         topLogicalRangeHeight={topLogicalRangeHeight}
         renderedTopSpacerHeight={renderedTopSpacerHeight}
