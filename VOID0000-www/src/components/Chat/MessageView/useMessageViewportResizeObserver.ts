@@ -11,6 +11,35 @@ interface UseMessageViewportResizeObserverOptions {
   syncScrollState: () => void;
 }
 
+export type MessageViewportResizeCorrection =
+  | 'initial_restore_only'
+  | 'pin_bottom'
+  | 'restore_anchor'
+  | 'none';
+
+export function selectMessageViewportResizeCorrection({
+  initialRestorePerformed,
+  wasAtBottom,
+  historyTransactionActive,
+  showJumpToPresent,
+}: {
+  initialRestorePerformed: boolean;
+  wasAtBottom: boolean;
+  historyTransactionActive: boolean;
+  showJumpToPresent: boolean;
+}): MessageViewportResizeCorrection {
+  if (initialRestorePerformed) {
+    return 'initial_restore_only';
+  }
+  if (wasAtBottom && !historyTransactionActive) {
+    return 'pin_bottom';
+  }
+  if (historyTransactionActive || !wasAtBottom || showJumpToPresent) {
+    return 'restore_anchor';
+  }
+  return 'none';
+}
+
 export function useMessageViewportResizeObserver({
   scrollerRef,
   historyScrollTransactionActiveRef,
@@ -29,18 +58,22 @@ export function useMessageViewportResizeObserver({
 
     const observer = new ResizeObserver(() => {
       const wasAtBottom = atBottomRef.current;
-      void attemptInitialBottomRestore();
+      const restoredInitialPosition = attemptInitialBottomRestore();
       void maybeAutofillOlder();
+      // Initial restoration recomputes atBottomRef. Never follow it with a
+      // correction based on the stale pre-restore value captured above.
+      const correction = selectMessageViewportResizeCorrection({
+        initialRestorePerformed: restoredInitialPosition,
+        wasAtBottom,
+        historyTransactionActive: Boolean(historyScrollTransactionActiveRef.current),
+        showJumpToPresent: showJumpToPresentRef.current,
+      });
 
-      if (wasAtBottom && !historyScrollTransactionActiveRef.current) {
+      if (correction === 'pin_bottom') {
         // Composer banners and the mobile keyboard resize the viewport. Keep a
         // reader who was already at present pinned there before state is synced.
         scroller.scrollTop = scroller.scrollHeight;
-      } else if (
-        historyScrollTransactionActiveRef.current ||
-        !wasAtBottom ||
-        showJumpToPresentRef.current
-      ) {
+      } else if (correction === 'restore_anchor') {
         restoreViewportAnchorLock();
       }
       syncScrollState();
