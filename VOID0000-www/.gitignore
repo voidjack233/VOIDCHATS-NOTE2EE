@@ -16,6 +16,10 @@ dist-ssr
 !vendor/ts-mls/dist/**
 *.local
 
+# Local browser performance state and generated reports
+.playwright/
+performance-results/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
