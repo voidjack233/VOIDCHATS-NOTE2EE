@@ -3,6 +3,7 @@ import { markStartupPerformance, markStartupPerformanceOnce } from './Services/P
 type ChatPageModule = typeof import('./pages/Chat/Chats');
 
 let chatPagePromise: Promise<ChatPageModule> | null = null;
+let loadedChatPageModule: ChatPageModule | null = null;
 
 export function isDefaultAuthenticatedChatPath(pathname: string): boolean {
   return pathname === '/' ||
@@ -12,11 +13,13 @@ export function isDefaultAuthenticatedChatPath(pathname: string): boolean {
 }
 
 export function loadChatPage(): Promise<ChatPageModule> {
+  if (loadedChatPageModule) return Promise.resolve(loadedChatPageModule);
   if (chatPagePromise) return chatPagePromise;
 
   markStartupPerformanceOnce('chat-route-load-start');
   const request = import('./pages/Chat/Chats')
     .then((module) => {
+      loadedChatPageModule = module;
       markStartupPerformanceOnce('chat-route-load-end');
       return module;
     })
@@ -27,6 +30,10 @@ export function loadChatPage(): Promise<ChatPageModule> {
     });
   chatPagePromise = request;
   return request;
+}
+
+export function getLoadedChatPage(): ChatPageModule | null {
+  return loadedChatPageModule;
 }
 
 export async function preloadDefaultAuthenticatedChatRoute(

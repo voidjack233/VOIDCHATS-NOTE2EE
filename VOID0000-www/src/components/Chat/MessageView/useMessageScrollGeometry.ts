@@ -29,6 +29,20 @@ interface ScrollState {
   isAtPresent: boolean;
 }
 
+export const getTopSpacerScrollCompensation = ({
+  previousHeight,
+  nextHeight,
+  blocked,
+}: {
+  previousHeight: number | null;
+  nextHeight: number;
+  blocked: boolean;
+}) => {
+  if (previousHeight === null || blocked) return 0;
+  const delta = nextHeight - previousHeight;
+  return Math.abs(delta) > 0.5 ? delta : 0;
+};
+
 export const useMessageScrollGeometry = ({
   scrollerRef,
   scrollCompensationBlockerRef,
@@ -73,32 +87,27 @@ export const useMessageScrollGeometry = ({
 
   const previousResetKeyRef = useRef(resetKey);
   const previousRenderedTopSpacerHeightRef = useRef<number | null>(null);
-  const previousTopOriginOffsetRef = useRef(0);
 
   useLayoutEffect(() => {
     if (previousResetKeyRef.current !== resetKey) {
       previousResetKeyRef.current = resetKey;
       previousRenderedTopSpacerHeightRef.current = renderedTopSpacerHeight;
-      previousTopOriginOffsetRef.current = topOriginOffset;
       return;
     }
 
     const previousRenderedTopSpacerHeight = previousRenderedTopSpacerHeightRef.current;
-    const previousTopOriginOffset = previousTopOriginOffsetRef.current;
     previousRenderedTopSpacerHeightRef.current = renderedTopSpacerHeight;
-    previousTopOriginOffsetRef.current = topOriginOffset;
 
-    if (
-      !enablePhysicalSpacerWindowing ||
-      previousRenderedTopSpacerHeight === null ||
-      (previousTopOriginOffset <= 0 && topOriginOffset <= 0) ||
-      scrollCompensationBlockerRef?.current
-    ) {
+    if (!enablePhysicalSpacerWindowing) {
       return;
     }
 
-    const topSpacerDelta = renderedTopSpacerHeight - previousRenderedTopSpacerHeight;
-    if (Math.abs(topSpacerDelta) <= 0.5) {
+    const topSpacerDelta = getTopSpacerScrollCompensation({
+      previousHeight: previousRenderedTopSpacerHeight,
+      nextHeight: renderedTopSpacerHeight,
+      blocked: Boolean(scrollCompensationBlockerRef?.current),
+    });
+    if (topSpacerDelta === 0) {
       return;
     }
 
@@ -107,14 +116,15 @@ export const useMessageScrollGeometry = ({
       return;
     }
 
-    scroller.scrollTop = Math.max(0, scroller.scrollTop + topSpacerDelta);
+    scroller.scrollTo({
+      top: Math.max(0, scroller.scrollTop + topSpacerDelta),
+    });
   }, [
     enablePhysicalSpacerWindowing,
     renderedTopSpacerHeight,
     resetKey,
     scrollerRef,
     scrollCompensationBlockerRef,
-    topOriginOffset,
   ]);
 
   const olderRangeStatus: HistoryRangeStatus = loadingOlder

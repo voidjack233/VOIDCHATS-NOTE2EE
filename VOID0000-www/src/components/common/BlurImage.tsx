@@ -113,7 +113,7 @@ const BlurImage = ({
           setLoadedSrc((current) => (current === sourceIdentity ? null : current));
           onError?.(event.currentTarget);
         }}
-        className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+        className={`${className} transition-opacity duration-150 ${loaded ? 'opacity-100' : 'opacity-0'}`}
       />
     </div>
   );

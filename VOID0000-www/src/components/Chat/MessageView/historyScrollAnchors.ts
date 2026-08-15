@@ -221,6 +221,22 @@ export const moveHistoryRangeReplacementSeamAnchor = (
   replacement.seamAnchor.offset -= scrollDelta;
 };
 
+export const shouldPreferVisibleHistoryRangeAnchor = (
+  replacement: HistoryRangeReplacementSnapshot,
+) => replacement.anchor.kind === 'row';
+
+export const shouldCaptureHistoryRangeReplacement = ({
+  historyRangeVisible,
+  hasVisibleMessageAnchor,
+}: {
+  historyRangeVisible: boolean;
+  hasVisibleMessageAnchor: boolean;
+}) => {
+  // Skeleton rows are estimates. Never preserve one by moving real rows that
+  // are already visible at the history seam.
+  return historyRangeVisible && !hasVisibleMessageAnchor;
+};
+
 export const restoreHistoryRangeReplacementSeamAnchor = (
   scroller: HTMLElement,
   replacement: HistoryRangeReplacementSnapshot,

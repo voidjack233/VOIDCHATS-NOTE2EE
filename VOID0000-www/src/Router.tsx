@@ -11,7 +11,7 @@ import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTh
 import { useVersionCheck } from './Services/hooks/common/useVersionCheck';
 import AppBootScreen from './components/common/AppBootScreen';
 import QueuedSendRecoveryAgent from './components/Chat/QueuedSendRecoveryAgent';
-import { loadChatPage } from './routeLoaders';
+import { getLoadedChatPage, loadChatPage } from './routeLoaders';
 
 // Lazy-loaded pages
 const Auth = lazy(() => import('./pages/Auth'));
@@ -20,6 +20,11 @@ const Chat = lazy(loadChatPage);
 const Invite = lazy(() => import('./pages/Invite'));
 const TermsOfUse = lazy(() => import('./pages/TermsOfUse'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
+
+function ChatRoute() {
+  const LoadedChat = getLoadedChatPage()?.default;
+  return LoadedChat ? <LoadedChat /> : <Chat />;
+}
 
 const ROUTE_CONFIG = {
   public: [
@@ -30,9 +35,9 @@ const ROUTE_CONFIG = {
     { path: '/privacy', component: PrivacyPolicy },
   ],
   protected: [
-    { path: '/chats', component: Chat },
-    { path: '/chats/@me/:dmConversationId', component: Chat },
-    { path: '/chats/:groupConversationId', component: Chat },
+    { path: '/chats', component: ChatRoute },
+    { path: '/chats/@me/:dmConversationId', component: ChatRoute },
+    { path: '/chats/:groupConversationId', component: ChatRoute },
   ]
 };
 

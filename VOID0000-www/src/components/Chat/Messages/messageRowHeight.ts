@@ -45,20 +45,3 @@ export function estimateMessageRowHeight(message: Message, density: Density): nu
       linkPreviewHeight,
   );
 }
-
-export function estimateHistoryLogicalRowHeight(
-  messages: Message[],
-  density: Density,
-): number {
-  const baseline = ESTIMATED_MESSAGE_ROW_HEIGHT[density];
-  if (messages.length === 0) {
-    return baseline;
-  }
-
-  const sample = messages.slice(-40);
-  const estimatedTotal = sample.reduce((total, message) => (
-    total + estimateMessageRowHeight(message, density)
-  ), 0);
-
-  return Math.round(Math.max(baseline, estimatedTotal / sample.length));
-}

@@ -6,6 +6,14 @@ export const getRenderedNewerHistoryRangeLimit = ({
   prefetchDistance: number;
 }) => Math.min(historyLogicalSlotHeight, prefetchDistance);
 
+export const getHistoryLogicalSlotHeight = ({
+  pageSize,
+  skeletonRowHeight,
+}: {
+  pageSize: number;
+  skeletonRowHeight: number;
+}) => Math.max(0, pageSize) * Math.max(0, skeletonRowHeight);
+
 interface InitialSkeletonState {
   loading: boolean;
   initialHydrationSettled: boolean;

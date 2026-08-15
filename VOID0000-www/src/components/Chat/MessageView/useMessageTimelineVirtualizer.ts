@@ -2,6 +2,46 @@ import { useCallback, useEffect, useRef, type MutableRefObject } from 'react';
 import type { HistoryRangeStatus } from './useMessageScrollGeometry';
 
 type HistoryLoadDirection = 'older' | 'newer';
+type HistoryScrollSignal = { direction: HistoryLoadDirection; at: number };
+
+export const getEffectiveHistoryLoadThreshold = ({
+  configuredThreshold,
+  clientHeight,
+}: {
+  configuredThreshold: number;
+  clientHeight: number;
+}) => Math.max(configuredThreshold, Math.max(0, clientHeight) * 2);
+
+export const selectPreferredHistoryScrollSignal = ({
+  preferredDirection,
+  liveSignal,
+  retainedSignal,
+  consumedAt,
+  now,
+  ttlMs,
+}: {
+  preferredDirection: HistoryLoadDirection;
+  liveSignal: HistoryScrollSignal | null;
+  retainedSignal: HistoryScrollSignal | null;
+  consumedAt: number;
+  now: number;
+  ttlMs: number;
+}): HistoryScrollSignal | null => {
+  if (
+    retainedSignal?.direction === preferredDirection &&
+    retainedSignal.at > consumedAt
+  ) {
+    return retainedSignal;
+  }
+  if (
+    liveSignal?.direction === preferredDirection &&
+    liveSignal.at > consumedAt &&
+    now - liveSignal.at <= ttlMs
+  ) {
+    return liveSignal;
+  }
+  return null;
+};
 
 interface UseMessageTimelineVirtualizerParams {
   scrollerRef: MutableRefObject<HTMLElement | null>;
@@ -9,6 +49,7 @@ interface UseMessageTimelineVirtualizerParams {
   initialLatestRestoreDoneRef: MutableRefObject<boolean>;
   pendingOlderLoadScrollSnapshotRef: MutableRefObject<unknown>;
   pendingNewerLoadScrollSnapshotRef: MutableRefObject<unknown>;
+  historyScrollTransactionActiveRef: MutableRefObject<boolean>;
   loadingOlderRequestInFlightRef: MutableRefObject<boolean>;
   loadingNewerRequestInFlightRef: MutableRefObject<boolean>;
   loadingOlderStateRef: MutableRefObject<boolean>;
@@ -40,6 +81,7 @@ export const useMessageTimelineVirtualizer = ({
   initialLatestRestoreDoneRef,
   pendingOlderLoadScrollSnapshotRef,
   pendingNewerLoadScrollSnapshotRef,
+  historyScrollTransactionActiveRef,
   loadingOlderRequestInFlightRef,
   loadingNewerRequestInFlightRef,
   loadingOlderStateRef,
@@ -62,8 +104,8 @@ export const useMessageTimelineVirtualizer = ({
   const historyLoadInFlightRef = useRef<HistoryLoadDirection | null>(null);
   const lastScrollTopRef = useRef<number | null>(null);
   const lastHistoryLoadAtRef = useRef(0);
-  const lastScrollDirectionSignalRef = useRef<{ direction: HistoryLoadDirection; at: number } | null>(null);
-  const retainedScrollSignalRef = useRef<{ direction: HistoryLoadDirection; at: number } | null>(null);
+  const lastScrollDirectionSignalRef = useRef<HistoryScrollSignal | null>(null);
+  const retainedScrollSignalRef = useRef<HistoryScrollSignal | null>(null);
   const consumedScrollSignalAtRef = useRef<Record<HistoryLoadDirection, number>>({
     older: 0,
     newer: 0,
@@ -121,7 +163,9 @@ export const useMessageTimelineVirtualizer = ({
       void loadOlderPreservingViewport().finally(() => {
         loadingOlderRequestInFlightRef.current = false;
         historyLoadInFlightRef.current = null;
-        scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS, 'older');
+        if (retainedScrollSignalRef.current?.direction === 'older') {
+          scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS, 'older');
+        }
       });
       return true;
     }
@@ -130,7 +174,9 @@ export const useMessageTimelineVirtualizer = ({
     void loadNewerPreservingViewport().finally(() => {
       loadingNewerRequestInFlightRef.current = false;
       historyLoadInFlightRef.current = null;
-      scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS, 'newer');
+      if (retainedScrollSignalRef.current?.direction === 'newer') {
+        scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS, 'newer');
+      }
     });
     return true;
   }, [
@@ -153,6 +199,13 @@ export const useMessageTimelineVirtualizer = ({
 
     const previousScrollTop = lastScrollTopRef.current;
     const currentScrollTop = scroller.scrollTop;
+    if (historyScrollTransactionActiveRef.current) {
+      // A viewport restore emits a normal scroll event. Record its settled
+      // position, but never turn that programmatic correction into demand for
+      // another history page.
+      lastScrollTopRef.current = currentScrollTop;
+      return false;
+    }
     const scrollDelta = previousScrollTop === null ? 0 : currentScrollTop - previousScrollTop;
     const scrollDirection: HistoryLoadDirection | null =
       scrollDelta < -SCROLL_DIRECTION_EPSILON
@@ -184,23 +237,17 @@ export const useMessageTimelineVirtualizer = ({
     let scrollSignal = lastScrollDirectionSignalRef.current;
     const retainedScrollSignal = retainedScrollSignalRef.current;
     if (preferredDirection) {
-      if (
-        retainedScrollSignal?.direction === preferredDirection &&
-        retainedScrollSignal.at > consumedScrollSignalAtRef.current[preferredDirection]
-      ) {
-        scrollSignal = retainedScrollSignal;
-      } else if (
-        !scrollSignal ||
-        scrollSignal.direction !== preferredDirection ||
-        scrollSignal.at <= consumedScrollSignalAtRef.current[preferredDirection] ||
-        now - scrollSignal.at > SCROLL_DIRECTION_SIGNAL_TTL_MS
-      ) {
-        scrollSignal = {
-          direction: preferredDirection,
-          at: now,
-        };
-        lastScrollDirectionSignalRef.current = scrollSignal;
-      }
+      // A sentinel selects the boundary; it does not create pagination demand.
+      // The same user scroll may authorize one load only, even when restoring
+      // the viewport causes the sentinel to intersect again.
+      scrollSignal = selectPreferredHistoryScrollSignal({
+        preferredDirection,
+        liveSignal: scrollSignal,
+        retainedSignal: retainedScrollSignal,
+        consumedAt: consumedScrollSignalAtRef.current[preferredDirection],
+        now,
+        ttlMs: SCROLL_DIRECTION_SIGNAL_TTL_MS,
+      });
     }
 
     const isRetainedSignal = Boolean(
@@ -220,12 +267,24 @@ export const useMessageTimelineVirtualizer = ({
     const requestedDirection = preferredDirection ?? scrollSignal.direction;
     const olderDistance = getOlderBoundaryDistance(scroller);
     const newerDistance = getNewerBoundaryDistance(scroller);
+    const effectiveOlderLoadThreshold = getEffectiveHistoryLoadThreshold({
+      configuredThreshold: olderTopLoadThreshold,
+      clientHeight: scroller.clientHeight,
+    });
+    const effectiveNewerLoadThreshold = getEffectiveHistoryLoadThreshold({
+      configuredThreshold: newerBottomLoadThreshold,
+      clientHeight: scroller.clientHeight,
+    });
     const canLoadOlder = olderRangeStatus === 'idle';
     const canLoadNewer = newerRangeStatus === 'idle';
     const olderVisible = canLoadOlder && isOlderRangeVisible(scroller);
     const newerVisible = canLoadNewer && isNewerRangeVisible(scroller);
-    const nearOlder = hasOlder && canLoadOlder && (olderVisible || olderDistance <= olderTopLoadThreshold);
-    const nearNewer = hasNewer && canLoadNewer && (newerVisible || newerDistance <= newerBottomLoadThreshold);
+    const nearOlder = hasOlder && canLoadOlder && (
+      olderVisible || olderDistance <= effectiveOlderLoadThreshold
+    );
+    const nearNewer = hasNewer && canLoadNewer && (
+      newerVisible || newerDistance <= effectiveNewerLoadThreshold
+    );
     const isRequestedBoundaryNear = requestedDirection === 'older' ? nearOlder : nearNewer;
 
     if (!isRequestedBoundaryNear) {
@@ -283,6 +342,7 @@ export const useMessageTimelineVirtualizer = ({
     hasNewer,
     hasOlder,
     historyLoadPausedUntil,
+    historyScrollTransactionActiveRef,
     initialLatestRestoreDoneRef,
     isNewerRangeVisible,
     isOlderRangeVisible,
@@ -301,10 +361,12 @@ export const useMessageTimelineVirtualizer = ({
     startHistoryLoad,
   ]);
 
-  retryHistoryLoadRef.current = (preferredDirection) => {
-    const retained = retainedScrollSignalRef.current;
-    void maybeStartBestHistoryLoad(preferredDirection ?? retained?.direction);
-  };
+  useEffect(() => {
+    retryHistoryLoadRef.current = (preferredDirection) => {
+      const retained = retainedScrollSignalRef.current;
+      void maybeStartBestHistoryLoad(preferredDirection ?? retained?.direction);
+    };
+  }, [maybeStartBestHistoryLoad]);
 
   useEffect(() => {
     if (!retainedScrollSignalRef.current) {

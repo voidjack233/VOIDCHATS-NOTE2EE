@@ -830,6 +830,7 @@ export const useMessageList = (
     setLoading,
     setSyncing,
     setHasOlder,
+    setHasNewer,
     setInitialHydrationSettled,
     messagesRef,
     lastLoadedConversationIdRef,

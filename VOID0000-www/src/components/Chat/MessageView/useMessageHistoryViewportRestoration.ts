@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type MutableRefObject, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react';
 import {
   getFirstVisibleMessageAnchor,
   getMessageAnchorsAroundViewport,
@@ -7,6 +7,8 @@ import {
   restoreHistoryRangeReplacementAnchor,
   restoreHistoryRangeReplacementSeamAnchor,
   restoreVisibleMessageAnchor,
+  shouldCaptureHistoryRangeReplacement,
+  shouldPreferVisibleHistoryRangeAnchor,
   updateHistoryRangeReplacementPosition,
   type HistoryLoadScrollSnapshot,
   type HistoryRangeReplacementSnapshot,
@@ -92,18 +94,52 @@ export function useMessageHistoryViewportRestoration({
   onOwnSendHistoryModeChange,
 }: UseMessageHistoryViewportRestorationOptions) {
   const [historyRestoreRevision, setHistoryRestoreRevision] = useState(0);
+  const historyTransactionReleaseFrameRef = useRef<number | null>(null);
+
+  const cancelHistoryTransactionRelease = useCallback(() => {
+    if (historyTransactionReleaseFrameRef.current === null) {
+      return;
+    }
+    cancelAnimationFrame(historyTransactionReleaseFrameRef.current);
+    historyTransactionReleaseFrameRef.current = null;
+  }, []);
+
+  const releaseHistoryTransactionAfterScrollEvent = useCallback(() => {
+    cancelHistoryTransactionRelease();
+    historyScrollTransactionActiveRef.current = true;
+    historyTransactionReleaseFrameRef.current = requestAnimationFrame(() => {
+      historyTransactionReleaseFrameRef.current = null;
+      if (
+        !pendingOlderLoadScrollSnapshotRef.current &&
+        !pendingNewerLoadScrollSnapshotRef.current
+      ) {
+        historyScrollTransactionActiveRef.current = false;
+      }
+    });
+  }, [
+    cancelHistoryTransactionRelease,
+    historyScrollTransactionActiveRef,
+    pendingNewerLoadScrollSnapshotRef,
+    pendingOlderLoadScrollSnapshotRef,
+  ]);
 
   useEffect(() => {
-    setHistoryRestoreRevision(0);
-  }, [resetKey]);
+    cancelHistoryTransactionRelease();
+  }, [cancelHistoryTransactionRelease, resetKey]);
+
+  useEffect(() => cancelHistoryTransactionRelease, [cancelHistoryTransactionRelease]);
 
   const captureHistoryLoadScrollSnapshot = useCallback((): HistoryLoadScrollSnapshot | null => {
     const scroller = scrollerRef.current;
     if (!scroller) return null;
+    const visibleMessageAnchor = getFirstVisibleMessageAnchor(scroller);
     const shouldMapVisibleRange = Boolean(
       firstVisualMessageId &&
       renderedTopSpacerHeight > 1 &&
-      isOlderRangeVisible(scroller),
+      shouldCaptureHistoryRangeReplacement({
+        historyRangeVisible: isOlderRangeVisible(scroller),
+        hasVisibleMessageAnchor: Boolean(visibleMessageAnchor),
+      }),
     );
     const rangeReplacement: HistoryRangeReplacementSnapshot | null = shouldMapVisibleRange
       ? {
@@ -128,7 +164,7 @@ export function useMessageHistoryViewportRestoration({
     if (rangeReplacement) {
       updateHistoryRangeReplacementPosition(scroller, rangeReplacement);
     }
-    const anchor = rangeReplacement ? null : getFirstVisibleMessageAnchor(scroller);
+    const anchor = rangeReplacement ? null : visibleMessageAnchor;
 
     const snapshot = {
       scrollHeight: scroller.scrollHeight,
@@ -139,6 +175,7 @@ export function useMessageHistoryViewportRestoration({
       readyToRestore: false,
     };
     pendingOlderLoadScrollSnapshotRef.current = snapshot;
+    cancelHistoryTransactionRelease();
     historyScrollTransactionActiveRef.current = true;
     if (rangeReplacement) {
       viewportAnchorLockRef.current = null;
@@ -148,6 +185,7 @@ export function useMessageHistoryViewportRestoration({
     return snapshot;
   }, [
     captureViewportAnchorLock,
+    cancelHistoryTransactionRelease,
     firstVisualMessageId,
     historyLogicalSlotHeight,
     historyScrollTransactionActiveRef,
@@ -162,10 +200,14 @@ export function useMessageHistoryViewportRestoration({
   const captureNewerHistoryLoadScrollSnapshot = useCallback((): NewerHistoryLoadScrollSnapshot | null => {
     const scroller = scrollerRef.current;
     if (!scroller) return null;
+    const visibleMessageAnchor = getFirstVisibleMessageAnchor(scroller);
     const shouldMapVisibleRange = Boolean(
       lastVisualMessageId &&
       renderedBottomSpacerHeight > 1 &&
-      isNewerRangeVisible(scroller),
+      shouldCaptureHistoryRangeReplacement({
+        historyRangeVisible: isNewerRangeVisible(scroller),
+        hasVisibleMessageAnchor: Boolean(visibleMessageAnchor),
+      }),
     );
     const bottomRangeStart = scroller.scrollHeight - renderedBottomSpacerHeight;
     const rangeReplacement: HistoryRangeReplacementSnapshot | null = shouldMapVisibleRange
@@ -208,6 +250,7 @@ export function useMessageHistoryViewportRestoration({
       distanceFromBottom: scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight),
     };
     pendingNewerLoadScrollSnapshotRef.current = snapshot;
+    cancelHistoryTransactionRelease();
     historyScrollTransactionActiveRef.current = true;
     if (rangeReplacement) {
       viewportAnchorLockRef.current = null;
@@ -217,6 +260,7 @@ export function useMessageHistoryViewportRestoration({
     return snapshot;
   }, [
     captureViewportAnchorLock,
+    cancelHistoryTransactionRelease,
     historyLogicalSlotHeight,
     historyScrollTransactionActiveRef,
     historySkeletonRowHeight,
@@ -345,7 +389,11 @@ export function useMessageHistoryViewportRestoration({
           const firstInsertedElement = insertedElements[0]!;
           const seamElement = messageElements[seamIndex]!;
           const scrollerRect = scroller.getBoundingClientRect();
-          if (!restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)) {
+          const shouldMapVisibleRange = shouldPreferVisibleHistoryRangeAnchor(replacement);
+          if (
+            shouldMapVisibleRange ||
+            !restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)
+          ) {
             restoreHistoryRangeReplacementAnchor({
               scroller,
               replacement,
@@ -413,7 +461,11 @@ export function useMessageHistoryViewportRestoration({
           const insertedElements = messageElements.slice(seamIndex + 1);
           const lastInsertedElement = insertedElements[insertedElements.length - 1]!;
           const scrollerRect = scroller.getBoundingClientRect();
-          if (!restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)) {
+          const shouldMapVisibleRange = shouldPreferVisibleHistoryRangeAnchor(replacement);
+          if (
+            shouldMapVisibleRange ||
+            !restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)
+          ) {
             restoreHistoryRangeReplacementAnchor({
               scroller,
               replacement,
@@ -547,15 +599,26 @@ export function useMessageHistoryViewportRestoration({
       captureViewportAnchorLock(scroller);
     }
 
-    historyScrollTransactionActiveRef.current = Boolean(
+    const hasPendingHistorySnapshot = Boolean(
       pendingOlderLoadScrollSnapshotRef.current ||
       pendingNewerLoadScrollSnapshotRef.current
     );
+    if (hasPendingHistorySnapshot) {
+      cancelHistoryTransactionRelease();
+      historyScrollTransactionActiveRef.current = true;
+    } else if (restoredHistoryViewport) {
+      releaseHistoryTransactionAfterScrollEvent();
+    } else {
+      cancelHistoryTransactionRelease();
+      historyScrollTransactionActiveRef.current = false;
+    }
   }, [
+    cancelHistoryTransactionRelease,
     captureViewportAnchorLock,
     historyScrollTransactionActiveRef,
     pendingNewerLoadScrollSnapshotRef,
     pendingOlderLoadScrollSnapshotRef,
+    releaseHistoryTransactionAfterScrollEvent,
     restoreNewerHistoryLoadScrollSnapshot,
     restoreHistoryLoadScrollSnapshot,
     scrollerRef,

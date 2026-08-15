@@ -36,8 +36,32 @@ const DEFAULT_BASE_URL = 'https://void0000.online';
 const TARGET_FIX_COMMIT = '44244edc7662da75654dd99d590a202c2922fd4d';
 const MESSAGE_TIMELINE_SELECTOR = '[data-message-timeline]';
 const MAX_POSITION_ATTEMPTS = 140;
+const LOCAL_DIST_PATH = process.env.CHAT_PERF_LOCAL_DIST
+  ? path.resolve(WEB_ROOT, process.env.CHAT_PERF_LOCAL_DIST)
+  : null;
+
+const LOCAL_DIST_CONTENT_TYPES = new Map([
+  ['.css', 'text/css; charset=utf-8'],
+  ['.html', 'text/html; charset=utf-8'],
+  ['.ico', 'image/x-icon'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.png', 'image/png'],
+  ['.svg', 'image/svg+xml'],
+  ['.webp', 'image/webp'],
+  ['.woff2', 'font/woff2'],
+]);
 
 const VIEWPORTS = {
+  'desktop-hd': {
+    viewport: { width: 1366, height: 768 },
+    screen: { width: 1366, height: 768 },
+    deviceScaleFactor: 1,
+    isMobile: false,
+    hasTouch: false,
+  },
   desktop: {
     viewport: { width: 1440, height: 900 },
     screen: { width: 1440, height: 900 },
@@ -45,10 +69,38 @@ const VIEWPORTS = {
     isMobile: false,
     hasTouch: false,
   },
+  'desktop-fhd': {
+    viewport: { width: 1920, height: 1080 },
+    screen: { width: 1920, height: 1080 },
+    deviceScaleFactor: 1,
+    isMobile: false,
+    hasTouch: false,
+  },
+  'tablet-portrait': {
+    viewport: { width: 768, height: 1024 },
+    screen: { width: 768, height: 1024 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+  },
+  'mobile-small': {
+    viewport: { width: 360, height: 800 },
+    screen: { width: 360, height: 800 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  },
   mobile: {
     viewport: { width: 390, height: 844 },
     screen: { width: 390, height: 844 },
     deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+  },
+  'mobile-large': {
+    viewport: { width: 412, height: 915 },
+    screen: { width: 412, height: 915 },
+    deviceScaleFactor: 3,
     isMobile: true,
     hasTouch: true,
   },
@@ -158,6 +210,41 @@ async function launchBrowser({ headed = false } = {}) {
   });
 }
 
+async function installLocalDistRouting(context, baseUrl) {
+  if (!LOCAL_DIST_PATH) return;
+  const indexPath = path.join(LOCAL_DIST_PATH, 'index.html');
+  if (!fs.existsSync(indexPath)) {
+    throw new Error(`CHAT_PERF_LOCAL_DIST is missing index.html: ${indexPath}`);
+  }
+
+  const baseOrigin = new URL(baseUrl).origin;
+  await context.route(`${baseOrigin}/**`, async (route) => {
+    const request = route.request();
+    const requestUrl = new URL(request.url());
+    const relativePath = decodeURIComponent(requestUrl.pathname).replace(/^\/+/, '');
+    const requestedPath = path.resolve(LOCAL_DIST_PATH, relativePath);
+    const isSafeLocalPath = requestedPath === LOCAL_DIST_PATH ||
+      requestedPath.startsWith(`${LOCAL_DIST_PATH}${path.sep}`);
+    const filePath = request.isNavigationRequest()
+      ? indexPath
+      : isSafeLocalPath && fs.existsSync(requestedPath) && fs.statSync(requestedPath).isFile()
+        ? requestedPath
+        : null;
+
+    if (!filePath) {
+      await route.continue();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      body: fs.readFileSync(filePath),
+      contentType: LOCAL_DIST_CONTENT_TYPES.get(path.extname(filePath).toLowerCase()),
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  });
+}
+
 async function captureAuthentication() {
   const config = resolveConfiguration();
   fs.mkdirSync(LOCAL_STATE_DIR, { recursive: true });
@@ -211,6 +298,7 @@ function describeHistoryRequest(rawUrl) {
     limit: url.searchParams.get('limit'),
     completedAt: null,
     status: null,
+    messageCount: null,
     mode: url.searchParams.has('before')
       ? 'older'
       : url.searchParams.has('after')
@@ -241,6 +329,7 @@ function createPageTelemetry(page) {
     request.status = response.status();
     try {
       const payload = await response.json();
+      request.messageCount = Array.isArray(payload.messages) ? payload.messages.length : null;
       for (const message of payload.messages || []) {
         const attachments = Array.isArray(message.attachments) ? message.attachments : [];
         const imageCount = countImageAttachments(attachments);
@@ -270,6 +359,7 @@ function createPageTelemetry(page) {
 
 async function createMeasuredContext(browser, viewportName) {
   const profile = VIEWPORTS[viewportName];
+  const config = resolveConfiguration();
   const context = await browser.newContext({
     storageState: AUTH_STATE_PATH,
     viewport: profile.viewport,
@@ -280,6 +370,14 @@ async function createMeasuredContext(browser, viewportName) {
     colorScheme: 'dark',
     locale: 'en-US',
     serviceWorkers: 'block',
+  });
+  await installLocalDistRouting(context, config.baseUrl);
+  await context.addInitScript(() => {
+    try {
+      localStorage.setItem('void_startup_diagnostics', '1');
+    } catch {
+      // Startup marks are supplemental; storage denial must not break the run.
+    }
   });
   await context.addInitScript(installChatPerformanceCollector, {
     enableRestoreTrace: process.env.CHAT_PERF_RESTORE_TRACE === '1',
@@ -336,6 +434,7 @@ async function waitForTimeline(page, timeoutMs = 20_000) {
 async function waitForTimelineStable(page, {
   stableMs = 900,
   timeoutMs = 15_000,
+  rowCounts = null,
 } = {}) {
   await waitForTimeline(page, timeoutMs);
   const startedAt = Date.now();
@@ -345,11 +444,20 @@ async function waitForTimelineStable(page, {
 
   while (Date.now() - startedAt < timeoutMs) {
     latest = await getTimelineSnapshot(page, 'settle');
+    if (
+      Array.isArray(rowCounts) &&
+      Number.isFinite(latest.rowCount) &&
+      rowCounts.at(-1) !== latest.rowCount
+    ) {
+      rowCounts.push(latest.rowCount);
+    }
     const signature = JSON.stringify({
       scrollTop: round(latest.scrollTop, 0),
       scrollHeight: round(latest.scrollHeight, 0),
       topVisibleMessageId: latest.topVisibleMessageId,
       topVisibleMessageOffset: round(latest.topVisibleMessageOffset, 0),
+      firstMessageId: latest.firstMessageId,
+      lastMessageId: latest.lastMessageId,
       rowCount: latest.rowCount,
       pendingVisibleImages: latest.pendingVisibleImages,
       opacity: latest.opacity,
@@ -609,6 +717,24 @@ function extractMetricWindow(raw, {
     }
   }
 
+  if (lcp?.url) {
+    const resource = [...(raw.imageResources || [])]
+      .filter((entry) => entry.url === lcp.url && entry.startTime <= endTime)
+      .sort((left, right) => right.startTime - left.startTime)[0] || null;
+    if (resource) {
+      lcp.resource = {
+        ...resource,
+        discoveryDelayMs: hardNavigation
+          ? round(resource.startTime)
+          : round(resource.startTime - (softNavigation?.startTime || startTime)),
+        deliveryDurationMs: round(resource.responseEnd - resource.startTime),
+        postResponsePaintDelayMs: round(
+          (lcp.presentationTime || lcp.renderTime || lcp.startTime) - resource.responseEnd,
+        ),
+      };
+    }
+  }
+
   const timelineSamples = raw.timelineSamples.filter((entry) => (
     entry.time >= startTime && entry.time <= endTime
   ));
@@ -634,6 +760,7 @@ function extractMetricWindow(raw, {
     softNavigation,
     maximumScrollDeltaPx: round(maximumScrollDeltaPx),
     timelineSamples,
+    startupMarks: raw.startupMarks || [],
   };
 }
 
@@ -793,6 +920,32 @@ async function waitForHistoryRequestCompletion(request, timeoutMs = 15_000) {
   return null;
 }
 
+async function waitForTimelineWindowChange(
+  page,
+  before,
+  edge,
+  rowCounts,
+  timeoutMs = 15_000,
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const current = await getTimelineSnapshot(page, 'history-window-change');
+    if (
+      Array.isArray(rowCounts) &&
+      Number.isFinite(current.rowCount) &&
+      rowCounts.at(-1) !== current.rowCount
+    ) {
+      rowCounts.push(current.rowCount);
+    }
+    const boundaryChanged = edge === 'top'
+      ? current.firstMessageId !== before.firstMessageId
+      : current.lastMessageId !== before.lastMessageId;
+    if (current.rowCount !== before.rowCount || boundaryChanged) return current;
+    await sleep(50);
+  }
+  return null;
+}
+
 async function scrollToBoundary(page, edge) {
   await page.evaluate((targetEdge) => {
     const timeline = document.querySelector('[data-message-timeline]');
@@ -800,6 +953,25 @@ async function scrollToBoundary(page, edge) {
     timeline.scrollTop = targetEdge === 'top' ? 0 : timeline.scrollHeight;
     timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
   }, edge);
+}
+
+async function scrollTowardBoundaryUntilRequest(page, edge, hasStarted) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (hasStarted()) return true;
+    const moved = await page.evaluate((targetEdge) => {
+      const timeline = document.querySelector('[data-message-timeline]');
+      if (!(timeline instanceof HTMLElement)) return false;
+      const direction = targetEdge === 'top' ? -1 : 1;
+      const previous = timeline.scrollTop;
+      const step = Math.max(120, timeline.clientHeight * 0.25);
+      timeline.scrollTop += direction * step;
+      timeline.dispatchEvent(new Event('scroll', { bubbles: true }));
+      return Math.abs(timeline.scrollTop - previous) > 0.5;
+    }, edge);
+    await sleep(80);
+    if (!moved && !hasStarted()) return false;
+  }
+  return hasStarted();
 }
 
 async function getBoundaryMessageAnchor(page, edge, messageId = null) {
@@ -818,6 +990,40 @@ async function getBoundaryMessageAnchor(page, edge, messageId = null) {
       offsetPx: row.getBoundingClientRect().top - timeline.getBoundingClientRect().top,
     };
   }, { targetEdge: edge, targetMessageId: messageId });
+}
+
+async function startTimelineMetricWindow(page, label, traceEnabled) {
+  if (traceEnabled) {
+    await page.evaluate((traceLabel) => {
+      window.__voidChatPerf.beginRestoreTrace(traceLabel, null);
+    }, label);
+  }
+
+  return page.evaluate((windowLabel) => window.__voidChatPerf.startWindow(windowLabel), label);
+}
+
+async function finishTimelineMetricWindow(page, label, startTime, route, traceEnabled) {
+  const endTime = await page.evaluate(
+    (windowLabel) => window.__voidChatPerf.endWindow(windowLabel),
+    label,
+  );
+  const trace = traceEnabled
+    ? await page.evaluate(() => window.__voidChatPerf.endRestoreTrace())
+    : null;
+  const raw = await page.evaluate(() => window.__voidChatPerf.export());
+  const metrics = extractMetricWindow(raw, { startTime, endTime, route });
+
+  return {
+    startTime,
+    endTime,
+    cls: metrics.cls,
+    rawShiftTotal: metrics.rawShiftTotal,
+    largestShift: metrics.largestShift,
+    largestShiftIncludingInput: metrics.largestShiftIncludingInput,
+    individualLayoutShifts: metrics.layoutShifts,
+    maximumScrollDeltaPx: metrics.maximumScrollDeltaPx,
+    trace,
+  };
 }
 
 function compareBoundaryMessageAnchors(before, after) {
@@ -844,6 +1050,7 @@ function findTrimEvent(rowCounts) {
 
 async function runRuntimeContracts(browser, config, viewportName) {
   const { context, page, telemetry } = await createMeasuredContext(browser, viewportName);
+  const tracePagination = process.env.CHAT_PERF_RESTORE_TRACE === '1';
   const initialRowCounts = [];
   const olderRowCounts = [];
   const newerRowCounts = [];
@@ -860,36 +1067,86 @@ async function runRuntimeContracts(browser, config, viewportName) {
     await ensurePresent(page);
     initialRowCounts.push((await getTimelineSnapshot(page, 'contract-present')).rowCount);
 
+    const olderMetricsStart = await startTimelineMetricWindow(
+      page,
+      'older-pagination-contract',
+      tracePagination,
+    );
     for (let iteration = 0; iteration < 7; iteration += 1) {
       const priorRequests = telemetry.messageRequests.filter((request) => request.mode === 'older').length;
-      await scrollToBoundary(page, 'top');
+      if (process.env.CHAT_PERF_STEPPED_PAGINATION === '1') {
+        await scrollTowardBoundaryUntilRequest(
+          page,
+          'top',
+          () => telemetry.messageRequests.filter((request) => request.mode === 'older').length > priorRequests,
+        );
+      } else {
+        await scrollToBoundary(page, 'top');
+      }
       const before = await getBoundaryMessageAnchor(page, 'top');
+      const beforeWindow = await getTimelineSnapshot(page, 'before-older-load');
       const request = await waitForHistoryRequest(telemetry, 'older', priorRequests);
       if (!request) break;
       if (!await waitForHistoryRequestCompletion(request)) break;
-      const after = await waitForTimelineStable(page, { stableMs: 500 });
-      olderRowCounts.push(after.rowCount);
+      if (request.messageCount === 0) break;
+      if (!await waitForTimelineWindowChange(page, beforeWindow, 'top', olderRowCounts)) break;
+      const after = await waitForTimelineStable(page, {
+        stableMs: 500,
+        rowCounts: olderRowCounts,
+      });
       const restored = await getBoundaryMessageAnchor(page, 'top', before?.messageId);
       olderAnchors.push(compareBoundaryMessageAnchors(before, restored));
       symmetricSkeleton ||= after.olderSkeleton && after.newerSkeleton;
     }
+    const olderPaginationMetrics = await finishTimelineMetricWindow(
+      page,
+      'older-pagination-contract',
+      olderMetricsStart,
+      config.conversationRoute,
+      tracePagination,
+    );
 
     jumpToPresentVisible = await page.getByRole('button', { name: 'Jump to Present' })
       .isVisible().catch(() => false);
 
+    const newerMetricsStart = await startTimelineMetricWindow(
+      page,
+      'newer-pagination-contract',
+      tracePagination,
+    );
     for (let iteration = 0; iteration < 7; iteration += 1) {
       const priorRequests = telemetry.messageRequests.filter((request) => request.mode === 'newer').length;
-      await scrollToBoundary(page, 'bottom');
+      if (process.env.CHAT_PERF_STEPPED_PAGINATION === '1') {
+        await scrollTowardBoundaryUntilRequest(
+          page,
+          'bottom',
+          () => telemetry.messageRequests.filter((request) => request.mode === 'newer').length > priorRequests,
+        );
+      } else {
+        await scrollToBoundary(page, 'bottom');
+      }
       const before = await getBoundaryMessageAnchor(page, 'bottom');
+      const beforeWindow = await getTimelineSnapshot(page, 'before-newer-load');
       const request = await waitForHistoryRequest(telemetry, 'newer', priorRequests);
       if (!request) break;
       if (!await waitForHistoryRequestCompletion(request)) break;
-      const after = await waitForTimelineStable(page, { stableMs: 500 });
-      newerRowCounts.push(after.rowCount);
+      if (request.messageCount === 0) break;
+      if (!await waitForTimelineWindowChange(page, beforeWindow, 'bottom', newerRowCounts)) break;
+      const after = await waitForTimelineStable(page, {
+        stableMs: 500,
+        rowCounts: newerRowCounts,
+      });
       const restored = await getBoundaryMessageAnchor(page, 'bottom', before?.messageId);
       newerAnchors.push(compareBoundaryMessageAnchors(before, restored));
       symmetricSkeleton ||= after.olderSkeleton && after.newerSkeleton;
     }
+    const newerPaginationMetrics = await finishTimelineMetricWindow(
+      page,
+      'newer-pagination-contract',
+      newerMetricsStart,
+      config.conversationRoute,
+      tracePagination,
+    );
 
     const jumpButton = page.getByRole('button', { name: 'Jump to Present' });
     if (await jumpButton.isVisible().catch(() => false)) await jumpButton.click();
@@ -939,6 +1196,8 @@ async function runRuntimeContracts(browser, config, viewportName) {
       newerTrim,
       olderAnchorChecks: olderAnchors,
       newerAnchorChecks: newerAnchors,
+      olderPaginationMetrics,
+      newerPaginationMetrics,
       historyRequests: paginationRequests,
       consoleErrors: telemetry.consoleErrors,
       pageErrors: telemetry.pageErrors,
@@ -1016,6 +1275,7 @@ async function runPerformanceRegression() {
             largestShift: hardMetrics.largestShift,
             individualLayoutShifts: hardMetrics.layoutShifts,
             maximumScrollDeltaPx: hardMetrics.maximumScrollDeltaPx,
+            startupMarks: hardMetrics.startupMarks,
             anchor: {
               expected: 'bottom',
               preserved: hardEndSnapshot.bottomDistance <= 4,
@@ -1103,6 +1363,8 @@ async function runPerformanceRegression() {
       jumpPresent: contract.jumpToPresentWorked,
       historicalAnchor: contract.historicalAnchorPreserved,
       bottomPin: contract.atPresentBottomPinning,
+      olderCLS: contract.olderPaginationMetrics?.cls ?? null,
+      newerCLS: contract.newerPaginationMetrics?.cls ?? null,
     })));
   }
 }

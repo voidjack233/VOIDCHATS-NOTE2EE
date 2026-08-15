@@ -4,6 +4,7 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
   const state = {
     layoutShifts: [],
     hardLcps: [],
+    imageResources: [],
     softNavigations: [],
     interactionPaints: [],
     timelineSamples: [],
@@ -63,6 +64,20 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
       const rect = image.getBoundingClientRect();
       return rect.bottom > timelineRect.top && rect.top < timelineRect.bottom;
     });
+    const describeHistoryRange = (rangeSelector, skeletonSelector) => {
+      const range = timeline.querySelector(rangeSelector);
+      const skeleton = timeline.querySelector(skeletonSelector);
+      const historySkeleton = skeleton?.querySelector('[data-history-skeleton]');
+      if (!(range instanceof HTMLElement)) return null;
+      return {
+        rect: serializeRect(range.getBoundingClientRect()),
+        inlineHeight: range.style.height || null,
+        skeletonRect: historySkeleton instanceof HTMLElement
+          ? serializeRect(historySkeleton.getBoundingClientRect())
+          : null,
+        skeletonRows: skeleton?.querySelectorAll('[data-history-skeleton-row]').length || 0,
+      };
+    };
     return {
       time: round(performance.now()),
       reason,
@@ -73,6 +88,8 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
       clientHeight: round(timeline.clientHeight),
       bottomDistance: round(timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight),
       rowCount: rows.length,
+      firstMessageId: rows[0]?.getAttribute('data-message-id') || null,
+      lastMessageId: rows.at(-1)?.getAttribute('data-message-id') || null,
       topVisibleMessageId: top?.row.getAttribute('data-message-id') || null,
       topVisibleMessageOffset: top ? round(top.rect.top - timelineRect.top) : null,
       bottomVisibleMessageId: bottom?.row.getAttribute('data-message-id') || null,
@@ -81,6 +98,14 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
       olderSkeleton: Boolean(timeline.querySelector('[data-history-skeleton-anchor="end"]')),
       newerSkeleton: Boolean(timeline.querySelector('[data-history-skeleton-anchor="start"]')),
       newerRange: Boolean(timeline.querySelector('[data-message-newer-range]')),
+      olderRangeGeometry: describeHistoryRange(
+        '[data-message-older-skeleton]',
+        '[data-message-older-skeleton]',
+      ),
+      newerRangeGeometry: describeHistoryRange(
+        '[data-message-newer-range]',
+        '[data-message-newer-skeleton]',
+      ),
     };
   };
   const cloneWindowSnapshot = (value) => ({
@@ -198,6 +223,19 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
     url: redactUrl(entry.url),
     element: describeNode(entry.element),
   });
+  const describeImageResource = (entry) => ({
+    url: redactUrl(entry.name),
+    initiatorType: entry.initiatorType || null,
+    startTime: round(entry.startTime),
+    responseStart: round(entry.responseStart),
+    responseEnd: round(entry.responseEnd),
+    duration: round(entry.duration),
+    transferSize: Number(entry.transferSize || 0),
+    encodedBodySize: Number(entry.encodedBodySize || 0),
+    decodedBodySize: Number(entry.decodedBodySize || 0),
+    nextHopProtocol: entry.nextHopProtocol || null,
+    renderBlockingStatus: entry.renderBlockingStatus || null,
+  });
 
   const observe = (type, callback, extra = {}) => {
     if (!PerformanceObserver.supportedEntryTypes.includes(type)) return;
@@ -227,6 +265,11 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
   }, { includeSoftNavigationObservations: true });
   observe('largest-contentful-paint', (entry) => {
     state.hardLcps.push(describeLcp(entry));
+  });
+  observe('resource', (entry) => {
+    if (entry.initiatorType === 'img') {
+      state.imageResources.push(describeImageResource(entry));
+    }
   });
   observe('interaction-contentful-paint', (entry) => {
     state.interactionPaints.push({
@@ -364,6 +407,40 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
     };
   }
 
+  if (enableRestoreTrace && typeof window.MutationObserver === 'function') {
+    const historyMutationObserver = new MutationObserver((mutations) => {
+      if (!state.activeRestoreTrace) return;
+      const changed = [];
+      const collect = (node, action) => {
+        if (!(node instanceof Element)) return;
+        const candidates = [
+          ...(node.matches('[data-message-newer-range], [data-message-newer-skeleton], [data-history-skeleton]')
+            ? [node]
+            : []),
+          ...node.querySelectorAll(
+            '[data-message-newer-range], [data-message-newer-skeleton], [data-history-skeleton]',
+          ),
+        ];
+        for (const candidate of candidates) {
+          changed.push({
+            action,
+            newerRange: candidate.hasAttribute('data-message-newer-range'),
+            newerSkeleton: candidate.hasAttribute('data-message-newer-skeleton'),
+            anchor: candidate.getAttribute('data-history-skeleton-anchor'),
+          });
+        }
+      };
+      for (const mutation of mutations) {
+        mutation.removedNodes.forEach((node) => collect(node, 'removed'));
+        mutation.addedNodes.forEach((node) => collect(node, 'added'));
+      }
+      if (changed.length > 0) {
+        restoreTraceEvent('history-range-mutation', { changed });
+      }
+    });
+    historyMutationObserver.observe(document, { childList: true, subtree: true });
+  }
+
   const handleViewportChange = (event) => {
     restoreTraceEvent(`viewport-${event.type}`);
   };
@@ -446,11 +523,16 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
         supportedEntryTypes: [...PerformanceObserver.supportedEntryTypes],
         layoutShifts: state.layoutShifts,
         hardLcps: state.hardLcps,
+        imageResources: state.imageResources,
         softNavigations: state.softNavigations,
         interactionPaints: state.interactionPaints,
         timelineSamples: state.timelineSamples,
         rowCounts: state.rowCounts,
         restoreTraces: state.restoreTraces,
+        startupMarks: performance
+          .getEntriesByType('mark')
+          .filter((entry) => entry.name.startsWith('void:'))
+          .map((entry) => ({ name: entry.name, startTime: round(entry.startTime) })),
       };
     },
   };

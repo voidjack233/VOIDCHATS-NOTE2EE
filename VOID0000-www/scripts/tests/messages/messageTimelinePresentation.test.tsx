@@ -7,9 +7,11 @@ import { mergeMessagesWithReconciliation } from '../../../src/Services/hooks/Cha
 import MessageTimelineViewport from '../../../src/components/Chat/MessageView/MessageTimelineViewport';
 import { HISTORY_SKELETON_ROW_HEIGHT } from '../../../src/components/Chat/MessageView/historySkeletonConstants';
 import {
+  getHistoryLogicalSlotHeight,
   getRenderedNewerHistoryRangeLimit,
   shouldShowInitialMessageTimelineSkeleton,
 } from '../../../src/components/Chat/MessageView/messageTimelinePresentation';
+import { getTopSpacerScrollCompensation } from '../../../src/components/Chat/MessageView/useMessageScrollGeometry';
 
 Object.defineProperty(globalThis, 'React', {
   configurable: true,
@@ -159,6 +161,30 @@ test('newer history uses one bounded prefetch window instead of a fixed row coun
   });
   assert.match(comfortableMarkup, /height:640px/);
   assert.match(comfortableMarkup, /height:98px/);
+});
+
+test('logical history geometry is stable for each density and independent of message contents', () => {
+  assert.equal(getHistoryLogicalSlotHeight({
+    pageSize: 20,
+    skeletonRowHeight: HISTORY_SKELETON_ROW_HEIGHT.compact,
+  }), 1_500);
+  assert.equal(getHistoryLogicalSlotHeight({
+    pageSize: 20,
+    skeletonRowHeight: HISTORY_SKELETON_ROW_HEIGHT.comfortable,
+  }), 1_960);
+});
+
+test('ordinary top spacer changes preserve rendered row position below the compaction cap', () => {
+  assert.equal(getTopSpacerScrollCompensation({
+    previousHeight: 1_500,
+    nextHeight: 1_780,
+    blocked: false,
+  }), 280);
+  assert.equal(getTopSpacerScrollCompensation({
+    previousHeight: 1_500,
+    nextHeight: 1_780,
+    blocked: true,
+  }), 0);
 });
 
 test('genuine initial loading without messages shows the initial skeleton policy', () => {

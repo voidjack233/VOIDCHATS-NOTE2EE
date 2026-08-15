@@ -5,6 +5,7 @@ import type {
   ConversationDetails,
   Message,
 } from '../../../src/Services/Chat/chatTypes';
+import type { LocalMessage } from '../../../src/Services/Chat/chatStore';
 import {
   areConversationDetailsFresh,
   deleteConversationDetails,
@@ -45,7 +46,12 @@ const {
   getSavedConversationRuntime,
   resetRuntime,
 } = await import('../../../src/Services/hooks/Chats/MessageList/messageListRuntime');
-const { resolveInitialMessageRuntime } = await import(
+const {
+  canSettleInitialHydrationFromCachedWindow,
+  createCachedHistoricalWindow,
+  hasCachedMessagesAfterWindow,
+  resolveInitialMessageRuntime,
+} = await import(
   '../../../src/Services/hooks/Chats/MessageList/messageListInitialRuntime'
 );
 
@@ -194,6 +200,56 @@ test('known shell remains local while a conversation with no runtime starts mess
     initialHydrationSettled: false,
     visibleMessageCount: 0,
   }), true);
+});
+
+test('cached present messages can render while server reconciliation continues', () => {
+  const messages = [makeMessage('cached-present', 'cached-message')];
+
+  assert.equal(canSettleInitialHydrationFromCachedWindow(messages), true);
+  assert.equal(canSettleInitialHydrationFromCachedWindow([]), false);
+});
+
+test('cached historical window is rebuilt around its anchor without server data', () => {
+  const localMessage = (messageId: string, createdAt: string): LocalMessage => ({
+    ...makeMessage('cached-history', messageId),
+    created_at: createdAt,
+    reactions: {},
+  });
+  const anchor = localMessage('visible-anchor', '2026-07-27T00:00:02.000Z');
+  const historicalWindow = createCachedHistoricalWindow({
+    anchor,
+    before: {
+      messages: [localMessage('older-message', '2026-07-27T00:00:01.000Z')],
+      has_more: true,
+    },
+    after: {
+      messages: [
+        localMessage('newer-message', '2026-07-27T00:00:03.000Z'),
+        anchor,
+      ],
+      has_more: true,
+    },
+  });
+
+  assert.deepEqual(
+    historicalWindow?.messages.map((message) => message.message_id),
+    ['older-message', 'visible-anchor', 'newer-message'],
+  );
+  assert.equal(historicalWindow?.hasOlder, true);
+  assert.equal(historicalWindow?.hasNewer, true);
+  assert.equal(hasCachedMessagesAfterWindow(
+    historicalWindow?.messages || [],
+    [localMessage('latest-cached-message', '2026-07-27T00:00:04.000Z')],
+  ), true);
+  assert.equal(hasCachedMessagesAfterWindow(
+    historicalWindow?.messages || [],
+    [localMessage('older-cached-message', '2026-07-27T00:00:01.000Z')],
+  ), false);
+  assert.equal(createCachedHistoricalWindow({
+    anchor: null,
+    before: { messages: [], has_more: false },
+    after: { messages: [], has_more: false },
+  }), null);
 });
 
 test('detail consumers share one in-flight request across internal and public IDs', async () => {

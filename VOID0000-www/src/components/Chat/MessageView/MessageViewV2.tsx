@@ -26,7 +26,7 @@ import { useMessageActions } from '../Messages/useMessageActions';
 import { useMessageLayout } from '../Messages/useMessageLayout';
 import { useMessageScrollGeometry } from './useMessageScrollGeometry';
 import { useMessageTimelineVirtualizer } from './useMessageTimelineVirtualizer';
-import { estimateHistoryLogicalRowHeight, estimateMessageRowHeight } from '../Messages/messageRowHeight';
+import { estimateMessageRowHeight } from '../Messages/messageRowHeight';
 import { useNearViewportMessages } from '../Messages/useNearViewportMessages';
 import EmptyMessageTimelineState from './EmptyMessageTimelineState';
 import JumpToPresentButton from './JumpToPresentButton';
@@ -61,6 +61,7 @@ import {
   type ConversationScrollPosition,
 } from '../../../Services/hooks/Chats/MessageList/messageListWindowCache';
 import {
+  getHistoryLogicalSlotHeight,
   getRenderedNewerHistoryRangeLimit,
   shouldShowInitialMessageTimelineSkeleton,
 } from './messageTimelinePresentation';
@@ -288,9 +289,10 @@ const MessageViewV2 = memo(function MessageViewV2({
       markStartupPerformanceOnce('message-timeline-ready');
     }
   }, [initialHydrationSettled]);
-  const historyLogicalSlotHeight = useMemo(() => (
-    MESSAGE_PAGE_SIZE * estimateHistoryLogicalRowHeight(visualMessages, density)
-  ), [density, visualMessages]);
+  const historyLogicalSlotHeight = getHistoryLogicalSlotHeight({
+    pageSize: MESSAGE_PAGE_SIZE,
+    skeletonRowHeight: historySkeletonRowHeight,
+  });
   const maxPhysicalBottomSpacerHeight = getRenderedNewerHistoryRangeLimit({
     historyLogicalSlotHeight,
     prefetchDistance: newerBottomLoadThreshold,
@@ -983,6 +985,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     initialLatestRestoreDoneRef,
     pendingOlderLoadScrollSnapshotRef,
     pendingNewerLoadScrollSnapshotRef,
+    historyScrollTransactionActiveRef,
     loadingOlderRequestInFlightRef,
     loadingNewerRequestInFlightRef,
     loadingOlderStateRef,
@@ -1064,6 +1067,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
       if (
         !restoredSavedPosition &&
+        !savedWindow.topVisibleMessageId &&
         typeof savedWindow.scrollTop === 'number' &&
         Number.isFinite(savedWindow.scrollTop)
       ) {

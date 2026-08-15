@@ -1,6 +1,24 @@
 import { useLayoutEffect, useState } from 'react';
 
-const ATTACHMENT_LOAD_ROOT_MARGIN = '320px 0px';
+export const ATTACHMENT_LOAD_ROOT_MARGIN_PX = 320;
+const ATTACHMENT_LOAD_ROOT_MARGIN = `${ATTACHMENT_LOAD_ROOT_MARGIN_PX}px 0px`;
+
+export const isMessageNearAttachmentViewport = ({
+  messageTop,
+  messageBottom,
+  viewportTop,
+  viewportBottom,
+  marginPx = ATTACHMENT_LOAD_ROOT_MARGIN_PX,
+}: {
+  messageTop: number;
+  messageBottom: number;
+  viewportTop: number;
+  viewportBottom: number;
+  marginPx?: number;
+}) => (
+  messageBottom >= viewportTop - marginPx &&
+  messageTop <= viewportBottom + marginPx
+);
 
 const getMessageElements = (node: Node): HTMLElement[] => {
   if (!(node instanceof Element)) {
@@ -19,18 +37,24 @@ export function useNearViewportMessages(
   scroller: HTMLDivElement | null,
   resetKey: string,
 ): ReadonlySet<string> {
-  const [nearViewportIds, setNearViewportIds] = useState<Set<string>>(() => new Set());
+  const [nearViewportState, setNearViewportState] = useState<{
+    resetKey: string;
+    ids: Set<string>;
+  }>(() => ({ resetKey, ids: new Set() }));
+  const nearViewportIds = nearViewportState.resetKey === resetKey
+    ? nearViewportState.ids
+    : new Set<string>();
 
   useLayoutEffect(() => {
-    setNearViewportIds(new Set());
     if (!scroller) {
       return undefined;
     }
 
     const observedElements = new Map<HTMLElement, string>();
     const updateIds = (updates: Array<{ messageId: string; isNear: boolean }>) => {
-      setNearViewportIds((current) => {
-        const next = new Set(current);
+      setNearViewportState((current) => {
+        const currentIds = current.resetKey === resetKey ? current.ids : new Set<string>();
+        const next = new Set(currentIds);
         let changed = false;
 
         updates.forEach(({ messageId, isNear }) => {
@@ -42,7 +66,9 @@ export function useNearViewportMessages(
           }
         });
 
-        return changed ? next : current;
+        return changed || current.resetKey !== resetKey
+          ? { resetKey, ids: next }
+          : current;
       });
     };
 
@@ -67,17 +93,39 @@ export function useNearViewportMessages(
           },
         );
 
-    const observeElement = (element: HTMLElement) => {
+    const observeElement = (element: HTMLElement, viewportRect: DOMRect) => {
       const messageId = element.dataset.messageId;
       if (!messageId || observedElements.has(element)) {
-        return;
+        return null;
       }
 
       observedElements.set(element, messageId);
       if (intersectionObserver) {
         intersectionObserver.observe(element);
-      } else {
-        updateIds([{ messageId, isNear: true }]);
+      }
+
+      // IntersectionObserver reports asynchronously. Seed rows that are
+      // already near the viewport during layout so their image requests can
+      // begin before the browser's first paint.
+      const messageRect = element.getBoundingClientRect();
+      return {
+        messageId,
+        isNear: !intersectionObserver || isMessageNearAttachmentViewport({
+          messageTop: messageRect.top,
+          messageBottom: messageRect.bottom,
+          viewportTop: viewportRect.top,
+          viewportBottom: viewportRect.bottom,
+        }),
+      };
+    };
+
+    const observeElements = (elements: HTMLElement[]) => {
+      const viewportRect = scroller.getBoundingClientRect();
+      const updates = elements
+        .map((element) => observeElement(element, viewportRect))
+        .filter((update): update is { messageId: string; isNear: boolean } => Boolean(update?.isNear));
+      if (updates.length > 0) {
+        updateIds(updates);
       }
     };
 
@@ -92,7 +140,7 @@ export function useNearViewportMessages(
       updateIds([{ messageId, isNear: false }]);
     };
 
-    getMessageElements(scroller).forEach(observeElement);
+    observeElements(getMessageElements(scroller));
 
     const mutationObserver = typeof MutationObserver === 'undefined'
       ? null
@@ -102,7 +150,7 @@ export function useNearViewportMessages(
               getMessageElements(node).forEach(unobserveElement);
             });
             mutation.addedNodes.forEach((node) => {
-              getMessageElements(node).forEach(observeElement);
+              observeElements(getMessageElements(node));
             });
           });
         });

@@ -2,6 +2,7 @@ import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateA
 import { MESSAGE_INITIAL_PAGE_SIZE } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import type { Message } from '../../../Chat/chatService';
+import { messageStore } from '../../../Chat/chatStore';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
 import { sortMessages, toUIMessage } from './messageListPersistence';
 import {
@@ -14,6 +15,11 @@ import {
   type ConversationRuntime,
 } from './messageListRuntime';
 import { markStartupPerformanceOnce } from '../../../Performance/startupPerformance';
+import {
+  canSettleInitialHydrationFromCachedWindow,
+  createCachedHistoricalWindow,
+  hasCachedMessagesAfterWindow,
+} from './messageListInitialRuntime';
 
 interface UseMessageListLoadingParams {
   conversationId: string;
@@ -59,6 +65,7 @@ interface UseMessageListLoadingParams {
   setLoading: Dispatch<SetStateAction<boolean>>;
   setSyncing: Dispatch<SetStateAction<boolean>>;
   setHasOlder: Dispatch<SetStateAction<boolean>>;
+  setHasNewer: Dispatch<SetStateAction<boolean>>;
   setInitialHydrationSettled: Dispatch<SetStateAction<boolean>>;
   messagesRef: MutableRefObject<Message[]>;
   lastLoadedConversationIdRef: MutableRefObject<string | null>;
@@ -79,6 +86,7 @@ const useMessageListLoading = ({
   setLoading,
   setSyncing,
   setHasOlder,
+  setHasNewer,
   setInitialHydrationSettled,
   messagesRef,
   lastLoadedConversationIdRef,
@@ -132,6 +140,36 @@ const useMessageListLoading = ({
       markStartupPerformanceOnce('cached-messages-ready');
       settleInitialHydration();
       return savedRuntime;
+    };
+
+    const readCachedHistoricalWindow = async () => {
+      const anchorId = sessionSnapshot?.wasAtBottom === false
+        ? sessionSnapshot.topVisibleMessageId
+        : null;
+      if (!anchorId) return null;
+
+      const anchor = await messageStore.getMessage(conversationId, anchorId);
+      if (!anchor) return null;
+
+      const olderLimit = Math.max(1, Math.floor((INITIAL_OPEN_LIMIT - 1) / 3));
+      const newerLimit = Math.max(1, INITIAL_OPEN_LIMIT - olderLimit - 1);
+      const [before, after] = await Promise.all([
+        messageSync.readLocal(conversationId, { before: anchorId, limit: olderLimit }),
+        messageSync.readLocal(conversationId, { after: anchorId, limit: newerLimit }),
+      ]);
+      const cachedWindow = createCachedHistoricalWindow({ anchor, before, after });
+      if (!cachedWindow) return null;
+
+      const visibleMessages = filterMessagesByHistoryFence(cachedWindow.messages, historyAccessFence);
+      if (!visibleMessages.some((message) => message.message_id === anchorId)) {
+        return null;
+      }
+
+      return {
+        messages: sortMessages(visibleMessages.map(toUIMessage)),
+        hasOlder: cachedWindow.hasOlder,
+        hasNewer: cachedWindow.hasNewer,
+      };
     };
 
     const applyVisibleMessages = (
@@ -189,19 +227,36 @@ const useMessageListLoading = ({
       if (!shouldPreserveVisibleMessages) resetVisibleWindow();
 
       try {
-        const { cached, syncPromise } = await messageSync.loadConversation(conversationId, {
-          forceSync: false,
-          preferSessionCache: true,
-          initialLimit: INITIAL_OPEN_LIMIT,
-          syncLimit: INITIAL_OPEN_LIMIT,
-          initiator: 'message_list_open',
-          savedRuntimeExists: Boolean(savedRuntime),
-        });
+        const [cachedHistoricalWindow, { cached, syncPromise }] = await Promise.all([
+          savedRuntime ? Promise.resolve(null) : readCachedHistoricalWindow(),
+          messageSync.loadConversation(conversationId, {
+            forceSync: false,
+            preferSessionCache: true,
+            initialLimit: INITIAL_OPEN_LIMIT,
+            syncLimit: INITIAL_OPEN_LIMIT,
+            initiator: 'message_list_open',
+            savedRuntimeExists: Boolean(savedRuntime),
+          }),
+        ]);
         if (ignore) return;
 
         const cachedMessages = filterMessagesByHistoryFence(cached.messages, historyAccessFence);
         const cachedUI = sortMessages(cachedMessages.map(toUIMessage));
-        if (cachedUI.length > 0) {
+        if (cachedHistoricalWindow) {
+          const hasCachedNewerMessages = hasCachedMessagesAfterWindow(
+            cachedHistoricalWindow.messages,
+            cachedUI,
+          );
+          applyVisibleMessages(cachedHistoricalWindow.messages, false, {
+            hasOlder: cachedHistoricalWindow.hasOlder,
+            hasNewer: cachedHistoricalWindow.hasNewer || hasCachedNewerMessages,
+            isAtPresent: false,
+            loading: false,
+          });
+          onMessagesLoaded?.(cachedHistoricalWindow.messages);
+          markStartupPerformanceOnce('cached-messages-ready');
+          settleInitialHydration();
+        } else if (cachedUI.length > 0) {
           applyVisibleMessages(cachedUI, shouldPreserveVisibleMessages, {
             hasOlder: resolveInitialHasOlder({
               localHasMore: cached.has_more,
@@ -215,12 +270,21 @@ const useMessageListLoading = ({
           });
           onMessagesLoaded?.(cachedUI);
           markStartupPerformanceOnce('cached-messages-ready');
+          if (canSettleInitialHydrationFromCachedWindow(cachedUI)) {
+            settleInitialHydration();
+          }
         }
 
         setSyncing(true);
         const syncResult = await syncPromise;
         if (ignore) return;
         setSyncing(false);
+        if (cachedHistoricalWindow) {
+          if (syncResult.newMessages.length > 0) {
+            setHasNewer(true);
+          }
+          return;
+        }
         setHasOlder((previous) => previous || syncResult.hasMore);
 
         if (cachedUI.length > 0 && !syncResult.didSync) {
@@ -276,6 +340,7 @@ const useMessageListLoading = ({
     replaceWindow,
     restoreRuntime,
     setHasOlder,
+    setHasNewer,
     setInitialHydrationSettled,
     setLoading,
     setSyncing,
