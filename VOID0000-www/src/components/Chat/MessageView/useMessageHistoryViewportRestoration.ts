@@ -9,6 +9,8 @@ import {
   restoreVisibleMessageAnchor,
   shouldCaptureHistoryRangeReplacement,
   shouldPreferVisibleHistoryRangeAnchor,
+  shouldRestoreOlderHistoryByScrollHeight,
+  updateHistoryLoadMessageAnchor,
   updateHistoryRangeReplacementPosition,
   type HistoryLoadScrollSnapshot,
   type HistoryRangeReplacementSnapshot,
@@ -288,12 +290,10 @@ export function useMessageHistoryViewportRestoration({
         updateHistoryRangeReplacementPosition(scroller, pendingOlderSnapshot.rangeReplacement);
       } else {
         const anchor = getFirstVisibleMessageAnchor(scroller);
-        if (anchor) {
-          pendingOlderSnapshot.anchorMessageId = anchor.messageId;
-          pendingOlderSnapshot.anchorOffsetTop = anchor.offsetTop;
-        } else if (pendingOlderSnapshot.anchorOffsetTop !== null) {
-          pendingOlderSnapshot.anchorOffsetTop -= scrollDelta;
-        }
+        // Once the reader has moved fully into unloaded history, the old seam
+        // row is no longer a trustworthy viewport anchor. Let restoration use
+        // the latest scrollTop plus the committed scroll-height delta instead.
+        updateHistoryLoadMessageAnchor(pendingOlderSnapshot, anchor);
       }
     }
 
@@ -374,6 +374,16 @@ export function useMessageHistoryViewportRestoration({
       return false;
     }
 
+    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
+    if (
+      shouldRestoreOlderHistoryByScrollHeight(snapshot) &&
+      Math.abs(scrollHeightDelta) > 0.5
+    ) {
+      scroller.scrollTop = Math.max(0, snapshot.scrollTop + scrollHeightDelta);
+      syncScrollState();
+      return true;
+    }
+
     const replacement = snapshot.rangeReplacement;
     if (replacement) {
       if (!replacement.mapped) {
@@ -429,7 +439,6 @@ export function useMessageHistoryViewportRestoration({
       return true;
     }
 
-    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
     if (Math.abs(scrollHeightDelta) > 0.5) {
       scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
       syncScrollState();

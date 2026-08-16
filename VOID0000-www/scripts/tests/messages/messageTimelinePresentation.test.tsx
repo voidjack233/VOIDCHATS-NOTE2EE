@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import React, { createRef, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -185,6 +186,16 @@ test('ordinary top spacer changes preserve rendered row position below the compa
     nextHeight: 1_780,
     blocked: true,
   }), 0);
+});
+
+test('media loading cannot directly issue timeline scroll corrections', async () => {
+  const messageViewSource = await readFile(
+    new URL('../../../src/components/Chat/MessageView/MessageViewV2.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.doesNotMatch(messageViewSource, /onAttachmentLoad=/);
+  assert.doesNotMatch(messageViewSource, /handleAttachmentLoad/);
 });
 
 test('genuine initial loading without messages shows the initial skeleton policy', () => {

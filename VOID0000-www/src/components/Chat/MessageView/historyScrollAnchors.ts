@@ -107,6 +107,21 @@ export const getFirstVisibleMessageAnchor = (scroller: HTMLElement) => {
   return getVisibleMessageAnchors(scroller)[0] ?? null;
 };
 
+export const updateHistoryLoadMessageAnchor = (
+  snapshot: Pick<HistoryLoadScrollSnapshot, 'anchorMessageId' | 'anchorOffsetTop'>,
+  anchor: MessageAnchorSnapshot | null,
+) => {
+  snapshot.anchorMessageId = anchor?.messageId ?? null;
+  snapshot.anchorOffsetTop = anchor?.offsetTop ?? null;
+};
+
+export const shouldRestoreOlderHistoryByScrollHeight = (
+  snapshot: Pick<HistoryLoadScrollSnapshot, 'anchorMessageId' | 'rangeReplacement'>,
+) => (
+  snapshot.anchorMessageId === null &&
+  snapshot.rangeReplacement === null
+);
+
 export const escapeMessageIdSelector = (messageId: string) => {
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
     return CSS.escape(messageId);

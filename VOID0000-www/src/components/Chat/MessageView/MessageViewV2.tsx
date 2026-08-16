@@ -168,7 +168,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const messageHighlightTimeoutRef = useRef<number | null>(null);
   const messageJumpNoticeTimeoutRef = useRef<number | null>(null);
   const messageJumpFallbackTimeoutRef = useRef<number | null>(null);
-  const pendingAttachmentLoadCorrectionRef = useRef(false);
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const [showJumpToPresent, setShowJumpToPresent] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -1155,35 +1154,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     await jumpToPresentAndScroll();
   }, [jumpToPresentAndScroll]);
 
-  const handleAttachmentLoad = useCallback(() => {
-    if (pendingAttachmentLoadCorrectionRef.current) {
-      return;
-    }
-
-    pendingAttachmentLoadCorrectionRef.current = true;
-    requestAnimationFrame(() => {
-      pendingAttachmentLoadCorrectionRef.current = false;
-
-      if (highlightedMessageId) {
-        scrollToMessageById(highlightedMessageId, 'auto', { highlight: false });
-        return;
-      }
-
-      if (!atBottomRef.current && !forceFollowOutputRef.current) {
-        restoreViewportAnchorLock();
-        return;
-      }
-
-      scrollToBottom('auto');
-      forceFollowOutputRef.current = false;
-    });
-  }, [
-    highlightedMessageId,
-    restoreViewportAnchorLock,
-    scrollToBottom,
-    scrollToMessageById,
-  ]);
-
   // ── Initial scroll to bottom ──
   useLayoutEffect(() => {
     if (!initialHydrationSettled || initialLatestRestoreDoneRef.current) {
@@ -1363,7 +1333,6 @@ const MessageViewV2 = memo(function MessageViewV2({
         onDelete={handleDelete}
         onToggleReaction={handleToggleReaction}
         onOpenImageViewer={openImageViewer}
-        onAttachmentLoad={handleAttachmentLoad}
         canLoadAttachments={nearViewportMessageIds.has(message.message_id)}
         onOpenLink={handleOpenMessageLink}
       />
@@ -1377,7 +1346,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     getSenderAvatarUrl,
     getSmartDisplayName,
     getSmartUsername,
-    handleAttachmentLoad,
     handleContextMenu,
     handleDelete,
     handleJumpToMessage,

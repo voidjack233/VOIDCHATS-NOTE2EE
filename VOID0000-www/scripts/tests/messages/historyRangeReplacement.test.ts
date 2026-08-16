@@ -4,6 +4,9 @@ import {
   restoreHistoryRangeReplacementAnchor,
   shouldCaptureHistoryRangeReplacement,
   shouldPreferVisibleHistoryRangeAnchor,
+  shouldRestoreOlderHistoryByScrollHeight,
+  updateHistoryLoadMessageAnchor,
+  type HistoryLoadScrollSnapshot,
   type HistoryRangeReplacementSnapshot,
 } from '../../../src/components/Chat/MessageView/historyScrollAnchors';
 
@@ -82,4 +85,57 @@ test('range replacement keeps the mapped real row at the skeleton row offset', (
 
   assert.equal(scroller.scrollTop, 560);
   assert.equal(replacement.mapped, true);
+});
+
+test('older loading drops a stale seam anchor after the viewport enters only skeleton history', () => {
+  const snapshot: HistoryLoadScrollSnapshot = {
+    scrollHeight: 2_400,
+    scrollTop: 180,
+    anchorMessageId: 'old-seam-message',
+    anchorOffsetTop: 640,
+    rangeReplacement: null,
+    readyToRestore: false,
+  };
+
+  updateHistoryLoadMessageAnchor(snapshot, null);
+
+  assert.equal(snapshot.anchorMessageId, null);
+  assert.equal(snapshot.anchorOffsetTop, null);
+
+  updateHistoryLoadMessageAnchor(snapshot, {
+    messageId: 'visible-again',
+    offsetTop: 42,
+  });
+
+  assert.equal(snapshot.anchorMessageId, 'visible-again');
+  assert.equal(snapshot.anchorOffsetTop, 42);
+});
+
+test('older loading preserves visible skeleton rows through range mapping', () => {
+  assert.equal(shouldRestoreOlderHistoryByScrollHeight({
+    anchorMessageId: null,
+    rangeReplacement: makeReplacement({
+      kind: 'row',
+      rowIndex: 3,
+      offsetTop: -12,
+    }, 'older'),
+  }), false);
+
+  assert.equal(shouldRestoreOlderHistoryByScrollHeight({
+    anchorMessageId: null,
+    rangeReplacement: null,
+  }), true);
+
+  assert.equal(shouldRestoreOlderHistoryByScrollHeight({
+    anchorMessageId: 'visible-message',
+    rangeReplacement: null,
+  }), false);
+
+  assert.equal(shouldRestoreOlderHistoryByScrollHeight({
+    anchorMessageId: null,
+    rangeReplacement: makeReplacement({
+      kind: 'end',
+      offsetTop: 720,
+    }, 'older'),
+  }), false);
 });
