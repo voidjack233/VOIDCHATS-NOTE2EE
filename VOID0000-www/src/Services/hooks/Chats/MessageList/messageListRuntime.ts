@@ -44,6 +44,12 @@ interface RuntimeStats {
   bottomSpacerHeight: number;
 }
 
+interface RuntimePaginationBoundaryCommit {
+  runtime: ConversationRuntime;
+  hasOlder: boolean;
+  hasNewer: boolean;
+}
+
 const runtimeRegistry = new Map<string, ConversationRuntime>();
 
 const getMessageId = (message: Pick<Message, 'message_id'>) => String(message.message_id);
@@ -268,6 +274,29 @@ const saveConversationRuntime = (runtime: ConversationRuntime) => {
   evictable.slice(0, evictCount).forEach((entry) => {
     runtimeRegistry.delete(entry.conversationId);
   });
+};
+
+const commitRuntimePaginationBoundary = (
+  currentRuntime: ConversationRuntime,
+  boundary: 'older' | 'newer',
+  value: boolean,
+): RuntimePaginationBoundaryCommit => {
+  const runtime = cloneRuntime(currentRuntime);
+
+  if (boundary === 'older') {
+    runtime.hasOlder = value;
+    if (!value) runtime.topSpacerHeight = 0;
+  } else {
+    runtime.hasNewer = value;
+    if (!value) runtime.bottomSpacerHeight = 0;
+  }
+
+  saveConversationRuntime(runtime);
+  return {
+    runtime,
+    hasOlder: runtime.hasOlder,
+    hasNewer: runtime.hasNewer,
+  };
 };
 
 const getSavedConversationRuntime = (conversationId: string): ConversationRuntime | null => {
@@ -503,6 +532,7 @@ export {
   applyAppendedPage,
   applyPrependedPage,
   applyRenderedUpdate,
+  commitRuntimePaginationBoundary,
   createEmptyRuntime,
   evictTrimmedMessages,
   getRenderedMessages,

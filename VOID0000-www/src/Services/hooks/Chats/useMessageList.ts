@@ -22,6 +22,7 @@ import {
   applyAppendedPage,
   applyPrependedPage,
   applyRenderedUpdate,
+  commitRuntimePaginationBoundary,
   evictTrimmedMessages,
   getRenderedMessages,
   getRuntimeStats,
@@ -258,8 +259,8 @@ const messageWindowReducer = (
         initialHydrationSettled: action.initialHydrationSettled ?? state.initialHydrationSettled,
         loadingOlder: action.loadingOlder ?? state.loadingOlder,
         loadingNewer: action.loadingNewer ?? state.loadingNewer,
-        hasOlder: action.hasOlder ?? state.hasOlder,
-        hasNewer: action.hasNewer ?? state.hasNewer,
+        hasOlder: nextRuntime.hasOlder,
+        hasNewer: nextRuntime.hasNewer,
         isAtPresent: action.isAtPresent ?? state.isAtPresent,
       };
     }
@@ -280,8 +281,8 @@ const messageWindowReducer = (
         initialHydrationSettled: action.initialHydrationSettled ?? state.initialHydrationSettled,
         loadingOlder: action.loadingOlder ?? state.loadingOlder,
         loadingNewer: action.loadingNewer ?? state.loadingNewer,
-        hasOlder: action.hasOlder ?? action.runtime.hasOlder,
-        hasNewer: action.hasNewer ?? action.runtime.hasNewer,
+        hasOlder: action.runtime.hasOlder,
+        hasNewer: action.runtime.hasNewer,
         isAtPresent: action.isAtPresent ?? !action.runtime.hasNewer,
       };
     }
@@ -349,8 +350,8 @@ const messageWindowReducer = (
         groupBreakBeforeIds: pruneGroupBreaksToMessages(state.groupBreakBeforeIds, flushResult.messages),
         queuedNewerHasNewer: false,
         queuedNewerIsAtPresent: true,
-        hasOlder: flushResult.trimmedFromOld > 0 ? true : state.hasOlder,
-        hasNewer: state.queuedNewerHasNewer,
+        hasOlder: nextRuntime.hasOlder,
+        hasNewer: nextRuntime.hasNewer,
         isAtPresent: state.queuedNewerIsAtPresent,
       };
     }
@@ -397,8 +398,8 @@ const messageWindowReducer = (
           ? state.firstItemIndex + mergeResult.trimmedFromOld
           : state.firstItemIndex,
         groupBreakBeforeIds: pruneGroupBreaksToMessages(state.groupBreakBeforeIds, mergeResult.messages),
-        hasOlder: mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? state.hasOlder),
-        hasNewer: nextHasNewer,
+        hasOlder: nextRuntime.hasOlder,
+        hasNewer: nextRuntime.hasNewer,
         isAtPresent: mergeResult.trimmedFromNew > 0 || nextHasNewer || hasLogicalNewerRange
           ? false
           : (action.isAtPresent ?? state.isAtPresent),
@@ -439,16 +440,28 @@ const messageWindowReducer = (
         ...state,
         loadingNewer: resolveStateAction(state.loadingNewer, action.value),
       };
-    case 'set_has_older':
+    case 'set_has_older': {
+      const committedBoundary = commitRuntimePaginationBoundary(
+        state.runtime,
+        'older',
+        resolveStateAction(state.hasOlder, action.value),
+      );
       return {
         ...state,
-        hasOlder: resolveStateAction(state.hasOlder, action.value),
+        ...committedBoundary,
       };
-    case 'set_has_newer':
+    }
+    case 'set_has_newer': {
+      const committedBoundary = commitRuntimePaginationBoundary(
+        state.runtime,
+        'newer',
+        resolveStateAction(state.hasNewer, action.value),
+      );
       return {
         ...state,
-        hasNewer: resolveStateAction(state.hasNewer, action.value),
+        ...committedBoundary,
       };
+    }
     case 'set_is_at_present':
       return {
         ...state,
@@ -480,6 +493,8 @@ const messageWindowReducer = (
           ? state.firstItemIndex - action.prependedCount
           : state.firstItemIndex,
         groupBreakBeforeIds: pruneGroupBreaksToMessages(nextBreaks, action.messages),
+        hasOlder: nextRuntime.hasOlder,
+        hasNewer: nextRuntime.hasNewer,
       };
     }
     case 'apply_appended_window': {
@@ -503,8 +518,8 @@ const messageWindowReducer = (
           ? state.firstItemIndex + trimmedFromOldCount
           : state.firstItemIndex,
         groupBreakBeforeIds: pruneGroupBreaksToMessages(state.groupBreakBeforeIds, action.messages),
-        hasOlder: trimmedFromOldCount > 0 ? true : state.hasOlder,
-        hasNewer: nextHasNewer,
+        hasOlder: nextRuntime.hasOlder,
+        hasNewer: nextRuntime.hasNewer,
         isAtPresent: nextHasNewer
           ? false
           : (action.isAtPresent ?? state.isAtPresent),

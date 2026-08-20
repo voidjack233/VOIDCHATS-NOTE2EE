@@ -372,12 +372,17 @@ async function createMeasuredContext(browser, viewportName) {
     serviceWorkers: 'block',
   });
   await installLocalDistRouting(context, config.baseUrl);
-  await context.addInitScript(() => {
+  await context.addInitScript(({ enableMessageGeometryDiagnostics }) => {
     try {
       localStorage.setItem('void_startup_diagnostics', '1');
+      if (enableMessageGeometryDiagnostics) {
+        localStorage.setItem('void:message-geometry-debug', '1');
+      }
     } catch {
       // Startup marks are supplemental; storage denial must not break the run.
     }
+  }, {
+    enableMessageGeometryDiagnostics: process.env.CHAT_PERF_GEOMETRY_TRACE === '1',
   });
   await context.addInitScript(installChatPerformanceCollector, {
     enableRestoreTrace: process.env.CHAT_PERF_RESTORE_TRACE === '1',

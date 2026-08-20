@@ -67,6 +67,14 @@ import {
 } from './messageTimelinePresentation';
 import { selectLiveMessageArrivals } from './liveMessageArrival';
 import { markStartupPerformanceOnce } from '../../../Services/Performance/startupPerformance';
+import {
+  captureMessageTimelineGeometry,
+  describeMessageGeometryTraits,
+  installMessageGeometryLayoutShiftObserver,
+  isMessageGeometryDiagnosticsEnabled,
+  recordMessageGeometryEvent,
+  type MessageGeometryTraits,
+} from './messageGeometryDiagnostics';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -161,6 +169,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   const loadingNewerRequestInFlightRef = useRef(false);
   const autofillOlderRequestInFlightRef = useRef(false);
   const messageHeightCacheRef = useRef<Map<string, number>>(new Map());
+  const messageGeometryTraitsRef = useRef<Map<string, MessageGeometryTraits>>(new Map());
+  const messageGeometryContextRef = useRef<Record<string, unknown>>({});
   const lastStableConversationScrollPositionRef = useRef<ConversationScrollPosition | null>(null);
   const historyLoadPausedUntilRef = useRef(0);
   const ownSendJumpRequestRef = useRef(ownSendJumpRequest);
@@ -273,6 +283,20 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
+  if (isMessageGeometryDiagnosticsEnabled()) {
+    messageGeometryTraitsRef.current = new Map(
+      visualMessages.map((message) => [
+        String(message.message_id),
+        describeMessageGeometryTraits(message, reactions[message.message_id]),
+      ]),
+    );
+  } else if (messageGeometryTraitsRef.current.size > 0) {
+    messageGeometryTraitsRef.current.clear();
+  }
+  const getMessageGeometryTraits = useCallback(
+    (messageId: string) => messageGeometryTraitsRef.current.get(messageId),
+    [],
+  );
   useEffect(() => {
     if (
       visualMessages.length > 0 &&
@@ -342,6 +366,46 @@ const MessageViewV2 = memo(function MessageViewV2({
     4,
     Math.ceil(renderedBottomSpacerHeight / historySkeletonRowHeight) + 1,
   );
+  messageGeometryContextRef.current = {
+    conversationId: conversation.id,
+    loading,
+    initialHydrationSettled,
+    loadingOlder,
+    loadingNewer,
+    hasOlder,
+    hasNewer,
+    isAtPresent,
+    historyTransactionActive: historyScrollTransactionActiveRef.current,
+    renderedTopSpacerHeight,
+    renderedBottomSpacerHeight,
+    topLogicalRangeHeight,
+    bottomLogicalRangeHeight,
+    firstRenderedMessageId: firstVisualMessageId || null,
+    lastRenderedMessageId: lastVisualMessageId || null,
+    capturedOlderAnchorId:
+      pendingOlderLoadScrollSnapshotRef.current?.anchorMessageId || null,
+    capturedNewerAnchorId:
+      pendingNewerLoadScrollSnapshotRef.current?.anchorMessageId || null,
+  };
+
+  useEffect(() => {
+    if (!scrollerElement || !isMessageGeometryDiagnosticsEnabled()) {
+      return undefined;
+    }
+
+    recordMessageGeometryEvent('message_timeline_mounted', {
+      timeline: captureMessageTimelineGeometry(
+        scrollerElement,
+        messageGeometryContextRef.current,
+      ),
+    });
+    return installMessageGeometryLayoutShiftObserver(() => (
+      captureMessageTimelineGeometry(
+        scrollerRef.current,
+        messageGeometryContextRef.current,
+      )
+    ));
+  }, [conversation.id, scrollerElement]);
 
   const {
     contextMenu,
@@ -762,7 +826,27 @@ const MessageViewV2 = memo(function MessageViewV2({
     historyScrollTransactionActiveRef,
     atBottomRef,
     showJumpToPresentRef,
+    getMessageGeometryTraits,
   });
+
+  useLayoutEffect(() => {
+    recordMessageGeometryEvent('message_timeline_render_commit', () => ({
+      timeline: captureMessageTimelineGeometry(
+        scrollerRef.current,
+        messageGeometryContextRef.current,
+      ),
+    }));
+  }, [
+    bottomLogicalRangeHeight,
+    firstVisualMessageId,
+    lastVisualMessageId,
+    loadingNewer,
+    loadingOlder,
+    renderedBottomSpacerHeight,
+    renderedTopSpacerHeight,
+    topLogicalRangeHeight,
+    visualMessages.length,
+  ]);
 
   useEffect(() => {
     const scroller = scrollerRef.current;

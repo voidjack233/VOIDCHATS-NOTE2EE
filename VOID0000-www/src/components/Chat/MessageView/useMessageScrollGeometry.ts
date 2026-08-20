@@ -1,4 +1,10 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
+import {
+  captureMessageTimelineGeometry,
+  isMessageGeometryDiagnosticsEnabled,
+  recordMessageGeometryEvent,
+} from './messageGeometryDiagnostics';
+import { resolveHistoryLogicalRangeGeometry } from './messageHistoryRangeGeometry';
 
 export type HistoryRangeStatus = 'idle' | 'loading' | 'loaded' | 'error';
 
@@ -62,12 +68,20 @@ export const useMessageScrollGeometry = ({
   maxPhysicalSpacerHeight = Number.POSITIVE_INFINITY,
   maxPhysicalBottomSpacerHeight,
 }: ScrollGeometryInput) => {
-  const topTrimmedSpacerHeight = hasOlder ? Math.max(0, topSpacerHeight) : 0;
-  const bottomTrimmedSpacerHeight = Math.max(0, bottomSpacerHeight);
-  const topEstimatedLoadingHeight = hasOlder && topTrimmedSpacerHeight <= 1 ? historyLogicalSlotHeight : 0;
-  const bottomEstimatedLoadingHeight = hasNewer && bottomTrimmedSpacerHeight <= 1 ? historyLogicalSlotHeight : 0;
-  const topLogicalRangeHeight = topTrimmedSpacerHeight + topEstimatedLoadingHeight;
-  const bottomLogicalRangeHeight = bottomTrimmedSpacerHeight + bottomEstimatedLoadingHeight;
+  const {
+    topTrimmedSpacerHeight,
+    bottomTrimmedSpacerHeight,
+    topEstimatedLoadingHeight,
+    bottomEstimatedLoadingHeight,
+    topLogicalRangeHeight,
+    bottomLogicalRangeHeight,
+  } = resolveHistoryLogicalRangeGeometry({
+    topSpacerHeight,
+    bottomSpacerHeight,
+    hasOlder,
+    hasNewer,
+    historyLogicalSlotHeight,
+  });
 
   const physicalTopSpacerLimit = enablePhysicalSpacerWindowing && Number.isFinite(maxPhysicalSpacerHeight)
     ? Math.max(0, maxPhysicalSpacerHeight)
@@ -87,6 +101,57 @@ export const useMessageScrollGeometry = ({
 
   const previousResetKeyRef = useRef(resetKey);
   const previousRenderedTopSpacerHeightRef = useRef<number | null>(null);
+  const previousGeometryRef = useRef<{
+    topLogicalRangeHeight: number;
+    bottomLogicalRangeHeight: number;
+    renderedTopSpacerHeight: number;
+    renderedBottomSpacerHeight: number;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    const previous = previousGeometryRef.current;
+    const next = {
+      topLogicalRangeHeight,
+      bottomLogicalRangeHeight,
+      renderedTopSpacerHeight,
+      renderedBottomSpacerHeight,
+    };
+    previousGeometryRef.current = next;
+
+    if (previousResetKeyRef.current !== resetKey) {
+      previousGeometryRef.current = next;
+      return;
+    }
+
+    const changed = !previous || Object.keys(next).some((key) => (
+      Math.abs(next[key as keyof typeof next] - previous[key as keyof typeof previous]) > 0.5
+    ));
+    if (!changed) return;
+
+    recordMessageGeometryEvent(previous ? 'history_spacer_geometry_commit' : 'history_spacer_geometry_initial', () => ({
+      resetKey,
+      previous,
+      next,
+      loadingOlder,
+      loadingNewer,
+      hasOlder,
+      hasNewer,
+      compensationBlocked: Boolean(scrollCompensationBlockerRef?.current),
+      timeline: captureMessageTimelineGeometry(scrollerRef?.current || null),
+    }));
+  }, [
+    bottomLogicalRangeHeight,
+    hasNewer,
+    hasOlder,
+    loadingNewer,
+    loadingOlder,
+    renderedBottomSpacerHeight,
+    renderedTopSpacerHeight,
+    resetKey,
+    scrollerRef,
+    scrollCompensationBlockerRef,
+    topLogicalRangeHeight,
+  ]);
 
   useLayoutEffect(() => {
     if (previousResetKeyRef.current !== resetKey) {
@@ -116,9 +181,24 @@ export const useMessageScrollGeometry = ({
       return;
     }
 
+    const before = isMessageGeometryDiagnosticsEnabled()
+      ? captureMessageTimelineGeometry(scroller, {
+          topSpacerDelta,
+          previousRenderedTopSpacerHeight,
+          renderedTopSpacerHeight,
+        })
+      : null;
     scroller.scrollTo({
       top: Math.max(0, scroller.scrollTop + topSpacerDelta),
     });
+    recordMessageGeometryEvent('history_top_spacer_scroll_compensation', () => ({
+      before,
+      after: captureMessageTimelineGeometry(scroller, {
+        topSpacerDelta,
+        previousRenderedTopSpacerHeight,
+        renderedTopSpacerHeight,
+      }),
+    }));
   }, [
     enablePhysicalSpacerWindowing,
     renderedTopSpacerHeight,

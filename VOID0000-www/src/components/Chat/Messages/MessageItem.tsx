@@ -492,6 +492,7 @@ const MessageItem = memo(function MessageItem({
   const textActionAnchorRef = useRef<HTMLDivElement | null>(null);
   const attachmentActionAnchorRef = useRef<HTMLDivElement | null>(null);
   const desktopActionRailRef = useRef<HTMLDivElement | null>(null);
+  const desktopActionRailActiveRef = useRef(false);
   const replyIndicatorRef = useRef<HTMLDivElement | null>(null);
   const editIndicatorRef = useRef<HTMLDivElement | null>(null);
   const touchStateRef = useRef<{
@@ -922,9 +923,32 @@ const MessageItem = memo(function MessageItem({
     </div>
   ) : null;
 
+  const hideDesktopActionRail = useCallback(() => {
+    if (!desktopActionRailActiveRef.current) {
+      return;
+    }
+
+    desktopActionRailActiveRef.current = false;
+    setIsHovered(false);
+    setDesktopActionRailStyle(null);
+  }, []);
+
+  const handleDesktopActionRailMouseMove = useCallback(() => {
+    if (
+      desktopActionRailActiveRef.current ||
+      isPending ||
+      isFailed ||
+      message.is_deleted
+    ) {
+      return;
+    }
+
+    desktopActionRailActiveRef.current = true;
+    setIsHovered(true);
+  }, [isFailed, isPending, message.is_deleted]);
+
   const updateDesktopActionRailPosition = useCallback(() => {
     if (!isHovered || isPending || isFailed || message.is_deleted) {
-      setDesktopActionRailStyle(null);
       return;
     }
 
@@ -981,18 +1005,29 @@ const MessageItem = memo(function MessageItem({
   }, [updateDesktopActionRailPosition]);
 
   useEffect(() => {
+    if (isPending || isFailed || message.is_deleted) {
+      hideDesktopActionRail();
+    }
+  }, [hideDesktopActionRail, isFailed, isPending, message.is_deleted]);
+
+  useEffect(() => {
     if (!isHovered || isPending || isFailed || message.is_deleted) return;
 
-    const handleReposition = () => updateDesktopActionRailPosition();
-
-    window.addEventListener('resize', handleReposition);
-    window.addEventListener('scroll', handleReposition, true);
+    window.addEventListener('resize', updateDesktopActionRailPosition);
+    window.addEventListener('scroll', hideDesktopActionRail, true);
 
     return () => {
-      window.removeEventListener('resize', handleReposition);
-      window.removeEventListener('scroll', handleReposition, true);
+      window.removeEventListener('resize', updateDesktopActionRailPosition);
+      window.removeEventListener('scroll', hideDesktopActionRail, true);
     };
-  }, [isFailed, isHovered, isPending, message.is_deleted, updateDesktopActionRailPosition]);
+  }, [
+    hideDesktopActionRail,
+    isFailed,
+    isHovered,
+    isPending,
+    message.is_deleted,
+    updateDesktopActionRailPosition,
+  ]);
 
   const desktopActionRail = !message.is_deleted && !isPending && !isFailed ? (
     <div
@@ -1101,7 +1136,7 @@ const MessageItem = memo(function MessageItem({
     return (
       <div
         data-message-id={message.message_id}
-        className={`px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
+        className={`px-2 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse transition-colors duration-300' : ''}`}
         style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
       >
         {showDateSeparator && (
@@ -1129,7 +1164,7 @@ const MessageItem = memo(function MessageItem({
   return (
     <div
       data-message-id={message.message_id}
-      className={`overflow-x-clip px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
+      className={`overflow-x-clip px-2 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse transition-colors duration-300' : ''}`}
       style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
     >
       {showDateSeparator && (
@@ -1172,10 +1207,8 @@ const MessageItem = memo(function MessageItem({
       )}
 
       <div
-        onMouseEnter={() => {
-          if (!isPending) setIsHovered(true);
-        }}
-        onMouseLeave={() => setIsHovered(false)}
+        onMouseMove={handleDesktopActionRailMouseMove}
+        onMouseLeave={hideDesktopActionRail}
         className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full ${rowIndent} ${isPending ? 'opacity-65 saturate-50' : ''}`}
       >
         {canSwipeReply && (

@@ -198,6 +198,41 @@ test('media loading cannot directly issue timeline scroll corrections', async ()
   assert.doesNotMatch(messageViewSource, /handleAttachmentLoad/);
 });
 
+test('message-row color transitions are scoped to jump highlighting', async () => {
+  const messageItemSource = await readFile(
+    new URL('../../../src/components/Chat/Messages/MessageItem.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.doesNotMatch(messageItemSource, /overflow-x-clip px-2 transition-colors duration-300/);
+  assert.doesNotMatch(messageItemSource, /className=\{`px-2 transition-colors duration-300/);
+  assert.match(
+    messageItemSource,
+    /isHighlighted \? '[^']*transition-colors duration-300' : ''/,
+  );
+});
+
+test('desktop action rail disarms on scroll and only re-arms from mouse movement', async () => {
+  const messageItemSource = await readFile(
+    new URL('../../../src/components/Chat/Messages/MessageItem.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(messageItemSource, /onMouseMove=\{handleDesktopActionRailMouseMove\}/);
+  assert.match(
+    messageItemSource,
+    /window\.addEventListener\('scroll', hideDesktopActionRail, true\)/,
+  );
+  assert.doesNotMatch(
+    messageItemSource,
+    /window\.addEventListener\('scroll', updateDesktopActionRailPosition, true\)/,
+  );
+  assert.match(
+    messageItemSource,
+    /window\.addEventListener\('resize', updateDesktopActionRailPosition\)/,
+  );
+});
+
 test('genuine initial loading without messages shows the initial skeleton policy', () => {
   assert.equal(shouldShowInitialMessageTimelineSkeleton({
     loading: true,

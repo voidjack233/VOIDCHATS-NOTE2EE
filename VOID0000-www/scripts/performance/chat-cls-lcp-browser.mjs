@@ -529,6 +529,9 @@ export function installChatPerformanceCollector({ enableRestoreTrace = false } =
         timelineSamples: state.timelineSamples,
         rowCounts: state.rowCounts,
         restoreTraces: state.restoreTraces,
+        messageGeometryEvents: Array.isArray(window.__VOID_MESSAGE_GEOMETRY_DEBUG__)
+          ? window.__VOID_MESSAGE_GEOMETRY_DEBUG__
+          : [],
         startupMarks: performance
           .getEntriesByType('mark')
           .filter((entry) => entry.name.startsWith('void:'))

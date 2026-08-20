@@ -1,5 +1,11 @@
 import { useLayoutEffect, type RefObject } from 'react';
 import type { Density } from '../../../Services/hooks/Settings/useTheme';
+import {
+  captureMessageTimelineGeometry,
+  isMessageGeometryDiagnosticsEnabled,
+  recordMessageGeometryEvent,
+  type MessageGeometryTraits,
+} from './messageGeometryDiagnostics';
 
 const MAX_MEASURED_MESSAGE_HEIGHTS = 360;
 
@@ -15,6 +21,7 @@ interface UseMessageRowMeasurementsOptions {
   historyScrollTransactionActiveRef: RefObject<boolean>;
   atBottomRef: RefObject<boolean>;
   showJumpToPresentRef: RefObject<boolean>;
+  getMessageGeometryTraits?: (messageId: string) => MessageGeometryTraits | undefined;
 }
 
 export function useMessageRowMeasurements({
@@ -29,6 +36,7 @@ export function useMessageRowMeasurements({
   historyScrollTransactionActiveRef,
   atBottomRef,
   showJumpToPresentRef,
+  getMessageGeometryTraits,
 }: UseMessageRowMeasurementsOptions) {
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -56,7 +64,7 @@ export function useMessageRowMeasurements({
       }
       measurementFrame = window.requestAnimationFrame(flushMeasurements);
     };
-    const measureElement = (element: HTMLElement) => {
+    const measureElement = (element: HTMLElement, source: 'initial' | 'resize') => {
       const messageId = element.dataset.messageId;
       if (!messageId) return false;
 
@@ -79,13 +87,29 @@ export function useMessageRowMeasurements({
         }
         pendingMeasurements.set(normalizedMessageId, measuredHeight);
         scheduleMeasurementFlush();
+        recordMessageGeometryEvent(
+          typeof previousHeight === 'number' ? 'message_row_resize' : 'message_row_measure_initial',
+          () => ({
+            messageId: normalizedMessageId,
+            source,
+            previousHeight: typeof previousHeight === 'number' ? previousHeight : null,
+            nextHeight: measuredHeight,
+            delta: typeof previousHeight === 'number' ? measuredHeight - previousHeight : null,
+            traits: getMessageGeometryTraits?.(normalizedMessageId) || null,
+            timeline: captureMessageTimelineGeometry(scroller, {
+              historyTransactionActive: historyScrollTransactionActiveRef.current,
+              atBottom: atBottomRef.current,
+              showJumpToPresent: showJumpToPresentRef.current,
+            }),
+          }),
+        );
         return true;
       }
 
       return false;
     };
 
-    elements.forEach(measureElement);
+    elements.forEach((element) => measureElement(element, 'initial'));
 
     if (typeof ResizeObserver === 'undefined') {
       return () => {
@@ -99,22 +123,44 @@ export function useMessageRowMeasurements({
       let rowHeightChanged = false;
       entries.forEach((entry) => {
         if (entry.target instanceof HTMLElement) {
-          rowHeightChanged = measureElement(entry.target) || rowHeightChanged;
+          rowHeightChanged = measureElement(entry.target, 'resize') || rowHeightChanged;
         }
       });
 
       if (rowHeightChanged) {
+        const beforeCorrection = isMessageGeometryDiagnosticsEnabled()
+          ? captureMessageTimelineGeometry(scroller, {
+              historyTransactionActive: historyScrollTransactionActiveRef.current,
+              atBottom: atBottomRef.current,
+              showJumpToPresent: showJumpToPresentRef.current,
+            })
+          : null;
+        let correction: 'pin_bottom' | 'restore_anchor' | 'none' = 'none';
+        let corrected = false;
         if (atBottomRef.current && !historyScrollTransactionActiveRef.current) {
           // Reactions and late content can grow the final row without adding a
           // message. Keep a reader who was at present pinned to the new bottom.
           scroller.scrollTop = scroller.scrollHeight;
+          correction = 'pin_bottom';
+          corrected = true;
         } else if (
           historyScrollTransactionActiveRef.current ||
           !atBottomRef.current ||
           showJumpToPresentRef.current
         ) {
-          restoreViewportAnchorLock();
+          correction = 'restore_anchor';
+          corrected = restoreViewportAnchorLock();
         }
+        recordMessageGeometryEvent('message_row_resize_correction', () => ({
+          correction,
+          corrected,
+          before: beforeCorrection,
+          after: captureMessageTimelineGeometry(scroller, {
+            historyTransactionActive: historyScrollTransactionActiveRef.current,
+            atBottom: atBottomRef.current,
+            showJumpToPresent: showJumpToPresentRef.current,
+          }),
+        }));
       }
     });
 
@@ -129,6 +175,7 @@ export function useMessageRowMeasurements({
     atBottomRef,
     density,
     firstVisualMessageId,
+    getMessageGeometryTraits,
     historyScrollTransactionActiveRef,
     lastVisualMessageId,
     messageHeightCacheRef,

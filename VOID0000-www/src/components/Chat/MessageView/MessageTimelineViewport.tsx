@@ -59,6 +59,7 @@ export default function MessageTimelineViewport({
       {/* Older logical range: lets fast scroll enter unloaded history while the real batch is fetched. */}
       {topLogicalRangeHeight > 1 && (
         <div
+          data-message-older-range
           className="relative flex w-full items-start justify-center"
           style={{ height: `${renderedTopSpacerHeight}px` }}
         >

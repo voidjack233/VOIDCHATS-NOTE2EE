@@ -1,4 +1,9 @@
 import { useEffect, type MutableRefObject, type RefObject } from 'react';
+import {
+  captureMessageTimelineGeometry,
+  isMessageGeometryDiagnosticsEnabled,
+  recordMessageGeometryEvent,
+} from './messageGeometryDiagnostics';
 
 interface UseMessageViewportResizeObserverOptions {
   scrollerRef: RefObject<HTMLDivElement | null>;
@@ -57,6 +62,13 @@ export function useMessageViewportResizeObserver({
     }
 
     const observer = new ResizeObserver(() => {
+      const before = isMessageGeometryDiagnosticsEnabled()
+        ? captureMessageTimelineGeometry(scroller, {
+            historyTransactionActive: historyScrollTransactionActiveRef.current,
+            atBottom: atBottomRef.current,
+            showJumpToPresent: showJumpToPresentRef.current,
+          })
+        : null;
       const wasAtBottom = atBottomRef.current;
       const restoredInitialPosition = attemptInitialBottomRestore();
       void maybeAutofillOlder();
@@ -77,6 +89,15 @@ export function useMessageViewportResizeObserver({
         restoreViewportAnchorLock();
       }
       syncScrollState();
+      recordMessageGeometryEvent('message_viewport_resize_correction', () => ({
+        correction,
+        before,
+        after: captureMessageTimelineGeometry(scroller, {
+          historyTransactionActive: historyScrollTransactionActiveRef.current,
+          atBottom: atBottomRef.current,
+          showJumpToPresent: showJumpToPresentRef.current,
+        }),
+      }));
     });
 
     observer.observe(scroller);

@@ -17,8 +17,31 @@ import {
   type NewerHistoryLoadScrollSnapshot,
   type ViewportAnchorLock,
 } from './historyScrollAnchors';
+import {
+  captureMessageTimelineGeometry,
+  isMessageGeometryDiagnosticsEnabled,
+  recordMessageGeometryEvent,
+} from './messageGeometryDiagnostics';
 
 const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
+
+const summarizeHistorySnapshot = (
+  snapshot: HistoryLoadScrollSnapshot | NewerHistoryLoadScrollSnapshot | null,
+) => snapshot ? {
+  scrollHeight: snapshot.scrollHeight,
+  scrollTop: snapshot.scrollTop,
+  anchorMessageId: snapshot.anchorMessageId,
+  anchorOffsetTop: snapshot.anchorOffsetTop,
+  readyToRestore: snapshot.readyToRestore,
+  rangeReplacement: snapshot.rangeReplacement ? {
+    direction: snapshot.rangeReplacement.direction,
+    seamMessageId: snapshot.rangeReplacement.seamMessageId,
+    mapped: snapshot.rangeReplacement.mapped,
+    sourceStart: snapshot.rangeReplacement.sourceStart,
+    sourceEnd: snapshot.rangeReplacement.sourceEnd,
+    anchor: snapshot.rangeReplacement.anchor,
+  } : null,
+} : null;
 
 interface ScrollState {
   atBottom: boolean;
@@ -116,6 +139,10 @@ export function useMessageHistoryViewportRestoration({
         !pendingNewerLoadScrollSnapshotRef.current
       ) {
         historyScrollTransactionActiveRef.current = false;
+        recordMessageGeometryEvent('history_transaction_finished', () => ({
+          resetKey,
+          timeline: captureMessageTimelineGeometry(scrollerRef.current),
+        }));
       }
     });
   }, [
@@ -123,6 +150,8 @@ export function useMessageHistoryViewportRestoration({
     historyScrollTransactionActiveRef,
     pendingNewerLoadScrollSnapshotRef,
     pendingOlderLoadScrollSnapshotRef,
+    resetKey,
+    scrollerRef,
   ]);
 
   useEffect(() => {
@@ -184,6 +213,15 @@ export function useMessageHistoryViewportRestoration({
     } else {
       captureViewportAnchorLock(scroller);
     }
+    recordMessageGeometryEvent('history_load_begin', () => ({
+      resetKey,
+      direction: 'older',
+      snapshot: summarizeHistorySnapshot(snapshot),
+      timeline: captureMessageTimelineGeometry(scroller, {
+        renderedTopSpacerHeight,
+        renderedBottomSpacerHeight,
+      }),
+    }));
     return snapshot;
   }, [
     captureViewportAnchorLock,
@@ -194,7 +232,9 @@ export function useMessageHistoryViewportRestoration({
     historySkeletonRowHeight,
     isOlderRangeVisible,
     pendingOlderLoadScrollSnapshotRef,
+    renderedBottomSpacerHeight,
     renderedTopSpacerHeight,
+    resetKey,
     scrollerRef,
     viewportAnchorLockRef,
   ]);
@@ -259,6 +299,15 @@ export function useMessageHistoryViewportRestoration({
     } else {
       captureViewportAnchorLock(scroller);
     }
+    recordMessageGeometryEvent('history_load_begin', () => ({
+      resetKey,
+      direction: 'newer',
+      snapshot: summarizeHistorySnapshot(snapshot),
+      timeline: captureMessageTimelineGeometry(scroller, {
+        renderedTopSpacerHeight,
+        renderedBottomSpacerHeight,
+      }),
+    }));
     return snapshot;
   }, [
     captureViewportAnchorLock,
@@ -269,7 +318,9 @@ export function useMessageHistoryViewportRestoration({
     isNewerRangeVisible,
     lastVisualMessageId,
     pendingNewerLoadScrollSnapshotRef,
+    renderedTopSpacerHeight,
     renderedBottomSpacerHeight,
+    resetKey,
     scrollerRef,
     viewportAnchorLockRef,
   ]);
@@ -374,6 +425,22 @@ export function useMessageHistoryViewportRestoration({
       return false;
     }
 
+    const before = isMessageGeometryDiagnosticsEnabled()
+      ? captureMessageTimelineGeometry(scroller)
+      : null;
+    const finishRestore = (strategy: string, restored: boolean) => {
+      recordMessageGeometryEvent('history_anchor_restore', () => ({
+        resetKey,
+        direction: 'older',
+        strategy,
+        restored,
+        snapshot: summarizeHistorySnapshot(snapshot),
+        before,
+        after: captureMessageTimelineGeometry(scroller),
+      }));
+      return restored;
+    };
+
     const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
     if (
       shouldRestoreOlderHistoryByScrollHeight(snapshot) &&
@@ -381,7 +448,7 @@ export function useMessageHistoryViewportRestoration({
     ) {
       scroller.scrollTop = Math.max(0, snapshot.scrollTop + scrollHeightDelta);
       syncScrollState();
-      return true;
+      return finishRestore('scroll_height_delta_without_anchor', true);
     }
 
     const replacement = snapshot.rangeReplacement;
@@ -422,38 +489,54 @@ export function useMessageHistoryViewportRestoration({
 
       if (replacement.mapped) {
         syncScrollState();
-        return true;
+        return finishRestore('range_replacement', true);
       }
 
-      return false;
+      return finishRestore('range_replacement_waiting_for_rows', false);
     }
 
     if (!hasOlderRef.current && snapshot.scrollTop <= olderTopExhaustionThreshold) {
       scroller.scrollTop = 0;
       syncScrollState();
-      return true;
+      return finishRestore('older_range_exhausted', true);
     }
 
     if (restoreVisibleMessageAnchor(scroller, snapshot)) {
       syncScrollState();
-      return true;
+      return finishRestore('visible_message_anchor', true);
     }
 
     if (Math.abs(scrollHeightDelta) > 0.5) {
       scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
       syncScrollState();
-      return true;
+      return finishRestore('scroll_height_delta_fallback', true);
     }
 
     syncScrollState();
-    return true;
-  }, [hasOlderRef, olderTopExhaustionThreshold, scrollerRef, syncScrollState]);
+    return finishRestore('no_geometry_delta', true);
+  }, [hasOlderRef, olderTopExhaustionThreshold, resetKey, scrollerRef, syncScrollState]);
 
   const restoreNewerHistoryLoadScrollSnapshot = useCallback((snapshot: NewerHistoryLoadScrollSnapshot) => {
     const scroller = scrollerRef.current;
     if (!scroller) {
       return false;
     }
+
+    const before = isMessageGeometryDiagnosticsEnabled()
+      ? captureMessageTimelineGeometry(scroller)
+      : null;
+    const finishRestore = (strategy: string, restored: boolean) => {
+      recordMessageGeometryEvent('history_anchor_restore', () => ({
+        resetKey,
+        direction: 'newer',
+        strategy,
+        restored,
+        snapshot: summarizeHistorySnapshot(snapshot),
+        before,
+        after: captureMessageTimelineGeometry(scroller),
+      }));
+      return restored;
+    };
 
     const replacement = snapshot.rangeReplacement;
     if (replacement) {
@@ -493,15 +576,15 @@ export function useMessageHistoryViewportRestoration({
 
       if (replacement.mapped) {
         syncScrollState();
-        return true;
+        return finishRestore('range_replacement', true);
       }
 
-      return false;
+      return finishRestore('range_replacement_waiting_for_rows', false);
     }
 
     if (restoreVisibleMessageAnchor(scroller, snapshot)) {
       syncScrollState();
-      return true;
+      return finishRestore('visible_message_anchor', true);
     }
 
     for (const anchor of snapshot.fallbackAnchors) {
@@ -510,7 +593,7 @@ export function useMessageHistoryViewportRestoration({
         anchorOffsetTop: anchor.offsetTop,
       })) {
         syncScrollState();
-        return true;
+        return finishRestore('fallback_visible_message_anchor', true);
       }
     }
 
@@ -519,12 +602,19 @@ export function useMessageHistoryViewportRestoration({
       scroller.scrollHeight - scroller.clientHeight - snapshot.distanceFromBottom,
     );
     syncScrollState();
-    return true;
-  }, [hasNewerRef, scrollerRef, syncScrollState]);
+    return finishRestore('distance_from_bottom_fallback', true);
+  }, [hasNewerRef, resetKey, scrollerRef, syncScrollState]);
 
   const loadOlderPreservingViewport = useCallback(async () => {
     const snapshot = captureHistoryLoadScrollSnapshot();
     const didLoad = await loadOlder();
+    recordMessageGeometryEvent('history_load_resolved', () => ({
+      resetKey,
+      direction: 'older',
+      didLoad: Boolean(didLoad),
+      snapshot: summarizeHistorySnapshot(snapshot),
+      timeline: captureMessageTimelineGeometry(scrollerRef.current),
+    }));
     const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
     setOlderRangeError(didLoad === false && !isHistoryPaused);
     if (didLoad && snapshot && pendingOlderLoadScrollSnapshotRef.current === snapshot) {
@@ -534,6 +624,12 @@ export function useMessageHistoryViewportRestoration({
       pendingOlderLoadScrollSnapshotRef.current = null;
       if (!pendingNewerLoadScrollSnapshotRef.current) {
         historyScrollTransactionActiveRef.current = false;
+        recordMessageGeometryEvent('history_transaction_finished', () => ({
+          resetKey,
+          direction: 'older',
+          reason: 'load_not_committed',
+          timeline: captureMessageTimelineGeometry(scrollerRef.current),
+        }));
       }
     }
   }, [
@@ -543,12 +639,21 @@ export function useMessageHistoryViewportRestoration({
     loadOlder,
     pendingNewerLoadScrollSnapshotRef,
     pendingOlderLoadScrollSnapshotRef,
+    resetKey,
+    scrollerRef,
     setOlderRangeError,
   ]);
 
   const loadNewerPreservingViewport = useCallback(async () => {
     const snapshot = captureNewerHistoryLoadScrollSnapshot();
     const didLoad = await loadNewer();
+    recordMessageGeometryEvent('history_load_resolved', () => ({
+      resetKey,
+      direction: 'newer',
+      didLoad: Boolean(didLoad),
+      snapshot: summarizeHistorySnapshot(snapshot),
+      timeline: captureMessageTimelineGeometry(scrollerRef.current),
+    }));
     const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
     setNewerRangeError(didLoad === false && !isHistoryPaused);
     if (didLoad && snapshot && pendingNewerLoadScrollSnapshotRef.current === snapshot) {
@@ -558,6 +663,12 @@ export function useMessageHistoryViewportRestoration({
       pendingNewerLoadScrollSnapshotRef.current = null;
       if (!pendingOlderLoadScrollSnapshotRef.current) {
         historyScrollTransactionActiveRef.current = false;
+        recordMessageGeometryEvent('history_transaction_finished', () => ({
+          resetKey,
+          direction: 'newer',
+          reason: 'load_not_committed',
+          timeline: captureMessageTimelineGeometry(scrollerRef.current),
+        }));
       }
     }
   }, [
@@ -567,6 +678,8 @@ export function useMessageHistoryViewportRestoration({
     loadNewer,
     pendingNewerLoadScrollSnapshotRef,
     pendingOlderLoadScrollSnapshotRef,
+    resetKey,
+    scrollerRef,
     setNewerRangeError,
   ]);
 
@@ -582,6 +695,14 @@ export function useMessageHistoryViewportRestoration({
     let restoredHistoryViewport = false;
     const olderSnapshot = pendingOlderLoadScrollSnapshotRef.current;
     const newerSnapshot = pendingNewerLoadScrollSnapshotRef.current;
+    if (olderSnapshot || newerSnapshot) {
+      recordMessageGeometryEvent('history_commit_before_restore', () => ({
+        resetKey,
+        olderSnapshot: summarizeHistorySnapshot(olderSnapshot),
+        newerSnapshot: summarizeHistorySnapshot(newerSnapshot),
+        timeline: captureMessageTimelineGeometry(scroller),
+      }));
+    }
     viewportAnchorRestoreInProgressRef.current = Boolean(olderSnapshot || newerSnapshot);
 
     try {
@@ -621,6 +742,14 @@ export function useMessageHistoryViewportRestoration({
       cancelHistoryTransactionRelease();
       historyScrollTransactionActiveRef.current = false;
     }
+    if (olderSnapshot || newerSnapshot) {
+      recordMessageGeometryEvent('history_commit_after_restore', () => ({
+        resetKey,
+        restoredHistoryViewport,
+        hasPendingHistorySnapshot,
+        timeline: captureMessageTimelineGeometry(scroller),
+      }));
+    }
   }, [
     cancelHistoryTransactionRelease,
     captureViewportAnchorLock,
@@ -628,6 +757,7 @@ export function useMessageHistoryViewportRestoration({
     pendingNewerLoadScrollSnapshotRef,
     pendingOlderLoadScrollSnapshotRef,
     releaseHistoryTransactionAfterScrollEvent,
+    resetKey,
     restoreNewerHistoryLoadScrollSnapshot,
     restoreHistoryLoadScrollSnapshot,
     scrollerRef,
