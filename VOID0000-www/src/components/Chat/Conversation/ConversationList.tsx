@@ -7,10 +7,13 @@ import {
   applyLiveMessageDeletePreview,
   applyLiveMessageEditPreview,
   applyLiveMessagePreview,
-  getConversationPreview,
+  formatConversationPreview,
   hydrateConversationPreviewsFromStore,
+  reconcileConversationPreviewsFromServer,
+  resolveConversationPreview,
   subscribeConversationPreviewCache,
 } from '../../../Services/Chat/conversationPreviewCache';
+import { applyConversationMessageCreate } from '../../../Services/Chat/conversationListRealtime';
 import {
   playIncomingMessageSound,
   primeIncomingMessageSound,
@@ -182,17 +185,23 @@ const ConversationList = ({
     primeIncomingMessageSound();
   }, []);
 
+  const previewHydrationKey = conversations
+    .map((conversation) => conversation.id)
+    .sort()
+    .join('|');
+
   useEffect(() => {
-    if (conversations.length === 0) return;
+    if (!previewHydrationKey) return;
     void hydrateConversationPreviewsFromStore(
-      conversations.map((conversation) => conversation.id),
+      previewHydrationKey.split('|'),
       currentUserId || null,
     );
-  }, [conversations, currentUserId]);
+  }, [currentUserId, previewHydrationKey]);
 
   const loadConversations = async (options?: { force?: boolean }) => {
     try {
       const convos = await fetchConversationList(currentUserIdRef.current, options?.force === true);
+      reconcileConversationPreviewsFromServer(convos, currentUserIdRef.current);
       commitConversations(convos);
     } catch (err) {
       console.error('Failed to load conversations:', err);
@@ -290,40 +299,28 @@ const ConversationList = ({
 
       const knownConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
       const nextMessageId = typeof data?.message_id === 'string' ? data.message_id : null;
+      const livePreview = formatConversationPreview(data, currentUserIdValue);
 
-      commitConversations((prev) => {
-        const idx = prev.findIndex((conversation) => conversation.id === conversationId);
-        if (idx === -1) return prev;
-
-        const next = [...prev];
-        const conversation = next.splice(idx, 1)[0] as Conversation;
-        const isActiveConversation = activeConversationId === conversationId;
-        const unreadCount = isSender || isActiveConversation
-          ? 0
-          : Math.max(0, (conversation.unread_count ?? 0) + 1);
-
-        next.unshift({
-          ...conversation,
-          updated_at: data?.created_at || new Date().toISOString(),
-          unread_count: unreadCount,
-          last_message_id: nextMessageId || conversation.last_message_id || null,
-          last_message_sender_id: data?.sender_id || conversation.last_message_sender_id || null,
-          last_read_message_id: isSender
-            ? nextMessageId || conversation.last_read_message_id
-            : conversation.last_read_message_id,
-        });
-
-        return next;
+      void applyLiveMessagePreview(data, currentUserIdValue).catch((error) => {
+        console.warn('[CONVERSATION_LIST] failed to persist live preview', error);
       });
+
+      commitConversations((prev) => applyConversationMessageCreate({
+        conversations: prev,
+        conversationId,
+        messageId: nextMessageId,
+        senderId: typeof data?.sender_id === 'string' ? data.sender_id : null,
+        createdAt: data?.created_at || new Date().toISOString(),
+        preview: livePreview,
+        currentUserId: currentUserIdValue,
+        activeConversationId,
+      }));
 
       if (!isSender && activeConversationId === conversationId && nextMessageId && knownConversation) {
         const routeId = knownConversation.public_id || knownConversation.id;
         void markConversationAsRead(knownConversation.id, routeId, nextMessageId);
       }
 
-      void applyLiveMessagePreview(data, currentUserIdValue).catch((error) => {
-        console.warn('[CONVERSATION_LIST] failed to update live preview', error);
-      });
     };
 
     const handleConversationUpdate = (data: any) => {
@@ -335,6 +332,7 @@ const ConversationList = ({
         return;
       }
 
+      reconcileConversationPreviewsFromServer([updated], currentUserIdRef.current);
       commitConversations((prev) =>
         prev.map((conversation) => (conversation.id === updated.id ? { ...conversation, ...updated } : conversation))
       );
@@ -488,8 +486,7 @@ const ConversationList = ({
   };
 
   const getPreview = (conversation: Conversation) => {
-    const preview = getConversationPreview(conversation.id);
-    return preview || null;
+    return resolveConversationPreview(conversation, currentUserId || null);
   };
 
   const getInitial = (name: string | null | undefined) => {

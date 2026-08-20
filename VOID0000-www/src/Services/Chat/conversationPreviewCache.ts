@@ -1,70 +1,94 @@
-import type { Message } from './chatTypes';
+import type { Conversation, Message } from './chatTypes';
 import { messageStore, type LocalMessage } from './chatStore';
 import { messageSync } from './chatSync';
+import {
+  createMessagePreviewCandidate,
+  createServerPreviewCandidate,
+  formatConversationPreview,
+  formatServerConversationPreview,
+  VersionedConversationPreviewState,
+  type ConversationPreviewEntry,
+} from './conversationPreviewState';
 
-type PreviewSource = Pick<
-  Message | LocalMessage,
-  'sender_id' | 'content' | 'attachments' | 'is_deleted' | 'message_type'
+type LiveMessageCreateEvent = Partial<Message> & Pick<
+  Message,
+  'conversation_id' | 'message_id' | 'sender_id'
+>;
+type LiveMessageMutationEvent = Partial<Message> & Pick<
+  Message,
+  'conversation_id' | 'message_id'
 >;
 
-type LiveMessageEvent = Partial<Message> & Pick<Message, 'conversation_id' | 'message_id' | 'sender_id'>;
+interface StoreHydrationOptions {
+  aliases?: Array<string | null | undefined>;
+  expectedMutationMessageId?: string;
+  mutationRevisionAt?: string;
+}
 
-const cache = new Map<string, string | null>();
+const state = new VersionedConversationPreviewState();
 const listeners = new Set<() => void>();
-const MAX_PREVIEW_LENGTH = 120;
-
-const normalizeText = (value?: string | null) => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  return trimmed || null;
-};
 
 function emitChange() {
   listeners.forEach((listener) => listener());
 }
 
-function truncatePreview(value: string): string {
-  const compact = value.replace(/\s+/g, ' ').trim();
-  return compact.length <= MAX_PREVIEW_LENGTH
-    ? compact
-    : `${compact.slice(0, MAX_PREVIEW_LENGTH - 1).trimEnd()}...`;
+function commitPreview(
+  conversationIds: Array<string | null | undefined> | string | null | undefined,
+  candidate: Parameters<VersionedConversationPreviewState['commit']>[1],
+) {
+  if (state.commit(conversationIds, candidate)) emitChange();
 }
 
-export function formatConversationPreview(
-  message: PreviewSource | null | undefined,
-  currentUserId?: string | null,
-): string | null {
-  if (!message) return null;
-  if (message.is_deleted) return 'Message deleted';
-
-  const attachmentCount = message.attachments?.length || 0;
-  const isSender = Boolean(currentUserId && message.sender_id === currentUserId);
-  if (attachmentCount > 0) {
-    if (isSender) return attachmentCount > 1 ? `You sent ${attachmentCount} attachments` : 'You sent an attachment';
-    return attachmentCount > 1 ? `Sent ${attachmentCount} attachments` : 'Sent an attachment';
-  }
-
-  const content = normalizeText(message.content);
-  if (!content) return null;
-  const preview = truncatePreview(content);
-  return isSender && message.message_type !== 'system' ? `You: ${preview}` : preview;
+export function getConversationPreviewEntry(
+  conversationId: string | null | undefined,
+): ConversationPreviewEntry | null {
+  return state.get(conversationId);
 }
 
 export function getConversationPreview(conversationId: string | null | undefined): string | null {
-  return conversationId ? cache.get(conversationId) ?? null : null;
+  return state.get(conversationId)?.preview ?? null;
 }
 
-export function setConversationPreview(
-  conversationIds: Array<string | null | undefined> | string | null | undefined,
-  preview: string | null,
+export function resolveConversationPreview(
+  conversation: Conversation,
+  currentUserId?: string | null,
+): string | null {
+  const cached = state.get(conversation.id) || state.get(conversation.public_id);
+  return cached && cached.viewerId === (currentUserId || null)
+    ? cached.preview
+    : formatServerConversationPreview(conversation, currentUserId);
+}
+
+export function reconcileConversationPreviewsFromServer(
+  conversations: Conversation[],
+  currentUserId?: string | null,
 ): void {
-  const ids = Array.isArray(conversationIds) ? conversationIds : [conversationIds];
   let changed = false;
-  ids.forEach((id) => {
-    if (!id || (cache.get(id) ?? null) === preview) return;
-    cache.set(id, preview);
-    changed = true;
+  conversations.forEach((conversation) => {
+    if (
+      typeof conversation.last_message_id === 'undefined' ||
+      typeof conversation.last_message_sender_id === 'undefined' ||
+      typeof conversation.last_message_preview === 'undefined'
+    ) {
+      return;
+    }
+    changed = state.commit(
+      [conversation.id, conversation.public_id],
+      createServerPreviewCandidate(conversation, currentUserId),
+    ) || changed;
   });
   if (changed) emitChange();
+}
+
+export function setConversationPreviewFromMessage(
+  conversationIds: Array<string | null | undefined> | string | null | undefined,
+  message: Message,
+  currentUserId?: string | null,
+): void {
+  commitPreview(
+    conversationIds,
+    createMessagePreviewCandidate(message, currentUserId, 'view'),
+  );
 }
 
 export function subscribeConversationPreviewCache(listener: () => void): () => void {
@@ -75,9 +99,34 @@ export function subscribeConversationPreviewCache(listener: () => void): () => v
 export async function hydrateConversationPreviewFromStore(
   conversationId: string,
   currentUserId?: string | null,
+  options: StoreHydrationOptions = {},
 ): Promise<void> {
   const { messages } = await messageStore.getMessages(conversationId, { limit: 1 });
-  setConversationPreview(conversationId, formatConversationPreview(messages[0] || null, currentUserId));
+  const latestMessage = messages[0] || null;
+  const ids = [conversationId, ...(options.aliases || [])];
+
+  if (!latestMessage) {
+    commitPreview(ids, {
+      messageId: null,
+      createdAt: null,
+      revisionAt: null,
+      preview: null,
+      source: 'store',
+      viewerId: currentUserId || null,
+    });
+    return;
+  }
+
+  const isExpectedMutation = latestMessage.message_id === options.expectedMutationMessageId;
+  commitPreview(
+    ids,
+    createMessagePreviewCandidate(
+      latestMessage,
+      currentUserId,
+      isExpectedMutation ? 'mutation' : 'store',
+      isExpectedMutation ? options.mutationRevisionAt : undefined,
+    ),
+  );
 }
 
 export async function hydrateConversationPreviewsFromStore(
@@ -94,7 +143,7 @@ export async function hydrateConversationPreviewsFromStore(
   ));
 }
 
-function toLocalMessage(message: LiveMessageEvent): LocalMessage {
+function toLocalMessage(message: LiveMessageCreateEvent): LocalMessage {
   return {
     conversation_id: message.conversation_id,
     message_id: message.message_id,
@@ -115,45 +164,58 @@ function toLocalMessage(message: LiveMessageEvent): LocalMessage {
 }
 
 export async function applyLiveMessagePreview(
-  message: LiveMessageEvent,
+  message: LiveMessageCreateEvent,
   currentUserId?: string | null,
 ): Promise<string | null> {
   const localMessage = toLocalMessage(message);
+  const candidate = createMessagePreviewCandidate(localMessage, currentUserId, 'live');
+
+  // Realtime owns the visible preview immediately; IndexedDB persistence is not
+  // allowed to delay it or let an older hydration win afterward.
+  commitPreview([message.conversation_id, message.conversation_public_id], candidate);
+
   await messageSync.storeIncomingMessage(localMessage, {
     source: message.sender_id === currentUserId
       ? 'own_send'
       : 'incoming_realtime',
   });
-  const preview = formatConversationPreview(localMessage, currentUserId);
-  setConversationPreview([message.conversation_id, message.conversation_public_id], preview);
-  return preview;
+  return candidate.preview;
 }
 
 export async function applyLiveMessageEditPreview(
-  message: LiveMessageEvent,
+  message: LiveMessageMutationEvent,
   currentUserId?: string | null,
 ): Promise<void> {
+  const mutationRevisionAt = message.edited_at || new Date().toISOString();
   await messageSync.handleEdit(message.conversation_id, message.message_id, {
     content: message.content ?? '',
-    edited_at: message.edited_at || new Date().toISOString(),
+    edited_at: mutationRevisionAt,
     message_type: message.message_type || 'text',
     forwarded: message.forwarded,
     mentions: message.mentions,
     link_preview: message.link_preview,
   });
-  await hydrateConversationPreviewFromStore(message.conversation_id, currentUserId);
-  if (message.conversation_public_id) {
-    setConversationPreview(message.conversation_public_id, getConversationPreview(message.conversation_id));
-  }
+  await hydrateConversationPreviewFromStore(message.conversation_id, currentUserId, {
+    aliases: [message.conversation_public_id],
+    expectedMutationMessageId: message.message_id,
+    mutationRevisionAt,
+  });
 }
 
 export async function applyLiveMessageDeletePreview(
-  message: Pick<LiveMessageEvent, 'conversation_id' | 'conversation_public_id' | 'message_id'>,
+  message: Pick<
+    LiveMessageMutationEvent,
+    'conversation_id' | 'conversation_public_id' | 'message_id'
+  >,
   currentUserId?: string | null,
 ): Promise<void> {
+  const mutationRevisionAt = new Date().toISOString();
   await messageSync.handleDelete(message.conversation_id, message.message_id);
-  await hydrateConversationPreviewFromStore(message.conversation_id, currentUserId);
-  if (message.conversation_public_id) {
-    setConversationPreview(message.conversation_public_id, getConversationPreview(message.conversation_id));
-  }
+  await hydrateConversationPreviewFromStore(message.conversation_id, currentUserId, {
+    aliases: [message.conversation_public_id],
+    expectedMutationMessageId: message.message_id,
+    mutationRevisionAt,
+  });
 }
+
+export { formatConversationPreview };

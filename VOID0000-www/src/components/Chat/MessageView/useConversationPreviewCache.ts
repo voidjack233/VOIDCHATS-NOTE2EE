@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { Conversation, Message } from '../../../Services/Chat/chatService';
-import { formatConversationPreview, setConversationPreview } from '../../../Services/Chat/conversationPreviewCache';
+import { setConversationPreviewFromMessage } from '../../../Services/Chat/conversationPreviewCache';
 
 export function useConversationPreviewCache({
   conversation,
@@ -30,9 +30,10 @@ export function useConversationPreviewCache({
       return;
     }
 
-    setConversationPreview(
+    setConversationPreviewFromMessage(
       [conversation.id, conversation.public_id],
-      formatConversationPreview(latestMessage, currentUserId),
+      latestMessage,
+      currentUserId,
     );
   }, [
     bottomSpacerHeight,
