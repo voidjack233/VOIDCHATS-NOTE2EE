@@ -2,6 +2,7 @@ defmodule VoidGateway.ConnectionRegistryTest do
   use ExUnit.Case, async: false
 
   alias VoidGateway.ConnectionRegistry
+  alias VoidGateway.EventDispatcher
 
   test "aggregates activity across every socket for a user" do
     user_id = "presence-user"
@@ -69,9 +70,50 @@ defmodule VoidGateway.ConnectionRegistryTest do
            }
   end
 
+  test "presence mode commands reach every live socket without changing activity" do
+    user_id = "presence-mode-user"
+
+    ConnectionRegistry.register(user_id, "device-a", "tab-a", self(), "online")
+
+    second_socket = forwarding_socket(self())
+    ConnectionRegistry.register(user_id, "device-b", "tab-b", second_socket, "idle")
+
+    assert :ok =
+             EventDispatcher.dispatch(%{
+               "type" => "command",
+               "command" => "updatePresenceMode",
+               "data" => %{"userId" => user_id, "mode" => "dnd"}
+             })
+
+    assert_receive {:presence_mode_updated, "dnd"}
+    assert_receive {:forwarded, {:presence_mode_updated, "dnd"}}
+
+    assert ConnectionRegistry.presence_summary(user_id) == %{
+             status: "online",
+             active_count: 2
+           }
+
+    ConnectionRegistry.unregister(user_id, "device-a", self())
+    ConnectionRegistry.unregister(user_id, "device-b", second_socket)
+  end
+
   defp socket_process do
     pid = spawn(fn -> Process.sleep(:infinity) end)
     on_exit(fn -> Process.exit(pid, :kill) end)
     pid
+  end
+
+  defp forwarding_socket(parent) do
+    pid = spawn(fn -> forwarding_loop(parent) end)
+    on_exit(fn -> Process.exit(pid, :kill) end)
+    pid
+  end
+
+  defp forwarding_loop(parent) do
+    receive do
+      message ->
+        send(parent, {:forwarded, message})
+        forwarding_loop(parent)
+    end
   end
 end

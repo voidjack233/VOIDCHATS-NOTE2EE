@@ -1,6 +1,10 @@
 // server/routes/user/preferences.js
 import { Router } from 'express';
 import { pool } from '../../db.js';
+import {
+  cachePresenceMode,
+  persistPresenceMode,
+} from '../../gateway/presenceMode.js';
 
 const router = Router();
 
@@ -15,20 +19,49 @@ router.get('/preferences', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT theme, accent_color, bg_color, text_color, hover_color, density, message_group_spacing, chat_font_scale, message_notifications_enabled
+      `SELECT theme, accent_color, bg_color, text_color, hover_color, density, message_group_spacing, chat_font_scale, message_notifications_enabled, presence_mode
        FROM user_preferences
        WHERE user_id = $1`,
       [userId]
     );
 
     if (result.rows.length === 0) {
+      await cachePresenceMode(userId, 'online');
       return res.json({ success: true, preferences: null });
     }
 
+    await cachePresenceMode(userId, result.rows[0].presence_mode);
     res.json({ success: true, preferences: result.rows[0] });
   } catch (err) {
     console.error('Get preferences error:', err);
     res.status(500).json({ error: 'Failed to fetch preferences' });
+  }
+});
+
+// PATCH /api/users/preferences/presence
+router.patch('/preferences/presence', async (req, res) => {
+  const userId = req.user.id;
+  const mode = req.body?.mode;
+
+  try {
+    const presenceMode = await persistPresenceMode({
+      dbPool: pool,
+      userId,
+      mode,
+    });
+
+    res.json({ success: true, presence_mode: presenceMode });
+  } catch (error) {
+    if (error?.code === 'INVALID_PRESENCE_MODE') {
+      return res.status(400).json({
+        success: false,
+        code: error.code,
+        error: error.message,
+      });
+    }
+
+    console.error('Save presence preference error:', error);
+    res.status(500).json({ success: false, error: 'Failed to save presence preference' });
   }
 });
 

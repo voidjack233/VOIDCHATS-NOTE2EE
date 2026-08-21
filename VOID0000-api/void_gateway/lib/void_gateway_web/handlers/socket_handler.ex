@@ -203,6 +203,24 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
     {:ok, new_state}
   end
 
+  # The account service persists the mode first, then broadcasts this command
+  # to every live socket. Recompute public presence and keep each client's UI in sync.
+  def handle_info({:presence_mode_updated, mode}, %{status: :identified} = state)
+      when mode in ["online", "idle", "dnd", "invisible"] do
+    sync_aggregate_presence(state.user_id, mode)
+
+    {payload, new_state} =
+      push_event(
+        "PRESENCE_MODE_UPDATE",
+        %{mode: mode},
+        state
+      )
+
+    {:push, {:text, payload}, new_state}
+  end
+
+  def handle_info({:presence_mode_updated, _mode}, state), do: {:ok, state}
+
   # Node commanded this socket to close (logout, session revoke, membership removal, etc.).
   # Matches the disconnectSession command dispatched via gateway/control.js disconnectLiveSession().
   # Graceful drain: push SHUTDOWN event so the client can schedule a clean
@@ -535,35 +553,54 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
 
   defp heartbeat_presence_status(_message, fallback), do: fallback
 
-  defp sync_aggregate_presence(user_id) do
-    %{status: status, active_count: active_count} =
+  defp sync_aggregate_presence(user_id, mode_override \\ nil) do
+    %{status: activity_status, active_count: active_count} =
       ConnectionRegistry.presence_summary(user_id)
 
     now_ms = System.system_time(:millisecond)
 
-    {previous_status, previous_last_active} =
+    {previous_status, previous_last_active, previous_mode} =
       case Presence.get(user_id) do
         {:ok, presence} ->
-          {Map.get(presence, "status"), Map.get(presence, "lastActive")}
+          {
+            Map.get(presence, "status"),
+            Map.get(presence, "lastActive"),
+            Map.get(presence, "mode")
+          }
 
         {:error, _} ->
-          {nil, nil}
+          {nil, nil, nil}
       end
+
+    presence_mode = resolve_presence_mode(user_id, mode_override, previous_mode)
+    status = Presence.effective_status(activity_status, active_count, presence_mode)
 
     last_active =
       cond do
-        status == "online" -> now_ms
-        status == "offline" and previous_status == "online" -> now_ms
+        status in ["online", "dnd"] -> now_ms
+        status == "idle" and previous_status == "offline" -> now_ms
+        status == "offline" and previous_status in ["online", "dnd"] -> now_ms
         true -> previous_last_active || now_ms
       end
 
-    Presence.write(user_id, status, last_active, active_count)
+    Presence.write(user_id, status, last_active, active_count, presence_mode)
 
     if previous_status != status do
       Presence.publish_change(user_id, status, last_active)
     end
 
     :ok
+  end
+
+  defp resolve_presence_mode(_user_id, mode_override, _previous_mode)
+       when mode_override in ["online", "idle", "dnd", "invisible"],
+       do: mode_override
+
+  defp resolve_presence_mode(user_id, _mode_override, previous_mode) do
+    case Presence.get_mode(user_id) do
+      {:ok, mode} -> mode
+      {:error, _} -> Presence.normalize_mode(previous_mode)
+    end
   end
 
   defp setup_heartbeat_timeout(state) do

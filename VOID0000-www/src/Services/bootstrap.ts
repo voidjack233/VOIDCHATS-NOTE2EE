@@ -62,6 +62,17 @@ export function createAppBootstrapStore(
     getCached(): AppBootstrap | null {
       return cachedBootstrap;
     },
+    updatePreferences(patch: Record<string, unknown>): void {
+      if (!cachedBootstrap) return;
+
+      cachedBootstrap = {
+        ...cachedBootstrap,
+        preferences: {
+          ...(cachedBootstrap.preferences || {}),
+          ...patch,
+        },
+      };
+    },
     clear(): void {
       generation += 1;
       cachedBootstrap = null;
@@ -121,6 +132,12 @@ export function getCachedAppBootstrap(): AppBootstrap | null {
 
 export function clearAppBootstrap(): void {
   bootstrapStore.clear();
+}
+
+export function updateCachedAppBootstrapPreferences(
+  patch: Record<string, unknown>,
+): void {
+  bootstrapStore.updatePreferences(patch);
 }
 
 export function fetchAppBootstrapResult(

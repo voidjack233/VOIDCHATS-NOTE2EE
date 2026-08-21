@@ -3,9 +3,11 @@ import { UserMinus, Users } from 'lucide-react';
 import { Friend } from '../../../Services/hooks/Friends/useFriends';
 import PresenceDot from '../../common/PresenceDot';
 import UserAvatar from '../../common/UserAvatar';
+import type { PresenceStatus } from '../../../Services/Presence/presenceStatus';
 
 interface GroupedFriends {
   online: Friend[];
+  dnd: Friend[];
   idle: Friend[];
   offline: Friend[];
 }
@@ -20,7 +22,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
   const [confirmFriend, setConfirmFriend] = useState<Friend | null>(null);
   const [removing, setRemoving] = useState(false);
 
-  const totalFriends = grouped.online.length + grouped.idle.length + grouped.offline.length;
+  const totalFriends = grouped.online.length + grouped.dnd.length + grouped.idle.length + grouped.offline.length;
 
   if (totalFriends === 0) {
     return (
@@ -45,7 +47,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
     setConfirmFriend(null);
   };
 
-  const renderFriendItem = (friend: Friend, status: 'online' | 'idle' | 'offline') => (
+  const renderFriendItem = (friend: Friend, status: PresenceStatus) => (
     <div
       key={friend.friendship_id}
       onClick={() => onSelect(friend.profile_id)}
@@ -94,7 +96,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
   const renderSection = (
     label: string,
     friends: Friend[],
-    status: 'online' | 'idle' | 'offline',
+    status: PresenceStatus,
     colorClass: string
   ) => {
     if (friends.length === 0) return null;
@@ -118,6 +120,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
     <>
       <div className="space-y-4">
         {renderSection('Online', grouped.online, 'online', 'text-green-400')}
+        {renderSection('Do Not Disturb', grouped.dnd, 'dnd', 'text-red-400')}
         {renderSection('Idle', grouped.idle, 'idle', 'text-yellow-400')}
         {renderSection('Offline', grouped.offline, 'offline', 'text-void-text-muted')}
       </div>

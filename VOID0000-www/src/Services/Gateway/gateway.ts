@@ -413,11 +413,18 @@ class Gateway {
   }
 
   setPresenceStatus(status: ActivePresenceStatus) {
+    if (this.desiredPresenceStatus === status) return;
+
     this.desiredPresenceStatus = status;
+    this.emit('LOCAL_PRESENCE_ACTIVITY', { status });
 
     if (this._connectionState === 'connected') {
       this.flushPresenceStatus();
     }
+  }
+
+  getPresenceStatus(): ActivePresenceStatus {
+    return this.desiredPresenceStatus;
   }
 
   private flushPresenceStatus() {
@@ -586,6 +593,7 @@ class Gateway {
     this.ws = null;
     this.userId = null;
     this.desiredPresenceStatus = 'online';
+    this.emit('LOCAL_PRESENCE_ACTIVITY', { status: 'online' });
   }
 }
 

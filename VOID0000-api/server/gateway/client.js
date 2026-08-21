@@ -1,8 +1,8 @@
 import valkey from '../valkey.js';
+import { normalizePresenceSnapshot } from './presenceMode.js';
 
 const PRESENCE_KEY_PREFIX = 'presence:';
 const PRESENCE_COUNT_KEY_PREFIX = 'presence_count:';
-const VALID_PRESENCE_STATUSES = new Set(['online', 'idle', 'offline']);
 const REACTION_BATCH_WINDOW_MS = 150;
 const reactionFanoutBuffer = new Map();
 
@@ -12,23 +12,6 @@ function presenceKey(userId) {
 
 function presenceCountKey(userId) {
   return `${PRESENCE_COUNT_KEY_PREFIX}${userId}`;
-}
-
-function normalizePresence(rawPresence, activeCount = 0) {
-  if (!rawPresence || typeof rawPresence !== 'object') {
-    return {
-      status: activeCount > 0 ? 'online' : 'offline',
-      lastActive: null,
-      activeCount,
-    };
-  }
-
-  const status = activeCount === 0
-    ? 'offline'
-    : (rawPresence.status === 'idle' ? 'idle' : 'online');
-  const lastActive = Number.isInteger(rawPresence.lastActive) ? rawPresence.lastActive : null;
-
-  return { status, lastActive, activeCount };
 }
 
 function parseSharedActiveCount(rawPresence, rawCount) {
@@ -153,7 +136,7 @@ export async function getLiveUserPresence(userId) {
     const parsedPresence = rawPresence ? JSON.parse(rawPresence) : null;
     const activeCount = parseSharedActiveCount(parsedPresence, rawCount);
 
-    return normalizePresence(
+    return normalizePresenceSnapshot(
       parsedPresence,
       activeCount
     );
@@ -187,7 +170,7 @@ export async function getBulkUserPresence(userIds) {
       const rawCount = results?.[i * 2 + 1]?.[1];
       const parsedPresence = rawPresence ? JSON.parse(rawPresence) : null;
       const activeCount = parseSharedActiveCount(parsedPresence, rawCount);
-      result.set(userIds[i], normalizePresence(parsedPresence, activeCount));
+      result.set(userIds[i], normalizePresenceSnapshot(parsedPresence, activeCount));
     }
   } catch (err) {
     console.error('Gateway bulk presence lookup error:', err);

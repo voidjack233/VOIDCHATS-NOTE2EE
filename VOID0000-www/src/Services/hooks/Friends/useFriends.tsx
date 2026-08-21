@@ -4,6 +4,7 @@ import { ensureCSRFToken, fetchWithAuth } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
 import { fetchAppBootstrap } from '../../bootstrap';
+import type { PresenceStatus } from '../../Presence/presenceStatus';
 
 const FRIENDS_RESYNC_MIN_GAP_MS = 60_000;
 
@@ -17,7 +18,7 @@ export interface Friend {
   avatar_url: string | null;
   bio: string | null;
   member_since: string | null;
-  status?: 'online' | 'idle' | 'offline';
+  status?: PresenceStatus;
   last_active?: number | null;
 }
 
@@ -157,7 +158,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         avatar_url: string | null;
         bio: string | null;
         member_since: string | null;
-        status?: 'online' | 'idle' | 'offline';
+        status?: PresenceStatus;
         last_active?: number | null;
       };
     }) => {

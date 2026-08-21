@@ -23,6 +23,7 @@ const getStatusColor = (status: string) => {
   switch (status) {
     case 'online': return 'bg-green-500';
     case 'idle': return 'bg-yellow-500';
+    case 'dnd': return 'bg-red-500';
     default: return 'bg-gray-500';
   }
 };
@@ -31,6 +32,7 @@ const getStatusText = (status: string) => {
   switch (status) {
     case 'online': return 'Online';
     case 'idle': return 'Idle';
+    case 'dnd': return 'Do Not Disturb';
     default: return 'Offline';
   }
 };
@@ -89,7 +91,7 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
     .filter((f) => {
       if (tab === 'online') {
         const status = getPresence(f.id);
-        return status === 'online' || status === 'idle';
+        return status === 'online' || status === 'idle' || status === 'dnd';
       }
       return true;
     })
@@ -99,10 +101,10 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
       return name.toLowerCase().includes(search.toLowerCase());
     })
     .sort((a, b) => {
-      const order: Record<string, number> = { online: 0, idle: 1, offline: 2 };
+      const order: Record<string, number> = { online: 0, dnd: 1, idle: 2, offline: 3 };
       const aStatus = getPresence(a.id);
       const bStatus = getPresence(b.id);
-      return (order[aStatus] ?? 2) - (order[bStatus] ?? 2);
+      return (order[aStatus] ?? 3) - (order[bStatus] ?? 3);
     });
 
   const pendingItems = useMemo<PendingListItem[]>(() => [
@@ -122,7 +124,7 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
 
   const onlineCount = friends.filter((f) => {
     const s = getPresence(f.id);
-    return s === 'online' || s === 'idle';
+    return s === 'online' || s === 'idle' || s === 'dnd';
   }).length;
 
   const renderFriendRow = useCallback((friend: Friend) => {

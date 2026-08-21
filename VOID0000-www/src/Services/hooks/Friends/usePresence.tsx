@@ -2,8 +2,19 @@ import { createContext, useContext, useState, useEffect, useCallback, ReactNode,
 import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
+import {
+  fetchAppBootstrap,
+  getCachedAppBootstrap,
+  updateCachedAppBootstrapPreferences,
+} from '../../bootstrap';
+import {
+  normalizePresenceMode,
+  resolveOwnPresenceStatus,
+  type PresenceActivityStatus,
+  type PresenceMode,
+  type PresenceStatus,
+} from '../../Presence/presenceStatus';
 
-type PresenceStatus = 'online' | 'idle' | 'offline';
 const PRESENCE_STARTUP_FALLBACK_DELAY_MS = 1_500;
 
 interface Presence {
@@ -20,6 +31,11 @@ interface FriendPresenceSnapshot {
 interface PresenceContextType {
   presences: Map<string, Presence>;
   getPresence: (userId: string) => Presence;
+  presenceMode: PresenceMode;
+  ownStatus: PresenceStatus;
+  isUpdatingPresenceMode: boolean;
+  presenceModeError: string | null;
+  setPresenceMode: (mode: PresenceMode) => Promise<boolean>;
 }
 
 const PresenceContext = createContext<PresenceContextType | null>(null);
@@ -28,12 +44,96 @@ const PRESENCE_MIN_SYNC_GAP_MS = 10_000;
 export function PresenceProvider({ children }: { children: ReactNode }) {
   const { user } = useUser();
   const [presences, setPresences] = useState<Map<string, Presence>>(new Map());
+  const [activityStatus, setActivityStatus] = useState<PresenceActivityStatus>(
+    () => gateway.getPresenceStatus(),
+  );
+  const [presenceMode, setPresenceModeState] = useState<PresenceMode>(() => (
+    normalizePresenceMode(getCachedAppBootstrap()?.preferences?.presence_mode)
+  ));
+  const [isUpdatingPresenceMode, setIsUpdatingPresenceMode] = useState(false);
+  const [presenceModeError, setPresenceModeError] = useState<string | null>(null);
   const lastSyncAtRef = useRef(0);
   const syncInFlightRef = useRef<Promise<void> | null>(null);
+  const presenceModeRevisionRef = useRef(0);
+
+  const ownStatus = resolveOwnPresenceStatus(presenceMode, activityStatus);
 
   const getPresence = useCallback((userId: string): Presence => {
     return presences.get(userId) || { status: 'offline', lastActive: null };
   }, [presences]);
+
+  const setPresenceMode = useCallback(async (mode: PresenceMode): Promise<boolean> => {
+    if (!user || isUpdatingPresenceMode) return false;
+
+    setIsUpdatingPresenceMode(true);
+    setPresenceModeError(null);
+
+    try {
+      const response = await fetchWithAuth('/api/users/preferences/presence', {
+        method: 'PATCH',
+        body: JSON.stringify({ mode }),
+      });
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || payload?.success !== true) {
+        throw new Error(payload?.error || 'Failed to update active status');
+      }
+
+      const persistedMode = normalizePresenceMode(payload.presence_mode);
+      presenceModeRevisionRef.current += 1;
+      setPresenceModeState(persistedMode);
+      updateCachedAppBootstrapPreferences({ presence_mode: persistedMode });
+      return true;
+    } catch (error) {
+      setPresenceModeError(
+        error instanceof Error ? error.message : 'Failed to update active status',
+      );
+      return false;
+    } finally {
+      setIsUpdatingPresenceMode(false);
+    }
+  }, [isUpdatingPresenceMode, user]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!user) {
+      return;
+    }
+
+    const hydrationRevision = presenceModeRevisionRef.current;
+    void fetchAppBootstrap().then((bootstrap) => {
+      if (
+        cancelled ||
+        bootstrap?.user?.id !== user.id ||
+        presenceModeRevisionRef.current !== hydrationRevision
+      ) return;
+
+      setPresenceModeState(normalizePresenceMode(bootstrap.preferences?.presence_mode));
+    });
+
+    const handleLocalActivity = (data: { status?: PresenceActivityStatus }) => {
+      if (data.status === 'online' || data.status === 'idle') {
+        setActivityStatus(data.status);
+      }
+    };
+
+    const handlePresenceModeUpdate = (data: { mode?: unknown }) => {
+      const nextMode = normalizePresenceMode(data.mode);
+      presenceModeRevisionRef.current += 1;
+      setPresenceModeState(nextMode);
+      updateCachedAppBootstrapPreferences({ presence_mode: nextMode });
+    };
+
+    gateway.on('LOCAL_PRESENCE_ACTIVITY', handleLocalActivity);
+    gateway.on('PRESENCE_MODE_UPDATE', handlePresenceModeUpdate);
+
+    return () => {
+      cancelled = true;
+      gateway.off('LOCAL_PRESENCE_ACTIVITY', handleLocalActivity);
+      gateway.off('PRESENCE_MODE_UPDATE', handlePresenceModeUpdate);
+    };
+  }, [user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -197,7 +297,15 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   return (
-    <PresenceContext.Provider value={{ presences, getPresence }}>
+    <PresenceContext.Provider value={{
+      presences,
+      getPresence,
+      presenceMode,
+      ownStatus,
+      isUpdatingPresenceMode,
+      presenceModeError,
+      setPresenceMode,
+    }}>
       {children}
     </PresenceContext.Provider>
   );

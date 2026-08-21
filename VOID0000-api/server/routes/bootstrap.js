@@ -3,6 +3,7 @@ import { pool } from '../db.js';
 import { getBulkUserPresence } from '../gateway/client.js';
 import { getUserConversations } from './conversations/root/list.js';
 import { resolveUserAvatarUrl } from '../utils/avatarFallback.js';
+import { cachePresenceMode } from '../gateway/presenceMode.js';
 
 const router = Router();
 
@@ -32,12 +33,14 @@ async function getAccount(userId) {
 
 async function getPreferences(userId) {
   const result = await pool.query(
-    `SELECT theme, accent_color, bg_color, text_color, hover_color, density, message_group_spacing, chat_font_scale, message_notifications_enabled
+    `SELECT theme, accent_color, bg_color, text_color, hover_color, density, message_group_spacing, chat_font_scale, message_notifications_enabled, presence_mode
      FROM user_preferences
      WHERE user_id = $1`,
     [userId]
   );
-  return result.rows[0] || null;
+  const preferences = result.rows[0] || null;
+  await cachePresenceMode(userId, preferences?.presence_mode || 'online');
+  return preferences;
 }
 
 async function getFriends(userId) {

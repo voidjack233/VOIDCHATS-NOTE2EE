@@ -14,6 +14,8 @@ defmodule VoidGateway.EventDispatcher do
     - updateTokenExpiry command
         → sends {:update_token_expiry, new_exp} to targeted socket pids;
           deviceId nil = all sockets for that user
+    - updatePresenceMode command
+        → sends {:presence_mode_updated, mode} to all sockets for that user
     - invalidateFriendCachePair command
         → silently dropped; Phoenix has no friend cache
     - broadcastToFriends message shape
@@ -28,6 +30,7 @@ defmodule VoidGateway.EventDispatcher do
 
   require Logger
   alias VoidGateway.ConnectionRegistry
+  @presence_modes ["online", "idle", "dnd", "invisible"]
 
   @spec dispatch(map()) :: :ok
 
@@ -87,6 +90,18 @@ defmodule VoidGateway.EventDispatcher do
     :ok
   end
 
+  # Translate commands from an older account-service process during rollout.
+  def dispatch(%{
+        "type" => "command",
+        "command" => "updatePresenceMode",
+        "data" => %{"userId" => user_id, "mode" => "auto"}
+      })
+      when is_binary(user_id) do
+    pids = resolve_pids(user_id, nil)
+    Enum.each(pids, fn pid -> send(pid, {:presence_mode_updated, "online"}) end)
+    :ok
+  end
+
   # updateTokenExpiry — update token expiry on one device or all devices.
   # Mirrors updateTokenExpiry() in gateway/index.js.
   def dispatch(%{
@@ -106,6 +121,19 @@ defmodule VoidGateway.EventDispatcher do
       %{user_id: user_id, targets: length(pids)}
     )
 
+    :ok
+  end
+
+  # updatePresenceMode — apply one account-wide preference to every live tab
+  # without changing the online/idle activity tracked for each socket.
+  def dispatch(%{
+        "type" => "command",
+        "command" => "updatePresenceMode",
+        "data" => %{"userId" => user_id, "mode" => mode}
+      })
+      when is_binary(user_id) and mode in @presence_modes do
+    pids = resolve_pids(user_id, nil)
+    Enum.each(pids, fn pid -> send(pid, {:presence_mode_updated, mode}) end)
     :ok
   end
 

@@ -1,11 +1,14 @@
+import type { PresenceStatus } from '../../Services/Presence/presenceStatus';
+
 interface PresenceDotProps {
-  status: 'online' | 'idle' | 'offline';
+  status: PresenceStatus;
   size?: 'sm' | 'md';
 }
 
 const colors = {
   online: 'bg-green-500',
   idle: 'bg-yellow-500',
+  dnd: 'bg-red-500',
   offline: 'bg-gray-500',
 };
 

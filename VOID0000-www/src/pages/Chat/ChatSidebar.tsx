@@ -1,11 +1,15 @@
-import type { ReactNode } from 'react';
-import { MessageCircle, Settings, Users } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ChevronUp, MessageCircle, Settings, Users } from 'lucide-react';
 import UserAvatar from '../../components/common/UserAvatar';
 import PushNotificationPrompt from '../../components/common/Notifications/PushNotificationPrompt';
+import PresenceDot from '../../components/common/PresenceDot';
+import PresenceStatusMenu from '../../components/common/PresenceStatusMenu';
 import {
   formatUnreadBadgeCount,
   type ConversationUnreadTotals,
 } from '../../Services/Chat/conversationUnreadSummary';
+import { usePresence } from '../../Services/hooks/Friends/usePresence';
+import { getPresenceModeLabel, type PresenceMode } from '../../Services/Presence/presenceStatus';
 
 export type ChatFilter = 'dm' | 'group';
 export type MobileSidebarMode = 'messages' | 'friends';
@@ -59,6 +63,46 @@ export default function ChatSidebar({
   children,
 }: ChatSidebarProps) {
   const isFriendsMobileActive = mobileMode === 'friends';
+  const [isPresenceMenuOpen, setIsPresenceMenuOpen] = useState(false);
+  const presenceMenuRef = useRef<HTMLDivElement>(null);
+  const {
+    presenceMode,
+    ownStatus,
+    isUpdatingPresenceMode,
+    presenceModeError,
+    setPresenceMode,
+  } = usePresence();
+
+  useEffect(() => {
+    if (!isPresenceMenuOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!presenceMenuRef.current?.contains(event.target as Node)) {
+        setIsPresenceMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsPresenceMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isPresenceMenuOpen]);
+
+  const handlePresenceSelection = async (mode: PresenceMode) => {
+    if (mode === presenceMode) {
+      setIsPresenceMenuOpen(false);
+      return;
+    }
+
+    if (await setPresenceMode(mode)) {
+      setIsPresenceMenuOpen(false);
+    }
+  };
 
   return (
     <div className={`bg-void-bg-main flex-col shrink-0 border-r border-void-bg-sec transition-all ${isOpen ? 'flex' : 'hidden md:flex'} w-full md:w-72`}>
@@ -161,8 +205,24 @@ export default function ChatSidebar({
         {children}
       </div>
 
-      <div className="h-[52px] bg-void-bg-main/90 flex items-center px-2 border-t border-void-bg-sec shrink-0">
-        <div
+      <div
+        ref={presenceMenuRef}
+        className="relative h-[52px] bg-void-bg-main/90 flex items-center px-2 border-t border-void-bg-sec shrink-0"
+      >
+        {isPresenceMenuOpen ? (
+          <div className="absolute bottom-[calc(100%+0.5rem)] left-2 right-2 z-50 max-h-[calc(100dvh-5rem)] overflow-y-auto rounded-xl">
+            <PresenceStatusMenu
+              mode={presenceMode}
+              ownStatus={ownStatus}
+              busy={isUpdatingPresenceMode}
+              error={presenceModeError}
+              onSelect={(mode) => void handlePresenceSelection(mode)}
+            />
+          </div>
+        ) : null}
+
+        <button
+          type="button"
           className="flex items-center hover:bg-void-bg-hover p-1 rounded-md cursor-pointer flex-1 min-w-0"
           onClick={onShowProfile}
         >
@@ -175,11 +235,33 @@ export default function ChatSidebar({
               className="w-full h-full rounded-full"
               fallbackClassName="text-xs"
             />
+            <span className="absolute -bottom-0.5 -right-0.5">
+              <PresenceDot status={ownStatus} size="sm" />
+            </span>
           </div>
-          <div className="text-sm font-semibold truncate flex-1">{profile?.display_name || username || 'User'}</div>
-        </div>
+          <span className="min-w-0 flex-1 text-left">
+            <span className="block truncate text-sm font-semibold">
+              {profile?.display_name || username || 'User'}
+            </span>
+            <span className="block truncate text-[10px] leading-3 text-void-text-muted">
+              {getPresenceModeLabel(presenceMode)}
+            </span>
+          </span>
+        </button>
         <button
+          type="button"
+          onClick={() => setIsPresenceMenuOpen((open) => !open)}
+          aria-label="Change active status"
+          aria-expanded={isPresenceMenuOpen}
+          title="Change active status"
+          className="p-1.5 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md shrink-0 ml-1"
+        >
+          <ChevronUp className={`h-4 w-4 transition-transform ${isPresenceMenuOpen ? 'rotate-180' : ''}`} />
+        </button>
+        <button
+          type="button"
           onClick={onShowSettings}
+          aria-label="Open settings"
           className="p-1.5 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md shrink-0 ml-1"
         >
           <Settings className="w-5 h-5" />

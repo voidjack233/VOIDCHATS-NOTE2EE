@@ -4,6 +4,8 @@ defmodule VoidGateway.Presence do
   # Define attributes before @moduledoc so interpolation resolves at compile time.
   @presence_key_prefix "presence:"
   @presence_count_key_prefix "presence_count:"
+  @presence_mode_key_prefix "presence_mode:"
+  @presence_modes ["online", "idle", "dnd", "invisible"]
   # 30 days — mirrors PRESENCE_SNAPSHOT_TTL = 60 * 60 * 24 * 30 in gateway/index.js
   @presence_snapshot_ttl 2_592_000
 
@@ -40,8 +42,8 @@ defmodule VoidGateway.Presence do
   Mirrors persistPresenceSnapshot(userId, presence, activeCount) in gateway/index.js.
   Uses pipeline to write both keys in one round-trip.
   """
-  @spec write(String.t(), String.t(), integer() | nil, non_neg_integer()) :: :ok
-  def write(user_id, status, last_active_ms, active_count) do
+  @spec write(String.t(), String.t(), integer() | nil, non_neg_integer(), String.t()) :: :ok
+  def write(user_id, status, last_active_ms, active_count, presence_mode) do
     presence_key = @presence_key_prefix <> user_id
     count_key = @presence_count_key_prefix <> user_id
     ttl = "#{@presence_snapshot_ttl}"
@@ -50,7 +52,8 @@ defmodule VoidGateway.Presence do
       Jason.encode!(%{
         status: status,
         lastActive: last_active_ms,
-        activeCount: active_count
+        activeCount: active_count,
+        mode: normalize_mode(presence_mode)
       })
 
     case Redix.pipeline(:redix, [
@@ -64,6 +67,57 @@ defmodule VoidGateway.Presence do
         Logger.error("[Presence] write error user=#{user_id}: #{inspect(err)}")
         # Non-fatal — REST reads may be stale but the socket continues.
         :ok
+    end
+  end
+
+  @doc "Return whether a value is a supported account-wide presence mode."
+  @spec valid_mode?(term()) :: boolean()
+  def valid_mode?(mode), do: mode in @presence_modes
+
+  @doc "Normalize untrusted or historical mode values to activity-aware Online."
+  @spec normalize_mode(term()) :: String.t()
+  def normalize_mode("auto"), do: "online"
+  def normalize_mode(mode) when mode in @presence_modes, do: mode
+  def normalize_mode(_mode), do: "online"
+
+  @doc "Combine connected socket activity with the account's public presence mode."
+  @spec effective_status(String.t(), non_neg_integer(), String.t()) :: String.t()
+  def effective_status(_activity_status, 0, _presence_mode), do: "offline"
+
+  def effective_status(activity_status, _active_count, "online")
+      when activity_status in ["online", "idle"],
+      do: activity_status
+
+  def effective_status(_activity_status, _active_count, "idle"), do: "idle"
+  def effective_status(_activity_status, _active_count, "dnd"), do: "dnd"
+  def effective_status(_activity_status, _active_count, "invisible"), do: "offline"
+
+  def effective_status(activity_status, _active_count, _presence_mode)
+      when activity_status in ["online", "idle"],
+      do: activity_status
+
+  def effective_status(_activity_status, _active_count, _presence_mode), do: "online"
+
+  @doc "Read the account-wide presence mode cached by the account service."
+  @spec get_mode(String.t()) :: {:ok, String.t()} | {:error, atom() | any()}
+  def get_mode(user_id) do
+    key = @presence_mode_key_prefix <> user_id
+
+    case Redix.command(:redix, ["GET", key]) do
+      {:ok, nil} ->
+        {:error, :not_found}
+
+      {:ok, mode} when mode in @presence_modes ->
+        {:ok, mode}
+
+      {:ok, "auto"} ->
+        {:ok, "online"}
+
+      {:ok, _invalid_mode} ->
+        {:error, :invalid_mode}
+
+      {:error, err} ->
+        {:error, err}
     end
   end
 
@@ -86,7 +140,9 @@ defmodule VoidGateway.Presence do
       })
 
     case Redix.command(:redix, ["PUBLISH", @presence_change_channel, payload]) do
-      {:ok, _receivers} -> :ok
+      {:ok, _receivers} ->
+        :ok
+
       {:error, err} ->
         Logger.error("[Presence] publish_change error user=#{user_id}: #{inspect(err)}")
         :ok

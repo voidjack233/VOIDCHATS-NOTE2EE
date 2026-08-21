@@ -608,7 +608,7 @@ const ConversationList = ({
           {conv.type === 'dm' && (
             <div className="absolute bottom-0 right-0 translate-x-1/4 translate-y-1/4 z-10">
               <PresenceDot
-                status={presence.status as 'online' | 'idle' | 'offline'}
+                status={presence.status}
                 size="sm"
               />
             </div>
