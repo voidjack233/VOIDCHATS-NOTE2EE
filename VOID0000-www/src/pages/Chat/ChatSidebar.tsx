@@ -2,6 +2,10 @@ import type { ReactNode } from 'react';
 import { MessageCircle, Settings, Users } from 'lucide-react';
 import UserAvatar from '../../components/common/UserAvatar';
 import PushNotificationPrompt from '../../components/common/Notifications/PushNotificationPrompt';
+import {
+  formatUnreadBadgeCount,
+  type ConversationUnreadTotals,
+} from '../../Services/Chat/conversationUnreadSummary';
 
 export type ChatFilter = 'dm' | 'group';
 export type MobileSidebarMode = 'messages' | 'friends';
@@ -16,6 +20,7 @@ interface ChatSidebarProps {
   mobileMode: MobileSidebarMode;
   isFriendsPaneVisible: boolean;
   filter: ChatFilter;
+  unreadTotals: ConversationUnreadTotals;
   profile?: SidebarProfile | null;
   username?: string | null;
   onOpenFriends: () => void;
@@ -25,11 +30,26 @@ interface ChatSidebarProps {
   children: ReactNode;
 }
 
+function UnreadBadge({ count, label }: { count: number; label: string }) {
+  if (count <= 0) return null;
+
+  return (
+    <span
+      className="inline-flex min-w-[1.15rem] items-center justify-center rounded-full bg-void-accent px-1 py-0.5 text-[9px] font-bold leading-none text-white shadow-sm"
+      aria-label={`${count} unread ${label} message${count === 1 ? '' : 's'}`}
+      title={`${count} unread ${label} message${count === 1 ? '' : 's'}`}
+    >
+      {formatUnreadBadgeCount(count)}
+    </span>
+  );
+}
+
 export default function ChatSidebar({
   isOpen,
   mobileMode,
   isFriendsPaneVisible,
   filter,
+  unreadTotals,
   profile,
   username,
   onOpenFriends,
@@ -66,7 +86,7 @@ export default function ChatSidebar({
           </button>
           <button
             onClick={() => onSelectFilter('dm')}
-            className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
+            className={`flex items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-xs font-semibold transition-all ${
               filter === 'dm' && !isFriendsMobileActive
                 ? 'bg-void-bg-hover text-void-text ring-1 ring-white/5'
                 : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
@@ -75,10 +95,11 @@ export default function ChatSidebar({
           >
             <MessageCircle className="h-3.5 w-3.5" />
             <span>DMs</span>
+            <UnreadBadge count={unreadTotals.dm} label="direct" />
           </button>
           <button
             onClick={() => onSelectFilter('group')}
-            className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
+            className={`flex items-center justify-center gap-1 rounded-xl px-1.5 py-2 text-xs font-semibold transition-all ${
               filter === 'group' && !isFriendsMobileActive
                 ? 'bg-void-bg-hover text-void-text ring-1 ring-white/5'
                 : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
@@ -87,6 +108,7 @@ export default function ChatSidebar({
           >
             <Users className="h-3.5 w-3.5" />
             <span>Groups</span>
+            <UnreadBadge count={unreadTotals.group} label="group" />
           </button>
         </div>
       </div>
@@ -116,7 +138,9 @@ export default function ChatSidebar({
           }`}
           aria-pressed={filter === 'dm'}
         >
-          <MessageCircle className="w-3.5 h-3.5" /> DMs
+          <MessageCircle className="w-3.5 h-3.5" />
+          <span>DMs</span>
+          <UnreadBadge count={unreadTotals.dm} label="direct" />
         </button>
         <button
           onClick={() => onSelectFilter('group')}
@@ -127,7 +151,9 @@ export default function ChatSidebar({
           }`}
           aria-pressed={filter === 'group'}
         >
-          <Users className="w-3.5 h-3.5" /> Groups
+          <Users className="w-3.5 h-3.5" />
+          <span>Groups</span>
+          <UnreadBadge count={unreadTotals.group} label="group" />
         </button>
       </div>
 

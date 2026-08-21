@@ -15,6 +15,10 @@ import {
 } from '../../../Services/Chat/conversationPreviewCache';
 import { applyConversationMessageCreate } from '../../../Services/Chat/conversationListRealtime';
 import {
+  getConversationUnreadTotals,
+  type ConversationUnreadTotals,
+} from '../../../Services/Chat/conversationUnreadSummary';
+import {
   playIncomingMessageSound,
   primeIncomingMessageSound,
 } from '../../../Services/Chat/messageNotificationSound';
@@ -35,6 +39,7 @@ interface ConversationListProps {
   refreshTrigger?: number;
   bumpConversationId?: string | null;
   currentUserId?: string | null;
+  onUnreadTotalsChange?: (totals: ConversationUnreadTotals) => void;
 }
 
 const CONVERSATION_LIST_CACHE_TTL_MS = 60_000;
@@ -116,6 +121,7 @@ const ConversationList = ({
   refreshTrigger,
   bumpConversationId,
   currentUserId,
+  onUnreadTotalsChange,
 }: ConversationListProps) => {
   const cachedInitialConversations = readCachedConversationList(currentUserId);
   const [conversations, setConversations] = useState<Conversation[]>(() => cachedInitialConversations || []);
@@ -156,6 +162,17 @@ const ConversationList = ({
       mutedUntilMapRef.current.set(c.id, c.muted_until ?? null);
     });
   }, [conversations]);
+
+  const unreadTotals = getConversationUnreadTotals(conversations);
+  const dmUnreadTotal = unreadTotals.dm;
+  const groupUnreadTotal = unreadTotals.group;
+
+  useEffect(() => {
+    onUnreadTotalsChange?.({
+      dm: dmUnreadTotal,
+      group: groupUnreadTotal,
+    });
+  }, [dmUnreadTotal, groupUnreadTotal, onUnreadTotalsChange]);
 
   useEffect(() => {
     activeIdRef.current = activeId;

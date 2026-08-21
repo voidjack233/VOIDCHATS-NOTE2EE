@@ -29,6 +29,7 @@ import ConversationHeader from './ConversationHeader';
 import ChatStatusBanners from './ChatStatusBanners';
 import { markStartupPerformanceOnce } from '../../Services/Performance/startupPerformance';
 import { getCachedAppBootstrap } from '../../Services/bootstrap';
+import type { ConversationUnreadTotals } from '../../Services/Chat/conversationUnreadSummary';
 
 const ConversationSettings = lazy(() => import('../../components/Chat/Conversation/ConversationSettings'));
 const ForwardMessageModal = lazy(() => import('../../components/Chat/Conversation/ForwardMessageModal'));
@@ -101,6 +102,10 @@ const ChatDashboard = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [chatFilter, setChatFilter] = useState<'dm' | 'group'>('dm');
+  const [conversationUnreadTotals, setConversationUnreadTotals] = useState<ConversationUnreadTotals>({
+    dm: 0,
+    group: 0,
+  });
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(true);
   const [mobileSidebarMode, setMobileSidebarMode] = useState<'messages' | 'friends'>('messages');
   const [isMobile, setIsMobile] = useState(() =>
@@ -156,6 +161,11 @@ const ChatDashboard = () => {
 
   const showSendNotice = useCallback((message: string | null) => {
     setSendNotice(message);
+  }, []);
+  const handleUnreadTotalsChange = useCallback((totals: ConversationUnreadTotals) => {
+    setConversationUnreadTotals((current) => (
+      current.dm === totals.dm && current.group === totals.group ? current : totals
+    ));
   }, []);
   const handleOwnSendHistoryModeChange = useCallback((shouldJumpToPresent: boolean) => {
     ownSendNeedsPresentJumpRef.current = shouldJumpToPresent;
@@ -685,6 +695,7 @@ const ChatDashboard = () => {
         mobileMode={mobileSidebarMode}
         isFriendsPaneVisible={isFriendsPaneVisible}
         filter={chatFilter}
+        unreadTotals={conversationUnreadTotals}
         profile={myProfile}
         username={user?.username}
         onOpenFriends={openFriendsPane}
@@ -726,6 +737,7 @@ const ChatDashboard = () => {
               refreshTrigger={convRefresh}
               bumpConversationId={lastSentConversationId}
               currentUserId={user?.id || null}
+              onUnreadTotalsChange={handleUnreadTotalsChange}
             />
           )}
       </ChatSidebar>
