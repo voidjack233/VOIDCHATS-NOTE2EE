@@ -1,5 +1,6 @@
+import { useMappingHelper, useRecyclingState } from '@shopify/flash-list';
 import { FileText, Forward, ImageOff, Reply } from 'lucide-react-native';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef } from 'react';
 import {
   Alert,
   Animated,
@@ -52,8 +53,20 @@ function displayTime(value: string) {
 
 const INLINE_PATTERN = /(\|\|[\s\S]+?\|\||```[\s\S]+?```|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|https?:\/\/[^\s]+)/g;
 
-function FormattedMessage({ content, color, fontSize }: { content: string; color: string; fontSize: number }) {
-  const [spoilersRevealed, setSpoilersRevealed] = useState(false);
+function FormattedMessage({
+  content,
+  color,
+  fontSize,
+  messageIdentity,
+  onHeightWillChange,
+}: {
+  content: string;
+  color: string;
+  fontSize: number;
+  messageIdentity: string;
+  onHeightWillChange?: () => void;
+}) {
+  const [spoilersRevealed, setSpoilersRevealed] = useRecyclingState(false, [messageIdentity, content]);
   const pieces = useMemo(() => content.split(INLINE_PATTERN).filter(Boolean), [content]);
 
   const openExternalLink = (url: string) => {
@@ -74,7 +87,10 @@ function FormattedMessage({ content, color, fontSize }: { content: string; color
             <Text
               accessibilityHint="Reveals hidden message text"
               key={`${piece}-${index}`}
-              onPress={() => setSpoilersRevealed((current) => !current)}
+              onPress={() => {
+                onHeightWillChange?.();
+                setSpoilersRevealed((current) => !current);
+              }}
               style={{ backgroundColor: spoilersRevealed ? 'rgba(255,255,255,0.12)' : color, color: spoilersRevealed ? color : 'transparent' }}
             >
               {piece.slice(2, -2)}
@@ -119,15 +135,19 @@ function ReplyPreview({ message, onPress }: { message: Message; onPress?: () => 
 }
 
 function AttachmentView({
+  attachmentIdentity,
   raw,
   onOpen,
+  onHeightWillChange,
 }: {
+  attachmentIdentity: string;
   raw: string;
   onOpen?: (attachment: Attachment) => void;
+  onHeightWillChange?: () => void;
 }) {
   const { palette } = useTheme();
-  const [failed, setFailed] = useState(false);
-  const [spoilerRevealed, setSpoilerRevealed] = useState(false);
+  const [failed, setFailed] = useRecyclingState(false, [attachmentIdentity, raw]);
+  const [spoilerRevealed, setSpoilerRevealed] = useRecyclingState(false, [attachmentIdentity, raw]);
   const attachment = useMemo(() => parseAttachment(raw), [raw]);
   const image = isImageAttachment(attachment);
   const uri = attachmentUrl(attachment.url || attachment.fallback_url || '');
@@ -137,7 +157,10 @@ function AttachmentView({
       <Pressable
         accessibilityLabel={attachment.spoiler && !spoilerRevealed ? 'Reveal spoiler' : 'Open image'}
         onPress={() => {
-          if (attachment.spoiler && !spoilerRevealed) setSpoilerRevealed(true);
+          if (attachment.spoiler && !spoilerRevealed) {
+            onHeightWillChange?.();
+            setSpoilerRevealed(true);
+          }
           else onOpen?.({ ...attachment, url: uri });
         }}
         style={[styles.imageFrame, { backgroundColor: palette.bg }]}
@@ -150,7 +173,10 @@ function AttachmentView({
         ) : (
           <Image
             blurRadius={attachment.spoiler && !spoilerRevealed ? 28 : 0}
-            onError={() => setFailed(true)}
+            onError={() => {
+              onHeightWillChange?.();
+              setFailed(true);
+            }}
             resizeMode="cover"
             source={{ uri }}
             style={styles.image}
@@ -189,6 +215,7 @@ interface MessageItemProps {
   onLongPress: (message: Message) => void;
   onToggleReaction: (message: Message, emoji: string) => void;
   onOpenAttachment: (attachment: Attachment) => void;
+  onHeightWillChange?: () => void;
   onJumpToReply?: (messageId: string) => void;
   onRetry?: (message: Message) => void;
 }
@@ -204,23 +231,30 @@ export function MessageItem({
   onLongPress,
   onToggleReaction,
   onOpenAttachment,
+  onHeightWillChange,
   onJumpToReply,
   onRetry,
 }: MessageItemProps) {
   const { palette } = useTheme();
   const own = message.sender_id === currentUserId;
-  const shouldAnimate = useRef(animateEntrance).current;
-  const opacity = useRef(new Animated.Value(shouldAnimate ? 0 : 1)).current;
-  const translateX = useRef(new Animated.Value(shouldAnimate ? (own ? 8 : -8) : 0)).current;
+  const stableIdentity = message.client_message_id || message.local_client_id || message.message_id;
+  const opacity = useRef(new Animated.Value(animateEntrance ? 0 : 1)).current;
+  const translateX = useRef(new Animated.Value(animateEntrance ? (own ? 8 : -8) : 0)).current;
+  const { getMappingKey } = useMappingHelper();
   const rightAligned = comfortable && own;
   const attachments = message.attachments || [];
   const reactionEntries = Object.entries(message.reactions || {})
     .map(([emoji, value]) => [emoji, normalizeReaction(value, currentUserId)] as const)
     .filter(([, value]) => value.count > 0);
 
-  useEffect(() => {
-    if (!shouldAnimate) return;
-    Animated.parallel([
+  useLayoutEffect(() => {
+    opacity.stopAnimation();
+    translateX.stopAnimation();
+    opacity.setValue(animateEntrance ? 0 : 1);
+    translateX.setValue(animateEntrance ? (own ? 8 : -8) : 0);
+    if (!animateEntrance) return;
+
+    const animation = Animated.parallel([
       Animated.timing(opacity, {
         duration: 180,
         toValue: 1,
@@ -231,8 +265,10 @@ export function MessageItem({
         toValue: 0,
         useNativeDriver: true,
       }),
-    ]).start();
-  }, [opacity, shouldAnimate, translateX]);
+    ]);
+    animation.start();
+    return () => animation.stop();
+  }, [animateEntrance, opacity, own, stableIdentity, translateX]);
 
   if (message.message_type === 'system') {
     return (
@@ -279,12 +315,29 @@ export function MessageItem({
           {message.reply_to ? <ReplyPreview message={message} onPress={() => onJumpToReply?.(message.reply_to!)} /> : null}
           {attachments.length ? (
             <View style={styles.attachments}>
-              {attachments.map((raw, index) => <AttachmentView key={`${raw}-${index}`} onOpen={onOpenAttachment} raw={raw} />)}
+              {attachments.map((raw, index) => {
+                const attachmentIdentity = `${stableIdentity}:${index}`;
+                return (
+                  <AttachmentView
+                    attachmentIdentity={attachmentIdentity}
+                    key={getMappingKey(`${attachmentIdentity}:${raw}`, index)}
+                    onOpen={onOpenAttachment}
+                    onHeightWillChange={onHeightWillChange}
+                    raw={raw}
+                  />
+                );
+              })}
             </View>
           ) : null}
           {message.content ? (
             <View style={attachments.length ? styles.caption : undefined}>
-              <FormattedMessage color={message.is_deleted ? palette.muted : palette.text} content={message.content} fontSize={fontSize} />
+              <FormattedMessage
+                color={message.is_deleted ? palette.muted : palette.text}
+                content={message.content}
+                fontSize={fontSize}
+                messageIdentity={stableIdentity}
+                onHeightWillChange={onHeightWillChange}
+              />
             </View>
           ) : null}
           <View style={[styles.statusRow, rightAligned && styles.statusRowOwn]}>

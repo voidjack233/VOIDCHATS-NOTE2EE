@@ -37,6 +37,12 @@ import { StateView } from '../../components/common/StateView';
 import { API_URL } from '../../config';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
+import {
+  NativeMessageTimeline,
+  type NativeMessageTimelineHandle,
+  type TimelineMessage,
+  type TimelineRenderInfo,
+} from '../../features/chat/timeline';
 import type { RootStackParamList } from '../../navigation/types';
 import { ApiError } from '../../services/api';
 import { chatService, parseAttachment, serializeAttachment } from '../../services/chat';
@@ -215,6 +221,7 @@ export function ChatScreen({ navigation, route }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [initialDataReady, setInitialDataReady] = useState(false);
   const [olderLoading, setOlderLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -230,7 +237,9 @@ export function ChatScreen({ navigation, route }: Props) {
   const [slowmodeUntil, setSlowmodeUntil] = useState(0);
   const [outboxRetryTick, setOutboxRetryTick] = useState(0);
   const [, setClock] = useState(0);
-  const listRef = useRef<FlatList<Message>>(null);
+  const timelineRef = useRef<NativeMessageTimelineHandle>(null);
+  const messageListRef = useRef(messages);
+  messageListRef.current = messages;
   const lastReadRef = useRef<string | null>(null);
   const jobsRef = useRef(new Map<string, OutboxJob>());
   const processingRef = useRef(new Set<string>());
@@ -238,8 +247,15 @@ export function ChatScreen({ navigation, route }: Props) {
   const seenReactionEventsRef = useRef(new Set<string>());
   const mountedRef = useRef(true);
   const historyFenceRef = useRef<number | null>(null);
+  const pendingResumeRefreshGenerationRef = useRef<number | null>(null);
   const loadGenerationRef = useRef(0);
+  const initialDataReadyGenerationRef = useRef<number | null>(null);
   const newMessageIdsRef = useRef(new Set<string>());
+  const localOutputIdsRef = useRef(new Set<string>());
+  const timelineMessageCacheRef = useRef(new WeakMap<Message, {
+    context: string;
+    value: TimelineMessage;
+  }>());
   const replyRequestsRef = useRef(new Set<string>());
   const outboxRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outboxRetryDelayRef = useRef(2_000);
@@ -276,7 +292,9 @@ export function ChatScreen({ navigation, route }: Props) {
 
   const loadInitial = useCallback(async () => {
     const generation = ++loadGenerationRef.current;
+    initialDataReadyGenerationRef.current = null;
     setInitialLoading(true);
+    setInitialDataReady(false);
     setLoadError(null);
     try {
       const [history, detail, queued] = await Promise.all([
@@ -293,14 +311,27 @@ export function ChatScreen({ navigation, route }: Props) {
       const fence = historyFenceFor(detail.conversation, detailMembers, user?.id);
       const visibleHistory = filterHistoryAtFence(history.messages, fence);
       historyFenceRef.current = fence;
-      setMessages((current) => dedupeMessages([
-        ...visibleHistory.messages,
-        ...queuedRows,
-        ...current,
-      ]));
+      setMessages((current) => {
+        const currentConversationMessages = current.filter((message) =>
+          conversationMatches(message, detail.conversation));
+        const visibleCurrentMessages = filterHistoryAtFence(
+          currentConversationMessages.filter((message) => !message.local_status),
+          fence,
+        ).messages;
+        const localCurrentMessages = currentConversationMessages.filter((message) =>
+          Boolean(message.local_status));
+        return dedupeMessages([
+          ...visibleHistory.messages,
+          ...queuedRows,
+          ...visibleCurrentMessages,
+          ...localCurrentMessages,
+        ]);
+      });
       setHasMore(history.hasMore && !visibleHistory.reachedFence);
       setConversation(detail.conversation);
       setMembers(detailMembers);
+      initialDataReadyGenerationRef.current = generation;
+      setInitialDataReady(true);
       patchConversation({ ...detail.conversation, unread_count: 0 });
     } catch (caught) {
       if (!mountedRef.current || generation !== loadGenerationRef.current) return;
@@ -315,10 +346,16 @@ export function ChatScreen({ navigation, route }: Props) {
     setConversation(route.params.conversation);
     setMessages([]);
     newMessageIdsRef.current.clear();
+    localOutputIdsRef.current.clear();
     replyRequestsRef.current.clear();
     seenReactionEventsRef.current.clear();
+    historyFenceRef.current = null;
+    pendingResumeRefreshGenerationRef.current = null;
+    initialDataReadyGenerationRef.current = null;
     setMembers([]);
     setHasMore(true);
+    setOlderLoading(false);
+    setInitialDataReady(false);
     setReplyTo(null);
     setEditing(null);
     void loadInitial();
@@ -359,6 +396,9 @@ export function ChatScreen({ navigation, route }: Props) {
   }, [conversation, conversationId, messages, patchConversation]);
 
   useEffect(() => {
+    const generation = loadGenerationRef.current;
+    if (initialDataReadyGenerationRef.current !== generation) return;
+    const historyFence = historyFenceRef.current;
     const loadedIds = new Set(messages.map((message) => message.message_id));
     const missingReplyIds = Array.from(new Set(messages
       .filter((message) => message.reply_to && !message.reply_message && !loadedIds.has(message.reply_to))
@@ -368,13 +408,17 @@ export function ChatScreen({ navigation, route }: Props) {
     missingReplyIds.forEach((messageId) => {
       replyRequestsRef.current.add(messageId);
       void chatService.message(conversationId, messageId).then((parent) => {
-        if (!filterHistoryAtFence([parent], historyFenceRef.current).messages.length) return;
+        if (!mountedRef.current || generation !== loadGenerationRef.current) {
+          replyRequestsRef.current.delete(messageId);
+          return;
+        }
+        if (!filterHistoryAtFence([parent], historyFence).messages.length) return;
         setMessages((current) => current.map((message) => message.reply_to === messageId
           ? { ...message, reply_message: parent }
           : message));
-      }).catch(() => undefined);
+      }).catch(() => replyRequestsRef.current.delete(messageId));
     });
-  }, [conversationId, messages]);
+  }, [conversationId, initialDataReady, messages]);
 
   const replaceByClientId = useCallback((clientId: string, next: Message) => {
     setMessages((current) => dedupeMessages([
@@ -519,11 +563,21 @@ export function ChatScreen({ navigation, route }: Props) {
         message_id: data.message_id,
       }));
     });
-    const refreshAfterResume = () => void chatService.messages(conversationId).then((history) => {
-      const visibleHistory = filterHistoryAtFence(history.messages, historyFenceRef.current);
-      setMessages((current) => dedupeMessages([...visibleHistory.messages, ...current]));
-      if (visibleHistory.reachedFence) setHasMore(false);
-    }).catch(() => undefined);
+    const refreshAfterResume = () => {
+      const generation = loadGenerationRef.current;
+      if (initialDataReadyGenerationRef.current !== generation) {
+        pendingResumeRefreshGenerationRef.current = generation;
+        return;
+      }
+      pendingResumeRefreshGenerationRef.current = null;
+      const historyFence = historyFenceRef.current;
+      void chatService.messages(conversationId).then((history) => {
+        if (!mountedRef.current || generation !== loadGenerationRef.current) return;
+        const visibleHistory = filterHistoryAtFence(history.messages, historyFence);
+        setMessages((current) => dedupeMessages([...visibleHistory.messages, ...current]));
+        if (visibleHistory.reachedFence) setHasMore(false);
+      }).catch(() => undefined);
+    };
     const offReady = gateway.on('READY', refreshAfterResume);
     const offResumed = gateway.on('RESUMED', refreshAfterResume);
     const offConversation = gateway.on('CONVERSATION_UPDATE', (raw) => {
@@ -545,6 +599,12 @@ export function ChatScreen({ navigation, route }: Props) {
     };
     const offMemberLeave = gateway.on('MEMBER_LEAVE', handleRemoval);
     const offDmHidden = gateway.on('DM_HIDDEN', handleRemoval);
+    if (
+      initialDataReadyGenerationRef.current === loadGenerationRef.current &&
+      pendingResumeRefreshGenerationRef.current === loadGenerationRef.current
+    ) {
+      refreshAfterResume();
+    }
     return () => {
       offCreate();
       offUpdate();
@@ -559,22 +619,27 @@ export function ChatScreen({ navigation, route }: Props) {
       offMemberLeave();
       offDmHidden();
     };
-  }, [conversation, conversationId, markNewMessage, navigation, patchConversation, removeConversation, user?.id]);
+  }, [conversation, conversationId, initialDataReady, initialLoading, markNewMessage, navigation, patchConversation, removeConversation, user?.id]);
 
   const loadOlder = async () => {
     if (!hasMore || olderLoading || initialLoading || !messages.length) return;
+    const generation = loadGenerationRef.current;
     const oldest = [...messages].reverse().find((message) => !message.local_status);
     if (!oldest) return;
     setOlderLoading(true);
     try {
       const page = await chatService.messages(conversationId, oldest.message_id);
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return;
       const visibleHistory = filterHistoryAtFence(page.messages, historyFenceRef.current);
       setMessages((current) => dedupeMessages([...current, ...visibleHistory.messages]));
       setHasMore(page.hasMore && !visibleHistory.reachedFence);
     } catch (caught) {
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return;
       setNotice(caught instanceof Error ? caught.message : 'Could not load older messages.');
     } finally {
-      setOlderLoading(false);
+      if (mountedRef.current && generation === loadGenerationRef.current) {
+        setOlderLoading(false);
+      }
     }
   };
 
@@ -616,13 +681,16 @@ export function ChatScreen({ navigation, route }: Props) {
     local.local_status = 'sending';
     local.reply_message = replyTo;
     markNewMessage(local);
+    const localIdentity = messageIdentity(local);
+    localOutputIdsRef.current.add(localIdentity);
+    setTimeout(() => localOutputIdsRef.current.delete(localIdentity), 5_000);
     setMessages((current) => dedupeMessages([local, ...current]));
     const accepted = await performSendJob(job);
     if (accepted) setReplyTo(null);
     return true;
   };
 
-  const retryMessage = async (message: Message) => {
+  const retryMessage = useCallback(async (message: Message) => {
     const clientId = messageIdentity(message);
     let job = jobsRef.current.get(clientId);
     if (!job && user) job = (await outbox.list(user.id, conversationId)).find((item) => item.clientId === clientId);
@@ -631,9 +699,9 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
     await performSendJob(job);
-  };
+  }, [conversationId, performSendJob, user]);
 
-  const toggleReaction = async (message: Message, emoji: string) => {
+  const toggleReaction = useCallback(async (message: Message, emoji: string) => {
     if (!user || message.local_status || message.is_deleted) return;
     const current = message.reactions?.[emoji]
       ? normalizeReaction(message.reactions[emoji]!, user.id)
@@ -672,7 +740,7 @@ export function ChatScreen({ navigation, route }: Props) {
         : item));
       setNotice(caught instanceof Error ? caught.message : 'Could not update reaction.');
     }
-  };
+  }, [conversationId, user]);
 
   const deleteSelected = async (message: Message) => {
     setActionMessage(null);
@@ -686,7 +754,7 @@ export function ChatScreen({ navigation, route }: Props) {
     }
   };
 
-  const openAttachment = (attachment: Attachment) => {
+  const openAttachment = useCallback((attachment: Attachment) => {
     const resolved = { ...attachment, url: fullUrl(attachment.url || attachment.fallback_url || '') };
     if (isImage(resolved)) {
       setSelectedAttachment(resolved);
@@ -696,12 +764,12 @@ export function ChatScreen({ navigation, route }: Props) {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Open', onPress: () => void Linking.openURL(resolved.url) },
     ]);
-  };
+  }, []);
 
-  const startAction = (message: Message) => {
+  const startAction = useCallback((message: Message) => {
     Vibration.vibrate(20);
     setActionMessage(message);
-  };
+  }, []);
 
   const forwardMessage = async (target: Conversation) => {
     if (!forwarding || !user) return;
@@ -753,6 +821,213 @@ export function ChatScreen({ navigation, route }: Props) {
     return name.toLowerCase().includes(forwardSearch.trim().toLowerCase());
   }), [conversations, forwardSearch]);
 
+  const chronologicalSourceMessages = useMemo(
+    () => [...messages].reverse(),
+    [messages],
+  );
+  const sourceMessageById = useMemo(
+    () => new Map(messages.map((message) => [messageIdentity(message), message])),
+    [messages],
+  );
+  const sourceMessageByServerId = useMemo(
+    () => new Map(messages.map((message) => [message.message_id, message])),
+    [messages],
+  );
+  const memberById = useMemo(
+    () => new Map(members.map((member) => [member.user_id, member])),
+    [members],
+  );
+  const timelineMessages = useMemo<TimelineMessage[]>(
+    () => chronologicalSourceMessages.map((message, index) => {
+      const member = memberById.get(message.sender_id);
+      const older = chronologicalSourceMessages[index - 1];
+      const replyTarget = message.reply_to
+        ? sourceMessageByServerId.get(message.reply_to)
+        : undefined;
+      const context = JSON.stringify([
+        member?.nickname,
+        member?.display_name,
+        member?.username,
+        older ? messageIdentity(older) : null,
+        older?.sender_id,
+        older?.message_type,
+        older?.reply_to,
+        older?.created_at,
+        replyTarget?.message_id,
+        replyTarget?.content,
+        replyTarget?.is_deleted,
+        replyTarget?.attachments,
+        replyTarget?.sender_name,
+        replyTarget?.sender_username,
+        density,
+        messageSpacing,
+        chatFontScale,
+      ]);
+      const cached = timelineMessageCacheRef.current.get(message);
+      if (cached?.context === context) return cached.value;
+
+      const imageAttachment = (message.attachments || [])
+        .map(parseAttachment)
+        .find(isImage);
+
+      const value: TimelineMessage = {
+        id: messageIdentity(message),
+        senderId: message.sender_id,
+        senderName: message.sender_name || member?.nickname || member?.display_name || member?.username || 'Unknown',
+        createdAt: message.created_at,
+        text: message.content,
+        image: imageAttachment
+          ? {
+              uri: fullUrl(imageAttachment.url || imageAttachment.fallback_url || ''),
+              width: imageAttachment.width,
+              height: imageAttachment.height,
+            }
+          : undefined,
+        status: message.local_status,
+        itemType: message.message_type === 'system'
+          ? 'system'
+          : message.attachments?.length
+            ? 'attachment'
+            : 'message',
+        layoutVersion: JSON.stringify([
+          message.content,
+          message.is_deleted,
+          message.is_edited,
+          message.attachments,
+          message.reply_to,
+          message.reply_message?.message_id,
+          message.reply_message?.content,
+          message.reactions,
+          message.forwarded,
+          message.local_status,
+          context,
+        ]),
+      };
+      timelineMessageCacheRef.current.set(message, { context, value });
+      return value;
+    }),
+    [
+      chatFontScale,
+      chronologicalSourceMessages,
+      density,
+      memberById,
+      messageSpacing,
+      sourceMessageByServerId,
+    ],
+  );
+  const rowRenderContextRef = useRef({
+    chatFontScale,
+    chronologicalSourceMessages,
+    density,
+    memberById,
+    messageSpacing,
+    sourceMessageById,
+    sourceMessageByServerId,
+    userId: user?.id,
+  });
+  rowRenderContextRef.current = {
+    chatFontScale,
+    chronologicalSourceMessages,
+    density,
+    memberById,
+    messageSpacing,
+    sourceMessageById,
+    sourceMessageByServerId,
+    userId: user?.id,
+  };
+  const timelineColors = useMemo(() => ({
+    accent: palette.accent,
+    background: palette.bg,
+    border: palette.border,
+    surface: palette.surfaceRaised,
+    text: palette.text,
+  }), [palette]);
+  const jumpToLoadedMessage = useCallback(async (messageId: string) => {
+    const target = messageListRef.current.find((message) => message.message_id === messageId);
+    if (!target) {
+      setNotice('That replied-to message is not loaded in this history window.');
+      return;
+    }
+    const jumped = await timelineRef.current?.jumpToMessage(messageIdentity(target));
+    if (!jumped) {
+      setNotice('Could not move to that message.');
+    }
+  }, []);
+  const shouldForceFollowOnAppend = useCallback(
+    (message: TimelineMessage) => localOutputIdsRef.current.has(message.id),
+    [],
+  );
+  const getTimelineItemType = useCallback(
+    (message: TimelineMessage) => message.itemType || 'message',
+    [],
+  );
+  const handleTimelineLoadError = useCallback((_direction: 'older' | 'newer', error: unknown) => {
+    setNotice(error instanceof Error ? error.message : 'Could not update message history.');
+  }, []);
+  const renderTimelineMessage = useCallback(({
+    message: timelineMessage,
+    index,
+    onHeightWillChange,
+  }: TimelineRenderInfo) => {
+    const {
+      chatFontScale: currentFontScale,
+      chronologicalSourceMessages: currentChronologicalMessages,
+      density: currentDensity,
+      memberById: currentMemberById,
+      messageSpacing: currentMessageSpacing,
+      sourceMessageById: currentSourceMessageById,
+      sourceMessageByServerId: currentSourceMessageByServerId,
+      userId,
+    } = rowRenderContextRef.current;
+    const item = currentSourceMessageById.get(timelineMessage.id);
+    if (!item) return null;
+
+    const older = currentChronologicalMessages[index - 1];
+    const grouped = Boolean(
+      older &&
+      older.sender_id === item.sender_id &&
+      older.message_type === item.message_type &&
+      !item.reply_to &&
+      !older.reply_to &&
+      Math.abs((Date.parse(item.created_at) || 0) - (Date.parse(older.created_at) || 0)) < 5 * 60_000,
+    );
+    const member = currentMemberById.get(item.sender_id);
+    const loadedReply = item.reply_to
+      ? currentSourceMessageByServerId.get(item.reply_to)
+      : undefined;
+    const resolved: Message = {
+      ...item,
+      reply_message: loadedReply || item.reply_message || null,
+      sender_name: item.sender_name || member?.nickname || member?.display_name,
+      sender_username: item.sender_username || member?.username,
+      sender_avatar_url: item.sender_avatar_url || member?.avatar_url,
+    };
+
+    return (
+      <MessageItem
+        animateEntrance={newMessageIdsRef.current.has(timelineMessage.id)}
+        comfortable={currentDensity === 'comfortable'}
+        currentUserId={userId}
+        fontSize={currentFontScale}
+        message={resolved}
+        onHeightWillChange={onHeightWillChange}
+        onJumpToReply={(messageId) => void jumpToLoadedMessage(messageId)}
+        onLongPress={startAction}
+        onOpenAttachment={openAttachment}
+        onRetry={(failed) => void retryMessage(failed)}
+        onToggleReaction={(target, emoji) => void toggleReaction(target, emoji)}
+        showHeader={!grouped}
+        spacing={currentMessageSpacing}
+      />
+    );
+  }, [
+    jumpToLoadedMessage,
+    openAttachment,
+    retryMessage,
+    startAction,
+    toggleReaction,
+  ]);
+
   return (
     <Screen keyboard>
       <View style={[styles.header, { backgroundColor: palette.surface, borderBottomColor: palette.border }]}>
@@ -790,63 +1065,25 @@ export function ChatScreen({ navigation, route }: Props) {
 
       {initialLoading ? (
         <StateView message="Preparing message history..." title="Loading messages" type="loading" />
-      ) : loadError && !messages.length ? (
+      ) : loadError ? (
         <StateView actionLabel="Retry" message={loadError} onAction={() => void loadInitial()} title="Messages unavailable" type="error" />
       ) : !messages.length ? (
         <StateView title="No messages yet. Say something!" />
       ) : (
-        <FlatList
-          ref={listRef}
-          data={messages}
-          inverted
-          initialNumToRender={20}
-          keyboardDismissMode="interactive"
-          keyboardShouldPersistTaps="handled"
-          keyExtractor={(item) => messageIdentity(item)}
-          ListFooterComponent={olderLoading ? <ActivityIndicator color={palette.accent} style={styles.olderLoader} /> : null}
-          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-          maxToRenderPerBatch={14}
-          onEndReached={() => void loadOlder()}
-          onEndReachedThreshold={0.22}
-          onScrollToIndexFailed={({ index }) => setTimeout(() => listRef.current?.scrollToOffset({ animated: true, offset: Math.max(0, index * 90) }), 100)}
-          renderItem={({ item, index }) => {
-            const older = messages[index + 1];
-            const grouped = Boolean(
-              older &&
-              older.sender_id === item.sender_id &&
-              older.message_type === item.message_type &&
-              !item.reply_to &&
-              !older.reply_to &&
-              Math.abs((Date.parse(item.created_at) || 0) - (Date.parse(older.created_at) || 0)) < 5 * 60_000,
-            );
-            const member = members.find((candidate) => candidate.user_id === item.sender_id);
-            const resolved: Message = {
-              ...item,
-              reply_message: item.reply_message || (
-                item.reply_to ? messages.find((candidate) => candidate.message_id === item.reply_to) || null : null
-              ),
-              sender_name: item.sender_name || member?.nickname || member?.display_name,
-              sender_username: item.sender_username || member?.username,
-              sender_avatar_url: item.sender_avatar_url || member?.avatar_url,
-            };
-            return (
-              <MessageItem
-                animateEntrance={newMessageIdsRef.current.has(messageIdentity(item))}
-                comfortable={density === 'comfortable'}
-                currentUserId={user?.id}
-                fontSize={chatFontScale}
-                message={resolved}
-                onLongPress={startAction}
-                onOpenAttachment={openAttachment}
-                onRetry={(failed) => void retryMessage(failed)}
-                onToggleReaction={(target, emoji) => void toggleReaction(target, emoji)}
-                showHeader={!grouped}
-                spacing={messageSpacing}
-              />
-            );
-          }}
-          style={styles.list}
-          windowSize={12}
+        <NativeMessageTimeline
+          ref={timelineRef}
+          colors={timelineColors}
+          conversationId={conversationId}
+          currentUserId={user?.id || ''}
+          getItemType={getTimelineItemType}
+          hasOlder={hasMore}
+          initialDataReady={initialDataReady}
+          loadOlder={loadOlder}
+          loadingOlder={olderLoading}
+          messages={timelineMessages}
+          onLoadError={handleTimelineLoadError}
+          renderMessage={renderTimelineMessage}
+          shouldForceFollowOnAppend={shouldForceFollowOnAppend}
         />
       )}
 
@@ -967,8 +1204,6 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, minWidth: 0 },
   headerTitle: { fontSize: 17, fontWeight: '800' },
   headerSubtitle: { fontSize: 11, marginTop: 2 },
-  list: { flex: 1 },
-  olderLoader: { marginVertical: 20 },
   typingWrap: { height: 19, justifyContent: 'center', paddingHorizontal: 16 },
   typing: { fontSize: 11, fontStyle: 'italic' },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
