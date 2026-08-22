@@ -30,6 +30,7 @@ import {
 } from 'react-native';
 import { MessageComposer } from '../../components/chat/MessageComposer';
 import { MessageItem, normalizeReaction } from '../../components/chat/MessageItem';
+import { ConversationOrigin, EmptyConversationState } from '../../components/chat/ConversationOrigin';
 import { Avatar } from '../../components/common/Avatar';
 import { FeedbackBanner } from '../../components/common/FeedbackBanner';
 import { Screen } from '../../components/common/Screen';
@@ -42,6 +43,7 @@ import {
   type NativeMessageTimelineHandle,
   type TimelineMessage,
   type TimelineRenderInfo,
+  type TimelineState,
 } from '../../features/chat/timeline';
 import type { RootStackParamList } from '../../navigation/types';
 import { ApiError } from '../../services/api';
@@ -57,11 +59,55 @@ import type {
   PickedAttachment,
   ReactionValue,
 } from '../../types/models';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
 
 const QUICK_REACTIONS = ['❤️', '😂', '😮', '😢', '😡', '👍'];
 const MAX_REACTIONS = 10;
+const MAX_CACHED_CONVERSATION_WINDOWS = 4;
+const MAX_CACHED_MESSAGES_PER_WINDOW = 240;
+
+interface CachedConversationWindow {
+  conversation: Conversation;
+  members: ConversationMember[];
+  messages: Message[];
+  hasOlder: boolean;
+  hasNewer: boolean;
+  atBeginning: boolean;
+}
+
+const conversationWindowCache = new Map<string, CachedConversationWindow>();
+
+function cachedConversationWindow(key: string) {
+  const cached = conversationWindowCache.get(key);
+  if (!cached) return null;
+  conversationWindowCache.delete(key);
+  conversationWindowCache.set(key, cached);
+  return cached;
+}
+
+function rememberConversationWindow(key: string, window: CachedConversationWindow) {
+  const trimmed = window.messages.length > MAX_CACHED_MESSAGES_PER_WINDOW;
+  const cachedMessages = !trimmed
+    ? window.messages
+    : window.atBeginning
+      ? window.messages.slice(-MAX_CACHED_MESSAGES_PER_WINDOW)
+      : window.messages.slice(0, MAX_CACHED_MESSAGES_PER_WINDOW);
+  const boundedWindow: CachedConversationWindow = {
+    ...window,
+    hasNewer: window.hasNewer || (trimmed && window.atBeginning),
+    hasOlder: window.hasOlder || (trimmed && !window.atBeginning),
+    messages: cachedMessages,
+  };
+  conversationWindowCache.delete(key);
+  conversationWindowCache.set(key, boundedWindow);
+  while (conversationWindowCache.size > MAX_CACHED_CONVERSATION_WINDOWS) {
+    const oldest = conversationWindowCache.keys().next().value;
+    if (!oldest) break;
+    conversationWindowCache.delete(oldest);
+  }
+}
 
 function fullUrl(url: string) {
   if (/^(https?:|data:|file:|content:|blob:)/i.test(url)) return url;
@@ -70,6 +116,15 @@ function fullUrl(url: string) {
 
 function isImage(attachment: Attachment) {
   return Boolean(attachment.mime?.startsWith('image/') || /\.(jpe?g|png|gif|webp)(?:\?|$)/i.test(attachment.url));
+}
+
+function preferredTimelineImageUrl(attachment: Attachment) {
+  return attachment.display_variants?.small?.url ||
+    attachment.display_variants?.medium?.url ||
+    attachment.display_url ||
+    attachment.url ||
+    attachment.fallback_url ||
+    '';
 }
 
 function messageIdentity(message: Message) {
@@ -177,6 +232,14 @@ function typingSentence(names: string[]) {
   return `${names[0]}, ${names[1]} and others are typing...`;
 }
 
+function sameCalendarDay(left: string, right: string) {
+  const leftDate = new Date(left);
+  const rightDate = new Date(right);
+  return !Number.isNaN(leftDate.getTime()) &&
+    !Number.isNaN(rightDate.getTime()) &&
+    leftDate.toDateString() === rightDate.toDateString();
+}
+
 function meetsWhoThreshold(role: string, threshold: 'everyone' | 'admins' | 'owner') {
   if (role === 'owner') return true;
   if (threshold === 'everyone') return role !== 'viewer';
@@ -208,21 +271,41 @@ function applyReactionEvent(message: Message, event: { emoji: string; user_id?: 
 export function ChatScreen({ navigation, route }: Props) {
   const { palette, density, messageSpacing, chatFontScale } = useTheme();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const {
     conversations,
     connectionState,
+    friends,
     isOnline,
     patchConversation,
     removeConversation,
     setActiveConversation,
   } = useAppData();
-  const [conversation, setConversation] = useState(route.params.conversation);
-  const [members, setMembers] = useState<ConversationMember[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [hasMore, setHasMore] = useState(true);
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [initialDataReady, setInitialDataReady] = useState(false);
+  const conversationId = route.params.conversation.id;
+  const runtimeKey = `${user?.id || 'anonymous'}:${conversationId}`;
+  const initialRuntimeRef = useRef<{
+    key: string;
+    value: CachedConversationWindow | null;
+  } | null>(null);
+  if (!initialRuntimeRef.current) {
+    initialRuntimeRef.current = {
+      key: runtimeKey,
+      value: cachedConversationWindow(runtimeKey),
+    };
+  }
+  const initialRuntime = initialRuntimeRef.current.value;
+  const [conversation, setConversation] = useState(
+    initialRuntime?.conversation || route.params.conversation,
+  );
+  const [members, setMembers] = useState<ConversationMember[]>(initialRuntime?.members || []);
+  const [messages, setMessages] = useState<Message[]>(initialRuntime?.messages || []);
+  const [hasMore, setHasMore] = useState(initialRuntime?.hasOlder ?? true);
+  const [hasNewer, setHasNewer] = useState(initialRuntime?.hasNewer ?? false);
+  const [initialLoading, setInitialLoading] = useState(!initialRuntime);
+  const [initialDataReady, setInitialDataReady] = useState(Boolean(initialRuntime));
   const [olderLoading, setOlderLoading] = useState(false);
+  const [newerLoading, setNewerLoading] = useState(false);
+  const [timelineState, setTimelineState] = useState<TimelineState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
@@ -248,6 +331,11 @@ export function ChatScreen({ navigation, route }: Props) {
   const mountedRef = useRef(true);
   const historyFenceRef = useRef<number | null>(null);
   const pendingResumeRefreshGenerationRef = useRef<number | null>(null);
+  const pendingContextJumpRef = useRef<string | null>(null);
+  const newerLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const initialScrollToStartRef = useRef(Boolean(initialRuntime?.atBeginning));
+  const hasNewerRef = useRef(hasNewer);
+  hasNewerRef.current = hasNewer;
   const loadGenerationRef = useRef(0);
   const initialDataReadyGenerationRef = useRef<number | null>(null);
   const newMessageIdsRef = useRef(new Set<string>());
@@ -266,7 +354,6 @@ export function ChatScreen({ navigation, route }: Props) {
     setTimeout(() => newMessageIdsRef.current.delete(identity), 1_000);
   }, []);
 
-  const conversationId = route.params.conversation.id;
   const title = conversation.type === 'dm'
     ? conversation.dm_display_name || conversation.dm_username || 'Direct Message'
     : conversation.name || 'Unnamed Group';
@@ -274,6 +361,9 @@ export function ChatScreen({ navigation, route }: Props) {
     ? conversation.dm_username ? `@${conversation.dm_username}` : 'Direct Message'
     : `${conversation.member_count || members.length} member${(conversation.member_count || members.length) === 1 ? '' : 's'}`;
   const otherMember = members.find((member) => member.user_id !== user?.id);
+  const directFriend = conversation.type === 'dm'
+    ? friends.find((friend) => friend.id === conversation.dm_user_id)
+    : undefined;
   const currentRole = members.find((member) => member.user_id === user?.id)?.role || conversation.role || 'member';
   const isModerator = currentRole === 'owner' || currentRole === 'admin';
   const canSend = currentRole !== 'viewer';
@@ -284,34 +374,48 @@ export function ChatScreen({ navigation, route }: Props) {
   const slowmodeRemaining = isModerator
     ? 0
     : Math.max(0, Math.ceil((slowmodeUntil - Date.now()) / 1_000));
+  const runtimeSnapshotRef = useRef<CachedConversationWindow | null>(null);
+  runtimeSnapshotRef.current = initialDataReady ? {
+    atBeginning: timelineState?.isAtBeginning ?? initialScrollToStartRef.current,
+    conversation,
+    hasNewer,
+    hasOlder: hasMore,
+    members,
+    messages,
+  } : null;
 
   useEffect(() => {
     setActiveConversation(conversation);
     return () => setActiveConversation(null);
   }, [conversation.id, conversation.public_id, setActiveConversation]);
 
-  const loadInitial = useCallback(async () => {
+  const loadInitial = useCallback(async (cachedWindow?: CachedConversationWindow | null) => {
     const generation = ++loadGenerationRef.current;
+    const activeUserId = user?.id;
+    const preserveHistoricalWindow = Boolean(cachedWindow?.hasNewer);
     initialDataReadyGenerationRef.current = null;
-    setInitialLoading(true);
-    setInitialDataReady(false);
+    setInitialLoading(!cachedWindow);
+    setInitialDataReady(Boolean(cachedWindow));
     setLoadError(null);
     try {
       const [history, detail, queued] = await Promise.all([
         chatService.messages(conversationId),
         chatService.conversation(conversationId),
-        user ? outbox.list(user.id, conversationId) : Promise.resolve([]),
+        activeUserId ? outbox.list(activeUserId, conversationId) : Promise.resolve([]),
       ]);
       if (!mountedRef.current || generation !== loadGenerationRef.current) return;
-      const queuedRows = user ? queued.map((job) => {
+      const queuedRows = activeUserId ? queued.map((job) => {
         jobsRef.current.set(job.clientId, job);
-        return queuedMessage(job, user.id);
+        return queuedMessage(job, activeUserId);
       }) : [];
       const detailMembers = detail.conversation.members || [];
-      const fence = historyFenceFor(detail.conversation, detailMembers, user?.id);
+      const fence = historyFenceFor(detail.conversation, detailMembers, activeUserId);
       const visibleHistory = filterHistoryAtFence(history.messages, fence);
       historyFenceRef.current = fence;
       setMessages((current) => {
+        if (preserveHistoricalWindow) {
+          return dedupeMessages([...queuedRows, ...current]);
+        }
         const currentConversationMessages = current.filter((message) =>
           conversationMatches(message, detail.conversation));
         const visibleCurrentMessages = filterHistoryAtFence(
@@ -327,46 +431,65 @@ export function ChatScreen({ navigation, route }: Props) {
           ...localCurrentMessages,
         ]);
       });
-      setHasMore(history.hasMore && !visibleHistory.reachedFence);
+      if (!preserveHistoricalWindow) {
+        setHasMore(history.hasMore && !visibleHistory.reachedFence);
+        setHasNewer(false);
+      }
       setConversation(detail.conversation);
       setMembers(detailMembers);
       initialDataReadyGenerationRef.current = generation;
       setInitialDataReady(true);
-      patchConversation({ ...detail.conversation, unread_count: 0 });
+      patchConversation(detail.conversation);
     } catch (caught) {
       if (!mountedRef.current || generation !== loadGenerationRef.current) return;
-      setLoadError(caught instanceof Error ? caught.message : 'Could not load messages.');
+      const message = caught instanceof Error ? caught.message : 'Could not load messages.';
+      if (cachedWindow) setNotice(message);
+      else setLoadError(message);
     } finally {
       if (mountedRef.current && generation === loadGenerationRef.current) setInitialLoading(false);
     }
-  }, [conversationId, patchConversation, user]);
+  }, [conversationId, patchConversation, user?.id]);
 
   useEffect(() => {
+    const cached = initialRuntimeRef.current?.key === runtimeKey
+      ? initialRuntimeRef.current.value
+      : cachedConversationWindow(runtimeKey);
+    initialRuntimeRef.current = { key: runtimeKey, value: cached };
     mountedRef.current = true;
-    setConversation(route.params.conversation);
-    setMessages([]);
+    initialScrollToStartRef.current = Boolean(cached?.atBeginning);
+    setConversation(cached?.conversation || route.params.conversation);
+    setMessages(cached?.messages || []);
     newMessageIdsRef.current.clear();
     localOutputIdsRef.current.clear();
     replyRequestsRef.current.clear();
     seenReactionEventsRef.current.clear();
     historyFenceRef.current = null;
     pendingResumeRefreshGenerationRef.current = null;
+    pendingContextJumpRef.current = null;
+    newerLoadPromiseRef.current = null;
     initialDataReadyGenerationRef.current = null;
-    setMembers([]);
-    setHasMore(true);
+    setMembers(cached?.members || []);
+    setHasMore(cached?.hasOlder ?? true);
+    setHasNewer(cached?.hasNewer ?? false);
     setOlderLoading(false);
-    setInitialDataReady(false);
+    setNewerLoading(false);
+    setInitialLoading(!cached);
+    setInitialDataReady(Boolean(cached));
+    setTimelineState(null);
+    setLoadError(null);
     setReplyTo(null);
     setEditing(null);
-    void loadInitial();
+    void loadInitial(cached);
     return () => {
+      const snapshot = runtimeSnapshotRef.current;
+      if (snapshot) rememberConversationWindow(runtimeKey, snapshot);
       mountedRef.current = false;
       loadGenerationRef.current += 1;
       if (outboxRetryTimerRef.current) clearTimeout(outboxRetryTimerRef.current);
       outboxRetryTimerRef.current = null;
       outboxRetryDelayRef.current = 2_000;
     };
-  }, [loadInitial, route.params.conversation.id]);
+  }, [loadInitial, route.params.conversation, runtimeKey]);
 
   useEffect(() => {
     if (slowmodeUntil <= Date.now()) return;
@@ -386,6 +509,12 @@ export function ChatScreen({ navigation, route }: Props) {
   }, []);
 
   useEffect(() => {
+    if (
+      !initialDataReady ||
+      !timelineState?.initialRestoreComplete ||
+      !timelineState.isAtPresent ||
+      hasNewer
+    ) return;
     const newest = messages.find((message) => !message.local_status && message.message_id);
     if (!newest || newest.message_id === lastReadRef.current) return;
     lastReadRef.current = newest.message_id;
@@ -393,7 +522,7 @@ export function ChatScreen({ navigation, route }: Props) {
       lastReadRef.current = null;
     });
     patchConversation({ ...conversation, unread_count: 0, last_read_message_id: newest.message_id });
-  }, [conversation, conversationId, messages, patchConversation]);
+  }, [conversation, conversationId, hasNewer, initialDataReady, messages, patchConversation, timelineState]);
 
   useEffect(() => {
     const generation = loadGenerationRef.current;
@@ -508,6 +637,12 @@ export function ChatScreen({ navigation, route }: Props) {
       const incoming = raw as Message;
       if (!conversationMatches(incoming, conversation) || !incoming.message_id) return;
       if (!filterHistoryAtFence([incoming], historyFenceRef.current).messages.length) return;
+      const replacesLocalOutput = Boolean(
+        incoming.client_message_id &&
+        messageListRef.current.some((message) =>
+          messageIdentity(message) === incoming.client_message_id),
+      );
+      if (hasNewerRef.current && !replacesLocalOutput) return;
       markNewMessage(incoming);
       setMessages((current) => dedupeMessages([incoming, ...current]));
       if (incoming.client_message_id && user) {
@@ -573,6 +708,7 @@ export function ChatScreen({ navigation, route }: Props) {
       const historyFence = historyFenceRef.current;
       void chatService.messages(conversationId).then((history) => {
         if (!mountedRef.current || generation !== loadGenerationRef.current) return;
+        if (hasNewerRef.current) return;
         const visibleHistory = filterHistoryAtFence(history.messages, historyFence);
         setMessages((current) => dedupeMessages([...visibleHistory.messages, ...current]));
         if (visibleHistory.reachedFence) setHasMore(false);
@@ -643,6 +779,59 @@ export function ChatScreen({ navigation, route }: Props) {
     }
   };
 
+  const loadNewer = useCallback(async () => {
+    if (!hasNewerRef.current) return;
+    if (newerLoadPromiseRef.current) {
+      await newerLoadPromiseRef.current;
+      return;
+    }
+    const generation = loadGenerationRef.current;
+    const request = (async () => {
+      setNewerLoading(true);
+      const newest = messageListRef.current.find((message) => !message.local_status);
+      if (!newest) return;
+      const page = await chatService.messagesAfter(conversationId, newest.message_id);
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return;
+      const visible = filterHistoryAtFence(page.messages, historyFenceRef.current);
+      setMessages((current) => dedupeMessages([...visible.messages, ...current]));
+      setHasNewer(page.hasMore);
+    })();
+    newerLoadPromiseRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (newerLoadPromiseRef.current === request) newerLoadPromiseRef.current = null;
+      if (mountedRef.current && generation === loadGenerationRef.current) setNewerLoading(false);
+    }
+  }, [conversationId]);
+
+  const loadLatest = useCallback(async () => {
+    if (newerLoadPromiseRef.current) {
+      await newerLoadPromiseRef.current;
+      if (!hasNewerRef.current) return;
+    }
+    const generation = loadGenerationRef.current;
+    const request = (async () => {
+      setNewerLoading(true);
+      const history = await chatService.messages(conversationId);
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return;
+      const visible = filterHistoryAtFence(history.messages, historyFenceRef.current);
+      setMessages((current) => dedupeMessages([
+        ...visible.messages,
+        ...current.filter((message) => Boolean(message.local_status)),
+      ]));
+      setHasMore(history.hasMore && !visible.reachedFence);
+      setHasNewer(false);
+    })();
+    newerLoadPromiseRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (newerLoadPromiseRef.current === request) newerLoadPromiseRef.current = null;
+      if (mountedRef.current && generation === loadGenerationRef.current) setNewerLoading(false);
+    }
+  }, [conversationId]);
+
   const sendFromComposer = async (content: string, attachments: PickedAttachment[]) => {
     if (!user || !canSend) return false;
     if (attachments.length && !canAttach) {
@@ -685,6 +874,9 @@ export function ChatScreen({ navigation, route }: Props) {
     localOutputIdsRef.current.add(localIdentity);
     setTimeout(() => localOutputIdsRef.current.delete(localIdentity), 5_000);
     setMessages((current) => dedupeMessages([local, ...current]));
+    if (hasNewerRef.current) {
+      void timelineRef.current?.jumpToPresent({ animated: true });
+    }
     const accepted = await performSendJob(job);
     if (accepted) setReplyTo(null);
     return true;
@@ -771,6 +963,12 @@ export function ChatScreen({ navigation, route }: Props) {
     setActionMessage(message);
   }, []);
 
+  const beginReply = useCallback((message: Message) => {
+    setReplyTo(message);
+    setEditing(null);
+    setActionMessage(null);
+  }, []);
+
   const forwardMessage = async (target: Conversation) => {
     if (!forwarding || !user) return;
     setForwardBusyId(target.id);
@@ -841,6 +1039,9 @@ export function ChatScreen({ navigation, route }: Props) {
     () => chronologicalSourceMessages.map((message, index) => {
       const member = memberById.get(message.sender_id);
       const older = chronologicalSourceMessages[index - 1];
+      const showDateSeparator = index === 0
+        ? !hasMore
+        : Boolean(older && !sameCalendarDay(older.created_at, message.created_at));
       const replyTarget = message.reply_to
         ? sourceMessageByServerId.get(message.reply_to)
         : undefined;
@@ -862,6 +1063,7 @@ export function ChatScreen({ navigation, route }: Props) {
         density,
         messageSpacing,
         chatFontScale,
+        showDateSeparator,
       ]);
       const cached = timelineMessageCacheRef.current.get(message);
       if (cached?.context === context) return cached.value;
@@ -878,7 +1080,7 @@ export function ChatScreen({ navigation, route }: Props) {
         text: message.content,
         image: imageAttachment
           ? {
-              uri: fullUrl(imageAttachment.url || imageAttachment.fallback_url || ''),
+              uri: fullUrl(preferredTimelineImageUrl(imageAttachment)),
               width: imageAttachment.width,
               height: imageAttachment.height,
             }
@@ -910,6 +1112,7 @@ export function ChatScreen({ navigation, route }: Props) {
       chatFontScale,
       chronologicalSourceMessages,
       density,
+      hasMore,
       memberById,
       messageSpacing,
       sourceMessageByServerId,
@@ -919,6 +1122,7 @@ export function ChatScreen({ navigation, route }: Props) {
     chatFontScale,
     chronologicalSourceMessages,
     density,
+    hasMore,
     memberById,
     messageSpacing,
     sourceMessageById,
@@ -929,6 +1133,7 @@ export function ChatScreen({ navigation, route }: Props) {
     chatFontScale,
     chronologicalSourceMessages,
     density,
+    hasMore,
     memberById,
     messageSpacing,
     sourceMessageById,
@@ -944,15 +1149,54 @@ export function ChatScreen({ navigation, route }: Props) {
   }), [palette]);
   const jumpToLoadedMessage = useCallback(async (messageId: string) => {
     const target = messageListRef.current.find((message) => message.message_id === messageId);
-    if (!target) {
-      setNotice('That replied-to message is not loaded in this history window.');
+    if (target) {
+      const jumped = await timelineRef.current?.jumpToMessage(messageIdentity(target));
+      if (!jumped) setNotice('Could not move to that message.');
       return;
     }
-    const jumped = await timelineRef.current?.jumpToMessage(messageIdentity(target));
-    if (!jumped) {
-      setNotice('Could not move to that message.');
+
+    if (newerLoadPromiseRef.current) await newerLoadPromiseRef.current;
+    const generation = loadGenerationRef.current;
+    const request = (async () => {
+      setNewerLoading(true);
+      const context = await chatService.messageContext(conversationId, messageId);
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return;
+      const visible = filterHistoryAtFence(context.messages, historyFenceRef.current);
+      const contextTarget = visible.messages.find(
+        (message) => message.message_id === context.targetMessageId,
+      );
+      if (!contextTarget) {
+        setNotice('That replied-to message is no longer available.');
+        return;
+      }
+      pendingContextJumpRef.current = contextTarget.message_id;
+      setMessages(dedupeMessages(visible.messages));
+      setHasMore(context.hasOlder && !visible.reachedFence);
+      setHasNewer(context.hasNewer);
+    })();
+    newerLoadPromiseRef.current = request;
+    try {
+      await request;
+    } catch (caught) {
+      if (mountedRef.current && generation === loadGenerationRef.current) {
+        setNotice(caught instanceof Error ? caught.message : 'Could not load that reply context.');
+      }
+    } finally {
+      if (newerLoadPromiseRef.current === request) newerLoadPromiseRef.current = null;
+      if (mountedRef.current && generation === loadGenerationRef.current) setNewerLoading(false);
     }
-  }, []);
+  }, [conversationId]);
+
+  useEffect(() => {
+    const pendingId = pendingContextJumpRef.current;
+    if (!pendingId) return;
+    const target = messages.find((message) => message.message_id === pendingId);
+    if (!target) return;
+    pendingContextJumpRef.current = null;
+    void timelineRef.current?.jumpToMessage(messageIdentity(target), { animated: false }).then((jumped) => {
+      if (!jumped && mountedRef.current) setNotice('Could not move to that message.');
+    });
+  }, [messages]);
   const shouldForceFollowOnAppend = useCallback(
     (message: TimelineMessage) => localOutputIdsRef.current.has(message.id),
     [],
@@ -973,6 +1217,7 @@ export function ChatScreen({ navigation, route }: Props) {
       chatFontScale: currentFontScale,
       chronologicalSourceMessages: currentChronologicalMessages,
       density: currentDensity,
+      hasMore: currentHasOlder,
       memberById: currentMemberById,
       messageSpacing: currentMessageSpacing,
       sourceMessageById: currentSourceMessageById,
@@ -983,8 +1228,12 @@ export function ChatScreen({ navigation, route }: Props) {
     if (!item) return null;
 
     const older = currentChronologicalMessages[index - 1];
+    const showDateSeparator = index === 0
+      ? !currentHasOlder
+      : Boolean(older && !sameCalendarDay(older.created_at, item.created_at));
     const grouped = Boolean(
       older &&
+      !showDateSeparator &&
       older.sender_id === item.sender_id &&
       older.message_type === item.message_type &&
       !item.reply_to &&
@@ -1014,13 +1263,16 @@ export function ChatScreen({ navigation, route }: Props) {
         onJumpToReply={(messageId) => void jumpToLoadedMessage(messageId)}
         onLongPress={startAction}
         onOpenAttachment={openAttachment}
+        onReply={beginReply}
         onRetry={(failed) => void retryMessage(failed)}
         onToggleReaction={(target, emoji) => void toggleReaction(target, emoji)}
+        showDateSeparator={showDateSeparator}
         showHeader={!grouped}
         spacing={currentMessageSpacing}
       />
     );
   }, [
+    beginReply,
     jumpToLoadedMessage,
     openAttachment,
     retryMessage,
@@ -1029,7 +1281,7 @@ export function ChatScreen({ navigation, route }: Props) {
   ]);
 
   return (
-    <Screen keyboard>
+    <Screen edges={['top', 'left', 'right']} keyboard>
       <View style={[styles.header, { backgroundColor: palette.surface, borderBottomColor: palette.border }]}>
         <Pressable accessibilityLabel="Back to conversations" hitSlop={10} onPress={() => navigation.goBack()} style={styles.headerButton}>
           <ArrowLeft color={palette.muted} size={22} />
@@ -1064,11 +1316,11 @@ export function ChatScreen({ navigation, route }: Props) {
       {notice ? <FeedbackBanner kind={notice === 'Message forwarded.' ? 'success' : 'warning'} message={notice} onDismiss={() => setNotice(null)} /> : null}
 
       {initialLoading ? (
-        <StateView message="Preparing message history..." title="Loading messages" type="loading" />
+        <View style={styles.initialLoading}>
+          <ActivityIndicator color={palette.accent} size="large" />
+        </View>
       ) : loadError ? (
         <StateView actionLabel="Retry" message={loadError} onAction={() => void loadInitial()} title="Messages unavailable" type="error" />
-      ) : !messages.length ? (
-        <StateView title="No messages yet. Say something!" />
       ) : (
         <NativeMessageTimeline
           ref={timelineRef}
@@ -1076,12 +1328,22 @@ export function ChatScreen({ navigation, route }: Props) {
           conversationId={conversationId}
           currentUserId={user?.id || ''}
           getItemType={getTimelineItemType}
+          hasNewer={hasNewer}
           hasOlder={hasMore}
           initialDataReady={initialDataReady}
+          initialScrollToStart={initialScrollToStartRef.current}
+          emptyComponent={<EmptyConversationState />}
+          listHeader={!hasMore ? (
+            <ConversationOrigin conversation={conversation} friend={directFriend} />
+          ) : null}
+          loadLatest={loadLatest}
+          loadNewer={loadNewer}
           loadOlder={loadOlder}
+          loadingNewer={newerLoading}
           loadingOlder={olderLoading}
           messages={timelineMessages}
           onLoadError={handleTimelineLoadError}
+          onStateChange={setTimelineState}
           renderMessage={renderTimelineMessage}
           shouldForceFollowOnAppend={shouldForceFollowOnAppend}
         />
@@ -1107,7 +1369,14 @@ export function ChatScreen({ navigation, route }: Props) {
 
       <Modal animationType="slide" onRequestClose={() => setActionMessage(null)} transparent visible={Boolean(actionMessage)}>
         <Pressable onPress={() => setActionMessage(null)} style={[styles.modalBackdrop, { backgroundColor: palette.overlay }]}>
-          <Pressable onPress={() => undefined} style={[styles.actionSheet, { backgroundColor: palette.surfaceRaised, borderColor: palette.border }]}>
+          <Pressable onPress={() => undefined} style={[
+            styles.actionSheet,
+            {
+              backgroundColor: palette.surfaceRaised,
+              borderColor: palette.border,
+              paddingBottom: Math.max(24, insets.bottom + 12),
+            },
+          ]}>
             <View style={styles.sheetHandle} />
             <Text style={[styles.sheetTitle, { color: palette.text }]}>Message actions</Text>
             <View style={styles.quickReactions}>
@@ -1127,7 +1396,7 @@ export function ChatScreen({ navigation, route }: Props) {
               ))}
             </View>
             {actionMessage?.content && !actionMessage.is_deleted ? <SheetAction icon={<Copy size={18} />} label="Copy Text" onPress={() => { void Clipboard.setStringAsync(actionMessage.content); setActionMessage(null); }} /> : null}
-            {!actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Reply size={18} />} label="Reply" onPress={() => { setReplyTo(actionMessage); setEditing(null); setActionMessage(null); }} /> : null}
+            {!actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Reply size={18} />} label="Reply" onPress={() => { const target = actionMessage; if (target) beginReply(target); }} /> : null}
             {!actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Forward size={18} />} label="Forward Message" onPress={() => { setForwarding(actionMessage); setActionMessage(null); }} /> : null}
             {actionMessage?.sender_id === user?.id && !actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Pencil size={18} />} label="Edit Message" onPress={() => { const target = actionMessage; if (target) setEditing(target); setReplyTo(null); setActionMessage(null); }} /> : null}
             {(actionMessage?.sender_id === user?.id || isModerator) && !actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction danger icon={<Trash2 size={18} />} label="Delete Message" onPress={() => { const target = actionMessage; if (target) void deleteSelected(target); }} /> : null}
@@ -1138,7 +1407,7 @@ export function ChatScreen({ navigation, route }: Props) {
 
       <Modal animationType="fade" onRequestClose={() => setSelectedAttachment(null)} transparent visible={Boolean(selectedAttachment)}>
         <View style={styles.viewer}>
-          <View style={styles.viewerActions}>
+          <View style={[styles.viewerActions, { top: insets.top + 12 }]}>
             <Pressable accessibilityLabel="Open attachment" onPress={() => selectedAttachment && void Linking.openURL(selectedAttachment.url)} style={styles.viewerButton}><Download color="#fff" size={21} /></Pressable>
             <Pressable accessibilityLabel="Close image" onPress={() => setSelectedAttachment(null)} style={styles.viewerButton}><X color="#fff" size={23} /></Pressable>
           </View>
@@ -1147,7 +1416,14 @@ export function ChatScreen({ navigation, route }: Props) {
       </Modal>
 
       <Modal animationType="slide" onRequestClose={() => setForwarding(null)} visible={Boolean(forwarding)}>
-        <View style={[styles.forwardRoot, { backgroundColor: palette.bg }]}>
+        <View style={[
+          styles.forwardRoot,
+          {
+            backgroundColor: palette.bg,
+            paddingBottom: insets.bottom,
+            paddingTop: insets.top,
+          },
+        ]}>
           <View style={[styles.forwardHeader, { borderBottomColor: palette.border }]}>
             <View>
               <Text style={[styles.forwardTitle, { color: palette.text }]}>Forward message</Text>
@@ -1198,6 +1474,7 @@ export function ChatScreen({ navigation, route }: Props) {
 }
 
 const styles = StyleSheet.create({
+  initialLoading: { alignItems: 'center', flex: 1, justifyContent: 'center' },
   header: { alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', height: 64, paddingHorizontal: 8 },
   headerButton: { alignItems: 'center', height: 42, justifyContent: 'center', width: 42 },
   headerIdentity: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 10, minWidth: 0 },

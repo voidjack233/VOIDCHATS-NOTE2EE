@@ -15,6 +15,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Keyboard,
   Platform,
   Pressable,
   ScrollView,
@@ -23,6 +24,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MAX_ATTACHMENTS } from '../../config';
 import { useTheme } from '../../theme/ThemeContext';
 import type { Message, PickedAttachment } from '../../types/models';
@@ -64,8 +66,10 @@ export function MessageComposer({
   onTyping,
 }: MessageComposerProps) {
   const { palette } = useTheme();
+  const insets = useSafeAreaInsets();
   const [content, setContent] = useState('');
   const [attachments, setAttachments] = useState<PickedAttachment[]>([]);
+  const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
   const lastTypingAt = useRef(0);
   const inputRef = useRef<TextInput>(null);
 
@@ -84,6 +88,15 @@ export function MessageComposer({
   useEffect(() => {
     if (!canAttach) setAttachments([]);
   }, [canAttach]);
+
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
 
   const appendPicked = (picked: PickedAttachment[]) => {
     const valid: PickedAttachment[] = [];
@@ -192,7 +205,14 @@ export function MessageComposer({
       : `Message ${conversationName}`;
 
   return (
-    <View style={[styles.root, { borderTopColor: palette.border, backgroundColor: palette.bg }]}>
+    <View style={[
+      styles.root,
+      {
+        backgroundColor: palette.bg,
+        borderTopColor: palette.border,
+        paddingBottom: keyboardVisible ? 8 : Math.max(8, insets.bottom),
+      },
+    ]}>
       {replyTo ? (
         <View style={[styles.banner, { backgroundColor: palette.surface, borderColor: palette.border }]}>
           <View style={styles.bannerText}>

@@ -1,4 +1,5 @@
-export type PresenceStatus = 'online' | 'idle' | 'offline';
+export type { PresenceStatus } from '../features/presence/presenceStatus';
+import type { PresenceStatus } from '../features/presence/presenceStatus';
 
 export interface User {
   id: string;
@@ -78,6 +79,17 @@ export interface Attachment {
   id?: string;
   url: string;
   fallback_url?: string;
+  url_expires_at?: number;
+  display_url?: string;
+  display_url_expires_at?: number;
+  display_variants?: Partial<Record<
+    'thumb' | 'small' | 'medium' | 'large',
+    {
+      url: string;
+      expires_at: number;
+      width: number;
+    }
+  >>;
   inline?: boolean;
   spoiler?: boolean;
   blurhash?: string;

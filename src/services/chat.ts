@@ -73,12 +73,50 @@ export const chatService = {
     };
   },
 
+  async messagesAfter(id: string, after: string, limit = MESSAGE_PAGE_SIZE) {
+    const query = new URLSearchParams({
+      after,
+      limit: String(limit),
+    });
+    const data = await apiJson<{ success: true; messages: Message[]; has_more: boolean }>(
+      `${PREFIX}/${encodeURIComponent(id)}/messages?${query.toString()}`,
+      { cache: 'no-store' },
+    );
+    return {
+      messages: (data.messages || []).map(normalizeMessage),
+      hasMore: Boolean(data.has_more),
+    };
+  },
+
   async message(id: string, messageId: string) {
     const data = await apiJson<{ success: true; message: Message }>(
       `${PREFIX}/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}`,
       { cache: 'no-store' },
     );
     return normalizeMessage(data.message);
+  },
+
+  async messageContext(id: string, messageId: string, before = 30, after = 30) {
+    const query = new URLSearchParams({
+      before: String(before),
+      after: String(after),
+    });
+    const data = await apiJson<{
+      success: true;
+      target_message_id?: string;
+      messages: Message[];
+      has_older: boolean;
+      has_newer: boolean;
+    }>(
+      `${PREFIX}/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}/context?${query.toString()}`,
+      { cache: 'no-store' },
+    );
+    return {
+      targetMessageId: String(data.target_message_id || messageId),
+      messages: (data.messages || []).map(normalizeMessage),
+      hasOlder: Boolean(data.has_older),
+      hasNewer: Boolean(data.has_newer),
+    };
   },
 
   async sendMessage(

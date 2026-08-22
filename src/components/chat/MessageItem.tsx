@@ -1,9 +1,11 @@
 import { useMappingHelper, useRecyclingState } from '@shopify/flash-list';
+import * as Haptics from 'expo-haptics';
 import { FileText, Forward, ImageOff, Reply } from 'lucide-react-native';
 import React, { useLayoutEffect, useMemo, useRef } from 'react';
 import {
   Alert,
   Animated,
+  Easing,
   Image,
   Linking,
   Pressable,
@@ -11,6 +13,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { API_URL } from '../../config';
 import { parseAttachment } from '../../services/chat';
 import { useTheme } from '../../theme/ThemeContext';
@@ -36,7 +39,23 @@ function attachmentUrl(url: string) {
 
 function isImageAttachment(attachment: Attachment) {
   if (attachment.mime?.startsWith('image/')) return true;
-  return /\.(jpe?g|png|gif|webp)(?:\?|$)/i.test(attachment.url);
+  return /\.(jpe?g|png|gif|webp)(?:\?|$)/i.test(
+    attachment.display_url || attachment.url,
+  );
+}
+
+function directImageUrls(attachment: Attachment) {
+  const candidates = [
+    attachment.display_variants?.small?.url,
+    attachment.display_variants?.medium?.url,
+    attachment.display_url,
+    attachment.url,
+    attachment.fallback_url,
+  ];
+  return Array.from(new Set(candidates
+    .map((url) => url?.trim())
+    .filter((url): url is string => Boolean(url))
+    .map(attachmentUrl)));
 }
 
 function formatBytes(value?: number) {
@@ -49,6 +68,21 @@ function formatBytes(value?: number) {
 function displayTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function displayDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return 'Today';
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric',
+  });
 }
 
 const INLINE_PATTERN = /(\|\|[\s\S]+?\|\||```[\s\S]+?```|`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~|https?:\/\/[^\s]+)/g;
@@ -146,11 +180,18 @@ function AttachmentView({
   onHeightWillChange?: () => void;
 }) {
   const { palette } = useTheme();
-  const [failed, setFailed] = useRecyclingState(false, [attachmentIdentity, raw]);
   const [spoilerRevealed, setSpoilerRevealed] = useRecyclingState(false, [attachmentIdentity, raw]);
   const attachment = useMemo(() => parseAttachment(raw), [raw]);
   const image = isImageAttachment(attachment);
-  const uri = attachmentUrl(attachment.url || attachment.fallback_url || '');
+  const imageUrls = useMemo(() => directImageUrls(attachment), [attachment]);
+  const imageUrlsIdentity = imageUrls.join('|');
+  const [sourceIndex, setSourceIndex] = useRecyclingState(0, [
+    attachmentIdentity,
+    imageUrlsIdentity,
+  ]);
+  const imageUri = imageUrls[sourceIndex];
+  const failed = image && !imageUri;
+  const fileUri = attachmentUrl(attachment.url || attachment.fallback_url || '');
 
   if (image) {
     return (
@@ -161,7 +202,7 @@ function AttachmentView({
             onHeightWillChange?.();
             setSpoilerRevealed(true);
           }
-          else onOpen?.({ ...attachment, url: uri });
+          else if (imageUri) onOpen?.({ ...attachment, url: imageUri });
         }}
         style={[styles.imageFrame, { backgroundColor: palette.bg }]}
       >
@@ -174,11 +215,10 @@ function AttachmentView({
           <Image
             blurRadius={attachment.spoiler && !spoilerRevealed ? 28 : 0}
             onError={() => {
-              onHeightWillChange?.();
-              setFailed(true);
+              setSourceIndex((current) => current + 1);
             }}
             resizeMode="cover"
-            source={{ uri }}
+            source={{ uri: imageUri }}
             style={styles.image}
           />
         )}
@@ -192,7 +232,7 @@ function AttachmentView({
   return (
     <Pressable
       accessibilityRole="link"
-      onPress={() => onOpen?.({ ...attachment, url: uri })}
+      onPress={() => onOpen?.({ ...attachment, url: fileUri })}
       style={[styles.file, { backgroundColor: palette.bg, borderColor: palette.border }]}
     >
       <FileText color={palette.accent} size={24} />
@@ -204,6 +244,19 @@ function AttachmentView({
   );
 }
 
+function DateSeparator({ value }: { value: string }) {
+  const { palette } = useTheme();
+  const label = displayDate(value);
+  if (!label) return null;
+  return (
+    <View accessibilityRole="header" style={styles.dateSeparator}>
+      <View style={[styles.dateLine, { backgroundColor: palette.border }]} />
+      <Text style={[styles.dateLabel, { color: palette.muted, backgroundColor: palette.bg }]}>{label}</Text>
+      <View style={[styles.dateLine, { backgroundColor: palette.border }]} />
+    </View>
+  );
+}
+
 interface MessageItemProps {
   message: Message;
   animateEntrance?: boolean;
@@ -211,8 +264,10 @@ interface MessageItemProps {
   comfortable: boolean;
   fontSize: number;
   spacing: number;
+  showDateSeparator?: boolean;
   showHeader: boolean;
   onLongPress: (message: Message) => void;
+  onReply?: (message: Message) => void;
   onToggleReaction: (message: Message, emoji: string) => void;
   onOpenAttachment: (attachment: Attachment) => void;
   onHeightWillChange?: () => void;
@@ -227,8 +282,10 @@ export function MessageItem({
   comfortable,
   fontSize,
   spacing,
+  showDateSeparator = false,
   showHeader,
   onLongPress,
+  onReply,
   onToggleReaction,
   onOpenAttachment,
   onHeightWillChange,
@@ -240,12 +297,26 @@ export function MessageItem({
   const stableIdentity = message.client_message_id || message.local_client_id || message.message_id;
   const opacity = useRef(new Animated.Value(animateEntrance ? 0 : 1)).current;
   const translateX = useRef(new Animated.Value(animateEntrance ? (own ? 8 : -8) : 0)).current;
+  const swipeTranslateX = useRef(new Animated.Value(0)).current;
+  const swipeReplyArmedRef = useRef(false);
+  const swipeHapticPlayedRef = useRef(false);
+  const messageRef = useRef(message);
+  const onReplyRef = useRef(onReply);
+  messageRef.current = message;
+  onReplyRef.current = onReply;
   const { getMappingKey } = useMappingHelper();
   const rightAligned = comfortable && own;
+  const swipeEnabled = Boolean(
+    onReply &&
+    !message.local_status &&
+    !message.is_deleted &&
+    message.message_type !== 'system',
+  );
   const attachments = message.attachments || [];
   const reactionEntries = Object.entries(message.reactions || {})
     .map(([emoji, value]) => [emoji, normalizeReaction(value, currentUserId)] as const)
     .filter(([, value]) => value.count > 0);
+  const combinedTranslateX = Animated.add(translateX, swipeTranslateX);
 
   useLayoutEffect(() => {
     opacity.stopAnimation();
@@ -257,11 +328,13 @@ export function MessageItem({
     const animation = Animated.parallel([
       Animated.timing(opacity, {
         duration: 180,
+        easing: Easing.bezier(0.2, 0.8, 0.2, 1),
         toValue: 1,
         useNativeDriver: true,
       }),
       Animated.timing(translateX, {
         duration: 180,
+        easing: Easing.bezier(0.2, 0.8, 0.2, 1),
         toValue: 0,
         useNativeDriver: true,
       }),
@@ -270,109 +343,167 @@ export function MessageItem({
     return () => animation.stop();
   }, [animateEntrance, opacity, own, stableIdentity, translateX]);
 
+  useLayoutEffect(() => {
+    swipeTranslateX.stopAnimation();
+    swipeTranslateX.setValue(0);
+    swipeReplyArmedRef.current = false;
+    swipeHapticPlayedRef.current = false;
+  }, [stableIdentity, swipeTranslateX]);
+
+  const swipeGesture = useMemo(() => Gesture.Pan()
+    .enabled(swipeEnabled)
+    .activeOffsetX(12)
+    .failOffsetX(-8)
+    .failOffsetY([-10, 10])
+    .maxPointers(1)
+    .runOnJS(true)
+    .onUpdate((event) => {
+      const next = Math.max(0, Math.min(72, event.translationX));
+      swipeTranslateX.setValue(next);
+      swipeReplyArmedRef.current = next >= 52;
+      if (swipeReplyArmedRef.current && !swipeHapticPlayedRef.current) {
+        swipeHapticPlayedRef.current = true;
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
+      }
+    })
+    .onFinalize(() => {
+      const shouldReply = swipeReplyArmedRef.current;
+      swipeReplyArmedRef.current = false;
+      swipeHapticPlayedRef.current = false;
+      Animated.timing(swipeTranslateX, {
+        duration: 140,
+        easing: Easing.out(Easing.cubic),
+        toValue: 0,
+        useNativeDriver: true,
+      }).start();
+      const current = messageRef.current;
+      const currentIdentity = current.client_message_id || current.local_client_id || current.message_id;
+      if (shouldReply && currentIdentity === stableIdentity) {
+        onReplyRef.current?.(current);
+      }
+    }), [stableIdentity, swipeEnabled, swipeTranslateX]);
+
   if (message.message_type === 'system') {
     return (
-      <Animated.View style={{ opacity, transform: [{ translateX }] }}>
-        <View style={[styles.systemWrap, { marginVertical: Math.max(4, spacing / 2) }]}>
-          <Text style={[styles.system, { color: palette.muted, backgroundColor: palette.surface }]}>{message.content}</Text>
-        </View>
-      </Animated.View>
+      <>
+        {showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
+        <Animated.View style={{ opacity, transform: [{ translateX }] }}>
+          <View style={[styles.systemWrap, { marginVertical: Math.max(4, spacing / 2) }]}>
+            <Text style={[styles.system, { color: palette.muted, backgroundColor: palette.surface }]}>{message.content}</Text>
+          </View>
+        </Animated.View>
+      </>
     );
   }
 
   return (
-    <Animated.View style={{ opacity, transform: [{ translateX }] }}>
-    <View style={[styles.row, rightAligned && styles.rowOwn, { marginTop: showHeader ? Math.max(8, spacing) : 2 }]}>
-      {!rightAligned ? (
-        <View style={styles.avatarColumn}>
-          {showHeader ? <Avatar displayName={message.sender_name} size={32} uri={message.sender_avatar_url} username={message.sender_username} /> : null}
-        </View>
-      ) : null}
-      <Pressable
-        delayLongPress={360}
-        onLongPress={() => onLongPress(message)}
-        style={[styles.messageColumn, rightAligned && styles.messageColumnOwn]}
-      >
-        {showHeader ? (
-          <View style={[styles.meta, rightAligned && styles.metaOwn]}>
-            <Text numberOfLines={1} style={[styles.author, { color: own ? palette.accent : palette.text }]}>
-              {own ? 'You' : message.sender_name || message.sender_username || 'Unknown'}
-            </Text>
-            <Text style={[styles.time, { color: palette.faint }]}>{displayTime(message.created_at)}</Text>
+    <>
+      {showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
+      <View style={[styles.row, rightAligned && styles.rowOwn, { marginTop: showHeader ? Math.max(8, spacing) : 2 }]}>
+        {!rightAligned ? (
+          <View style={styles.avatarColumn}>
+            {showHeader ? <Avatar displayName={message.sender_name} size={32} uri={message.sender_avatar_url} username={message.sender_username} /> : null}
           </View>
         ) : null}
-        <View style={[
-          styles.bubble,
-          rightAligned && styles.bubbleOwn,
-          {
-            backgroundColor: rightAligned ? `${palette.accent}2b` : palette.surface,
-            borderColor: rightAligned ? `${palette.accent}50` : palette.border,
-          },
-        ]}>
-          {message.forwarded ? (
-            <View style={styles.forwarded}><Forward color={palette.muted} size={12} /><Text style={[styles.forwardedText, { color: palette.muted }]}>Forwarded message</Text></View>
-          ) : null}
-          {message.reply_to ? <ReplyPreview message={message} onPress={() => onJumpToReply?.(message.reply_to!)} /> : null}
-          {attachments.length ? (
-            <View style={styles.attachments}>
-              {attachments.map((raw, index) => {
-                const attachmentIdentity = `${stableIdentity}:${index}`;
-                return (
-                  <AttachmentView
-                    attachmentIdentity={attachmentIdentity}
-                    key={getMappingKey(`${attachmentIdentity}:${raw}`, index)}
-                    onOpen={onOpenAttachment}
-                    onHeightWillChange={onHeightWillChange}
-                    raw={raw}
-                  />
-                );
-              })}
+        <View style={[styles.messageColumn, rightAligned && styles.messageColumnOwn]}>
+          {showHeader ? (
+            <View style={[styles.meta, rightAligned && styles.metaOwn]}>
+              <Text numberOfLines={1} style={[styles.author, { color: own ? palette.accent : palette.text }]}>
+                {own ? 'You' : message.sender_name || message.sender_username || 'Unknown'}
+              </Text>
+              <Text style={[styles.time, { color: palette.faint }]}>{displayTime(message.created_at)}</Text>
             </View>
           ) : null}
-          {message.content ? (
-            <View style={attachments.length ? styles.caption : undefined}>
-              <FormattedMessage
-                color={message.is_deleted ? palette.muted : palette.text}
-                content={message.content}
-                fontSize={fontSize}
-                messageIdentity={stableIdentity}
-                onHeightWillChange={onHeightWillChange}
-              />
+          <GestureDetector gesture={swipeGesture}>
+            <View style={[styles.swipeFrame, rightAligned && styles.swipeFrameOwn]}>
+              <View pointerEvents="none" style={[styles.swipeReplyAffordance, { backgroundColor: `${palette.accent}24` }]}>
+                <Reply color={palette.accent} size={17} />
+              </View>
+              <Animated.View style={{ opacity, transform: [{ translateX: combinedTranslateX }] }}>
+                <Pressable delayLongPress={360} onLongPress={() => onLongPress(message)}>
+                  <View style={[
+                    styles.bubble,
+                    rightAligned && styles.bubbleOwn,
+                    {
+                      backgroundColor: rightAligned ? `${palette.accent}2b` : palette.surface,
+                      borderColor: rightAligned ? `${palette.accent}50` : palette.border,
+                    },
+                  ]}>
+                    {message.forwarded ? (
+                      <View style={styles.forwarded}>
+                        <Forward color={palette.muted} size={12} />
+                        <Text numberOfLines={1} style={[styles.forwardedText, { color: palette.muted }]}>
+                          {message.forwarded.original_sender_name
+                            ? `Forwarded from ${message.forwarded.original_sender_name}`
+                            : 'Forwarded message'}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {message.reply_to ? <ReplyPreview message={message} onPress={() => onJumpToReply?.(message.reply_to!)} /> : null}
+                    {attachments.length ? (
+                      <View style={styles.attachments}>
+                        {attachments.map((raw, index) => {
+                          const attachmentIdentity = `${stableIdentity}:${index}`;
+                          return (
+                            <AttachmentView
+                              attachmentIdentity={attachmentIdentity}
+                              key={getMappingKey(`${attachmentIdentity}:${raw}`, index)}
+                              onOpen={onOpenAttachment}
+                              onHeightWillChange={onHeightWillChange}
+                              raw={raw}
+                            />
+                          );
+                        })}
+                      </View>
+                    ) : null}
+                    {message.content ? (
+                      <View style={attachments.length ? styles.caption : undefined}>
+                        <FormattedMessage
+                          color={message.is_deleted ? palette.muted : palette.text}
+                          content={message.content}
+                          fontSize={fontSize}
+                          messageIdentity={stableIdentity}
+                          onHeightWillChange={onHeightWillChange}
+                        />
+                      </View>
+                    ) : null}
+                    <View style={[styles.statusRow, rightAligned && styles.statusRowOwn]}>
+                      {message.is_edited && !message.is_deleted ? <Text style={[styles.status, { color: palette.faint }]}>(edited)</Text> : null}
+                      {message.local_status === 'sending' ? <Text style={[styles.status, { color: palette.faint }]}>sending...</Text> : null}
+                      {message.local_status === 'queued' ? <Text style={[styles.status, { color: palette.warning }]}>queued</Text> : null}
+                      {message.local_status === 'failed' ? (
+                        <Pressable onPress={() => onRetry?.(message)}><Text style={[styles.status, styles.retry, { color: palette.danger }]}>failed to send · Retry</Text></Pressable>
+                      ) : null}
+                    </View>
+                  </View>
+                  {reactionEntries.length ? (
+                    <View style={[styles.reactions, rightAligned && styles.reactionsOwn]}>
+                      {reactionEntries.map(([emoji, value]) => (
+                        <Pressable
+                          accessibilityLabel={`${emoji}, ${value.count} reactions${value.me ? ', reacted' : ''}`}
+                          key={emoji}
+                          onPress={() => onToggleReaction(message, emoji)}
+                          style={[
+                            styles.reaction,
+                            {
+                              backgroundColor: value.me ? `${palette.accent}29` : palette.surface,
+                              borderColor: value.me ? palette.accent : palette.border,
+                            },
+                          ]}
+                        >
+                          <Text style={styles.emoji}>{emoji}</Text>
+                          <Text style={[styles.reactionCount, { color: value.me ? palette.accent : palette.muted }]}>{value.count}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                </Pressable>
+              </Animated.View>
             </View>
-          ) : null}
-          <View style={[styles.statusRow, rightAligned && styles.statusRowOwn]}>
-            {message.is_edited && !message.is_deleted ? <Text style={[styles.status, { color: palette.faint }]}>(edited)</Text> : null}
-            {message.local_status === 'sending' ? <Text style={[styles.status, { color: palette.faint }]}>sending...</Text> : null}
-            {message.local_status === 'queued' ? <Text style={[styles.status, { color: palette.warning }]}>queued</Text> : null}
-            {message.local_status === 'failed' ? (
-              <Pressable onPress={() => onRetry?.(message)}><Text style={[styles.status, styles.retry, { color: palette.danger }]}>failed to send · Retry</Text></Pressable>
-            ) : null}
-          </View>
+          </GestureDetector>
         </View>
-        {reactionEntries.length ? (
-          <View style={[styles.reactions, rightAligned && styles.reactionsOwn]}>
-            {reactionEntries.map(([emoji, value]) => (
-              <Pressable
-                accessibilityLabel={`${emoji}, ${value.count} reactions${value.me ? ', reacted' : ''}`}
-                key={emoji}
-                onPress={() => onToggleReaction(message, emoji)}
-                style={[
-                  styles.reaction,
-                  {
-                    backgroundColor: value.me ? `${palette.accent}29` : palette.surface,
-                    borderColor: value.me ? palette.accent : palette.border,
-                  },
-                ]}
-              >
-                <Text style={styles.emoji}>{emoji}</Text>
-                <Text style={[styles.reactionCount, { color: value.me ? palette.accent : palette.muted }]}>{value.count}</Text>
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
-      </Pressable>
-    </View>
-    </Animated.View>
+      </View>
+    </>
   );
 }
 
@@ -382,6 +513,19 @@ const styles = StyleSheet.create({
   avatarColumn: { alignItems: 'center', alignSelf: 'stretch', marginRight: 8, width: 32 },
   messageColumn: { alignItems: 'flex-start', maxWidth: '86%', minWidth: 50 },
   messageColumnOwn: { alignItems: 'flex-end' },
+  swipeFrame: { alignItems: 'flex-start', position: 'relative' },
+  swipeFrameOwn: { alignItems: 'flex-end' },
+  swipeReplyAffordance: {
+    alignItems: 'center',
+    borderRadius: 17,
+    height: 34,
+    justifyContent: 'center',
+    left: 4,
+    marginTop: -17,
+    position: 'absolute',
+    top: '50%',
+    width: 34,
+  },
   meta: { alignItems: 'baseline', flexDirection: 'row', gap: 7, marginBottom: 4, paddingHorizontal: 3 },
   metaOwn: { justifyContent: 'flex-end' },
   author: { flexShrink: 1, fontSize: 13, fontWeight: '800' },
@@ -417,6 +561,9 @@ const styles = StyleSheet.create({
   reactionCount: { fontSize: 11, fontWeight: '700' },
   systemWrap: { alignItems: 'center', paddingHorizontal: 24 },
   system: { borderRadius: 14, fontSize: 11, overflow: 'hidden', paddingHorizontal: 12, paddingVertical: 6, textAlign: 'center' },
+  dateSeparator: { alignItems: 'center', flexDirection: 'row', gap: 10, marginBottom: 2, marginTop: 18, paddingHorizontal: 16 },
+  dateLine: { flex: 1, height: StyleSheet.hairlineWidth },
+  dateLabel: { fontSize: 10, fontWeight: '800', paddingHorizontal: 3 },
   link: { color: '#60a5fa', textDecorationLine: 'underline' },
   code: { backgroundColor: 'rgba(0,0,0,0.24)', fontFamily: 'monospace' },
   bold: { fontWeight: '800' },

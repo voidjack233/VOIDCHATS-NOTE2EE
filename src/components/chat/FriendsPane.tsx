@@ -2,9 +2,10 @@ import { Check, MessageCircle, MoreVertical, Search, UserPlus, X } from 'lucide-
 import React, { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAppData } from '../../context/AppDataContext';
+import { getPresenceStatusLabel } from '../../features/presence/presenceStatus';
 import { socialService } from '../../services/social';
 import { useTheme } from '../../theme/ThemeContext';
-import type { Friend, FriendRequest, Profile } from '../../types/models';
+import type { Friend, FriendRequest, PresenceStatus, Profile } from '../../types/models';
 import { Avatar } from '../common/Avatar';
 import { Button } from '../common/Button';
 import { PresenceDot } from '../common/PresenceDot';
@@ -45,7 +46,7 @@ export function FriendsPane({ onMessage, onProfile }: FriendsPaneProps) {
     const haystack = `${friend.display_name || ''} ${friend.username}`.toLowerCase();
     return haystack.includes(search.trim().toLowerCase());
   }).sort((a, b) => {
-    const order = { online: 0, idle: 1, offline: 2 };
+    const order: Record<PresenceStatus, number> = { online: 0, dnd: 1, idle: 2, offline: 3 };
     const left = presences[a.id]?.status || a.status || 'offline';
     const right = presences[b.id]?.status || b.status || 'offline';
     return order[left] - order[right];
@@ -184,7 +185,7 @@ export function FriendsPane({ onMessage, onProfile }: FriendsPaneProps) {
                   </View>
                   <Pressable onPress={() => onMessage(item)} style={styles.friendCopy}>
                     <Text numberOfLines={1} style={[styles.friendName, { color: palette.text }]}>{item.display_name || item.username}</Text>
-                    <Text style={[styles.friendStatus, { color: palette.muted }]}>{presence === 'online' ? 'Online' : presence === 'idle' ? 'Idle' : 'Offline'}</Text>
+                    <Text style={[styles.friendStatus, { color: palette.muted }]}>{getPresenceStatusLabel(presence)}</Text>
                   </Pressable>
                   <Pressable accessibilityLabel="Message" hitSlop={8} onPress={() => onMessage(item)} style={styles.iconButton}><MessageCircle color={palette.muted} size={20} /></Pressable>
                   <Pressable accessibilityLabel="More Options" hitSlop={8} onPress={() => confirmRemove(item)} style={styles.iconButton}><MoreVertical color={palette.muted} size={20} /></Pressable>

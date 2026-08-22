@@ -53,6 +53,7 @@ export type TimelineHistoryPhase =
 
 export interface TimelineState {
   initialRestoreComplete: boolean;
+  isAtBeginning: boolean;
   isAtPresent: boolean;
   showJumpToPresent: boolean;
   isLoadingHistory: boolean;
@@ -88,6 +89,8 @@ interface NativeMessageTimelineBaseProps {
   getItemType?: (message: TimelineMessage) => string;
   /** Set true only after the conversation's first page (including an empty page) resolves. */
   initialDataReady: boolean;
+  /** Restores a cached conversation that was last viewed at its true beginning. */
+  initialScrollToStart?: boolean;
   hasOlder: boolean;
   loadingOlder?: boolean;
   loadingNewer?: boolean;
@@ -99,6 +102,8 @@ interface NativeMessageTimelineBaseProps {
   onLoadError?: (direction: 'older' | 'newer', error: unknown) => void;
   onVisibleRangeChange?: (range: TimelineVisibleRange) => void;
   onStateChange?: (state: TimelineState) => void;
+  listHeader?: ReactNode;
+  emptyComponent?: ReactNode;
   emptyLabel?: string;
   testID?: string;
 }

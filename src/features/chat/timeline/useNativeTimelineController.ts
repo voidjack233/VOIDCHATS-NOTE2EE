@@ -38,6 +38,7 @@ interface NativeTimelineControllerOptions {
   messages: readonly TimelineMessage[];
   currentUserId: string;
   initialDataReady: boolean;
+  initialScrollToStart: boolean;
   hasOlder: boolean;
   hasNewer: boolean;
   loadingOlder: boolean;
@@ -95,6 +96,7 @@ type ViewabilityHandler = NonNullable<
 
 const INITIAL_STATE: TimelineState = {
   initialRestoreComplete: false,
+  isAtBeginning: false,
   isAtPresent: true,
   showJumpToPresent: false,
   isLoadingHistory: false,
@@ -114,6 +116,7 @@ export function useNativeTimelineController({
   messages,
   currentUserId,
   initialDataReady,
+  initialScrollToStart,
   hasOlder,
   hasNewer,
   loadingOlder,
@@ -128,6 +131,7 @@ export function useNativeTimelineController({
 }: NativeTimelineControllerOptions) {
   const [state, setState] = useState<TimelineState>(() => ({
     ...INITIAL_STATE,
+    isAtBeginning: initialScrollToStart && !hasOlder,
     isAtPresent: !hasNewer,
     showJumpToPresent: hasNewer,
   }));
@@ -137,6 +141,7 @@ export function useNativeTimelineController({
   const previousMessagesRef = useRef(messages);
   const currentUserIdRef = useRef(currentUserId);
   const initialDataReadyRef = useRef(initialDataReady);
+  const initialScrollToStartRef = useRef(initialScrollToStart);
   const hasOlderRef = useRef(hasOlder);
   const hasNewerRef = useRef(hasNewer);
   const loadingOlderRef = useRef(loadingOlder);
@@ -196,6 +201,7 @@ export function useNativeTimelineController({
   messagesRef.current = messages;
   currentUserIdRef.current = currentUserId;
   initialDataReadyRef.current = initialDataReady;
+  initialScrollToStartRef.current = initialScrollToStart;
   hasOlderRef.current = hasOlder;
   hasNewerRef.current = hasNewer;
   loadingOlderRef.current = loadingOlder;
@@ -311,6 +317,8 @@ export function useNativeTimelineController({
       forceFollowRetryUsedRef.current = false;
     }
     patchState({
+      isAtBeginning:
+        !hasOlderRef.current && metricsRef.current.offsetY <= 12,
       isAtPresent: physicallyAtPresent && !hasNewerRef.current,
       showJumpToPresent: shouldShowJumpToPresent(
         metricsRef.current,
@@ -983,7 +991,12 @@ export function useNativeTimelineController({
     const restore = async () => {
       try {
         if (messagesRef.current.length > 0) {
-          await scrollToPresentSettled(false);
+          if (initialScrollToStartRef.current && !hasOlderRef.current) {
+            listRef.current?.scrollToOffset({ animated: false, offset: 0 });
+            await waitForLayout();
+          } else {
+            await scrollToPresentSettled(false);
+          }
         }
       } catch {
         // FlashList may still be completing its first layout; state remains usable.
@@ -993,8 +1006,14 @@ export function useNativeTimelineController({
       initialRestoreCompleteRef.current = true;
       patchState({
         initialRestoreComplete: true,
-        isAtPresent: !hasNewerRef.current,
-        showJumpToPresent: hasNewerRef.current,
+        isAtBeginning:
+          !hasOlderRef.current && metricsRef.current.offsetY <= 12,
+        isAtPresent:
+          isPhysicallyAtPresent(metricsRef.current) && !hasNewerRef.current,
+        showJumpToPresent: shouldShowJumpToPresent(
+          metricsRef.current,
+          hasNewerRef.current,
+        ),
       });
       proactiveLoadTimerRef.current = setTimeout(() => {
         proactiveLoadTimerRef.current = null;
@@ -1002,7 +1021,7 @@ export function useNativeTimelineController({
       }, 0);
     };
     void restore();
-  }, [maybeLoadUnderfilled, patchState, scrollToPresentSettled]);
+  }, [listRef, maybeLoadUnderfilled, patchState, scrollToPresentSettled]);
 
   const onLoad = useCallback(() => {
     initialListLoadedRef.current = true;
@@ -1432,7 +1451,7 @@ export function useNativeTimelineController({
         }
       }
     }
-  }, [hasNewer, resolveLatestCommitWaiters, syncPositionState]);
+  }, [hasNewer, hasOlder, resolveLatestCommitWaiters, syncPositionState]);
 
   useEffect(() => {
     completeInitialRestore();
