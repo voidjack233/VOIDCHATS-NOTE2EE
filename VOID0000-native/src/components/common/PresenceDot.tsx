@@ -5,7 +5,11 @@ import type { PresenceStatus } from '../../types/models';
 
 export function PresenceDot({ status, size = 12 }: { status: PresenceStatus; size?: number }) {
   const { palette } = useTheme();
-  const color = status === 'online' ? '#22c55e' : status === 'idle' ? '#eab308' : '#6b7280';
+  const color = status === 'online'
+    ? '#22c55e'
+    : status === 'idle'
+      ? '#eab308'
+      : status === 'dnd' ? '#ef4444' : '#6b7280';
   return (
     <View style={[
       styles.dot,

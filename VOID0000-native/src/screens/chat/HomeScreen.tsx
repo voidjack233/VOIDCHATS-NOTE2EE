@@ -1,16 +1,19 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { MessageCircle, Plus, Search, Settings, Users } from 'lucide-react-native';
+import { ChevronUp, MessageCircle, Plus, Search, Settings, Users } from 'lucide-react-native';
 import React, { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { ConversationRow } from '../../components/chat/ConversationRow';
 import { FriendsPane } from '../../components/chat/FriendsPane';
 import { Avatar } from '../../components/common/Avatar';
 import { FeedbackBanner } from '../../components/common/FeedbackBanner';
+import { PresenceDot } from '../../components/common/PresenceDot';
+import { PresenceStatusSheet } from '../../components/common/PresenceStatusSheet';
 import { Screen } from '../../components/common/Screen';
 import { StateView } from '../../components/common/StateView';
 import { TextField } from '../../components/common/TextField';
 import { useAppData } from '../../context/AppDataContext';
 import { useAuth } from '../../context/AuthContext';
+import { getPresenceModeLabel, type PresenceMode } from '../../features/presence/presenceStatus';
 import type { RootStackParamList } from '../../navigation/types';
 import { chatService } from '../../services/chat';
 import { useTheme } from '../../theme/ThemeContext';
@@ -31,13 +34,19 @@ export function HomeScreen({ navigation }: Props) {
     error,
     connectionState,
     isOnline,
+    presenceMode,
+    ownStatus,
+    isUpdatingPresenceMode,
+    presenceModeError,
     refresh,
+    setPresenceMode,
     startDM,
     patchConversation,
     removeConversation,
   } = useAppData();
   const [mode, setMode] = useState<Mode>('dm');
   const [search, setSearch] = useState('');
+  const [presenceSheetOpen, setPresenceSheetOpen] = useState(false);
   const myFriendRecord = friends.find((friend) => friend.id === user?.id);
 
   const filtered = useMemo(() => conversations.filter((conversation) => {
@@ -74,6 +83,12 @@ export function HomeScreen({ navigation }: Props) {
       navigation.navigate('Chat', { conversation });
     } catch (caught) {
       Alert.alert('Could not open chat', caught instanceof Error ? caught.message : 'Please try again.');
+    }
+  };
+
+  const selectPresenceMode = async (nextMode: PresenceMode) => {
+    if (nextMode === presenceMode || await setPresenceMode(nextMode)) {
+      setPresenceSheetOpen(false);
     }
   };
 
@@ -144,13 +159,38 @@ export function HomeScreen({ navigation }: Props) {
           onPress={() => user?.profile_id && navigation.navigate('FriendProfile', { profileId: user.profile_id })}
           style={({ pressed }) => [styles.identityMain, { backgroundColor: pressed ? palette.hover : 'transparent' }]}
         >
-          <Avatar displayName={myFriendRecord?.display_name} size={32} uri={myFriendRecord?.avatar_url} username={user?.username} />
-          <Text numberOfLines={1} style={[styles.identityName, { color: palette.text }]}>{myFriendRecord?.display_name || user?.username || 'User'}</Text>
+          <View style={styles.identityAvatar}>
+            <Avatar displayName={myFriendRecord?.display_name} size={32} uri={myFriendRecord?.avatar_url} username={user?.username} />
+            <View style={styles.identityPresence}><PresenceDot size={11} status={ownStatus} /></View>
+          </View>
+          <View style={styles.identityCopy}>
+            <Text numberOfLines={1} style={[styles.identityName, { color: palette.text }]}>{myFriendRecord?.display_name || user?.username || 'User'}</Text>
+            <Text numberOfLines={1} style={[styles.identityStatus, { color: palette.muted }]}>{getPresenceModeLabel(presenceMode)}</Text>
+          </View>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Change active status"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => setPresenceSheetOpen(true)}
+          style={styles.settings}
+        >
+          <ChevronUp color={palette.muted} size={18} />
         </Pressable>
         <Pressable accessibilityLabel="Settings" hitSlop={10} onPress={() => navigation.navigate('Settings')} style={styles.settings}>
           <Settings color={palette.muted} size={21} />
         </Pressable>
       </View>
+
+      <PresenceStatusSheet
+        busy={isUpdatingPresenceMode}
+        error={presenceModeError}
+        mode={presenceMode}
+        onClose={() => setPresenceSheetOpen(false)}
+        onSelect={(nextMode) => void selectPresenceMode(nextMode)}
+        ownStatus={ownStatus}
+        visible={presenceSheetOpen}
+      />
     </Screen>
   );
 
@@ -176,8 +216,12 @@ const styles = StyleSheet.create({
   searchRow: { alignItems: 'center', flexDirection: 'row', gap: 9, paddingHorizontal: 12, paddingTop: 10 },
   searchField: { flex: 1 },
   section: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, paddingHorizontal: 14, paddingVertical: 12 },
-  identity: { alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', height: 54, paddingHorizontal: 8 },
+  identity: { alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', height: 58, paddingHorizontal: 8 },
   identityMain: { alignItems: 'center', borderRadius: 8, flex: 1, flexDirection: 'row', gap: 9, minWidth: 0, padding: 4 },
-  identityName: { flex: 1, fontSize: 13, fontWeight: '700' },
+  identityAvatar: { position: 'relative' },
+  identityPresence: { bottom: -1, position: 'absolute', right: -1 },
+  identityCopy: { flex: 1, minWidth: 0 },
+  identityName: { fontSize: 13, fontWeight: '700' },
+  identityStatus: { fontSize: 10, marginTop: 2 },
   settings: { padding: 9 },
 });

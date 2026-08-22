@@ -1,4 +1,5 @@
 import { GATEWAY_ORIGIN, GATEWAY_URL } from '../config';
+import type { PresenceActivityStatus } from '../features/presence/presenceStatus';
 import { refreshSession } from './api';
 
 export type GatewayConnectionState = 'connected' | 'reconnecting' | 'disconnected';
@@ -34,7 +35,7 @@ class NativeGateway {
   private lastSequence = 0;
   private canResume = false;
   private intentionalClose = false;
-  private presence: 'online' | 'idle' = 'online';
+  private presence: PresenceActivityStatus = 'online';
   private connectionState: GatewayConnectionState = 'disconnected';
   private heartbeatAcknowledged = true;
   private missedHeartbeats = 0;
@@ -200,9 +201,15 @@ class NativeGateway {
     this.connect(this.userId);
   }
 
-  setPresence(status: 'online' | 'idle') {
+  setPresence(status: PresenceActivityStatus) {
+    if (status === this.presence) return;
     this.presence = status;
+    this.emit('LOCAL_PRESENCE_ACTIVITY', { status });
     this.send({ op: OP.STATUS_UPDATE, d: { status } });
+  }
+
+  getPresenceStatus(): PresenceActivityStatus {
+    return this.presence;
   }
 
   disconnect() {
@@ -215,6 +222,10 @@ class NativeGateway {
     this.userId = null;
     this.invalidateResume();
     this.setState('disconnected');
+    if (this.presence !== 'online') {
+      this.presence = 'online';
+      this.emit('LOCAL_PRESENCE_ACTIVITY', { status: 'online' });
+    }
   }
 
   getState() {

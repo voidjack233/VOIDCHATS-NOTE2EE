@@ -27,11 +27,6 @@ import type {
 } from './timelineTypes';
 import { useNativeTimelineController } from './useNativeTimelineController';
 
-const MAINTAIN_VISIBLE_POSITION = {
-  animateAutoScrollToBottom: false,
-  startRenderingFromBottom: true,
-} as const;
-
 const VIEWABILITY_CONFIG = {
   itemVisiblePercentThreshold: 1,
   minimumViewTime: 40,
@@ -50,6 +45,7 @@ function NativeMessageTimelineInstance({
   renderMessage,
   getItemType,
   initialDataReady,
+  initialScrollToStart = false,
   hasOlder,
   hasNewer = false,
   loadingOlder = false,
@@ -61,6 +57,8 @@ function NativeMessageTimelineInstance({
   onLoadError,
   onVisibleRangeChange,
   onStateChange,
+  listHeader,
+  emptyComponent,
   emptyLabel = 'No messages yet',
   testID,
 }: NativeMessageTimelineInstanceProps) {
@@ -68,6 +66,7 @@ function NativeMessageTimelineInstance({
   const controller = useNativeTimelineController({
     currentUserId,
     initialDataReady,
+    initialScrollToStart,
     hasNewer,
     hasOlder,
     listRef,
@@ -131,6 +130,10 @@ function NativeMessageTimelineInstance({
     () => ({ highlightedMessageId: controller.state.highlightedMessageId }),
     [controller.state.highlightedMessageId],
   );
+  const maintainVisibleContentPosition = useMemo(() => ({
+    animateAutoScrollToBottom: false,
+    startRenderingFromBottom: !initialScrollToStart,
+  }), [initialScrollToStart]);
 
   return (
     <View
@@ -146,14 +149,17 @@ function NativeMessageTimelineInstance({
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.id}
+        ListHeaderComponent={listHeader ? <>{listHeader}</> : null}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={[styles.emptyText, { color: colors.text }]}>
-              {emptyLabel}
-            </Text>
-          </View>
+          emptyComponent ? <>{emptyComponent}</> : (
+            <View style={styles.empty}>
+              <Text style={[styles.emptyText, { color: colors.text }]}>
+                {emptyLabel}
+              </Text>
+            </View>
+          )
         }
-        maintainVisibleContentPosition={MAINTAIN_VISIBLE_POSITION}
+        maintainVisibleContentPosition={maintainVisibleContentPosition}
         onCommitLayoutEffect={controller.onCommitLayoutEffect}
         onContentSizeChange={controller.onContentSizeChange}
         onEndReached={controller.onEndReached}
@@ -185,27 +191,29 @@ function NativeMessageTimelineInstance({
       ) : null}
 
       {controller.state.showJumpToPresent ? (
-        <Pressable
-          accessibilityLabel="Jump to latest messages"
-          accessibilityRole="button"
-          disabled={loadingNewer}
-          onPress={() => void controller.jumpToPresent({ animated: true })}
-          style={({ pressed }) => [
-            styles.jumpButton,
-            {
-              backgroundColor: colors.surface,
-              borderColor: colors.border,
-            },
-            loadingNewer && styles.disabledButton,
-            pressed && styles.pressedButton,
-          ]}>
-          {loadingNewer ? (
-            <ActivityIndicator color={colors.text} size="small" />
-          ) : (
-            <ArrowDown color={colors.text} size={17} />
-          )}
-          <Text style={[styles.jumpButtonText, { color: colors.text }]}>Latest</Text>
-        </Pressable>
+        <View pointerEvents="box-none" style={styles.jumpWrap}>
+          <Pressable
+            accessibilityLabel="Jump to latest messages"
+            accessibilityRole="button"
+            disabled={loadingNewer}
+            hitSlop={8}
+            onPress={() => void controller.jumpToPresent({ animated: true })}
+            style={({ pressed }) => [
+              styles.jumpButton,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+              },
+              loadingNewer && styles.disabledButton,
+              pressed && styles.pressedButton,
+            ]}>
+            {loadingNewer ? (
+              <ActivityIndicator color={colors.text} size="small" />
+            ) : (
+              <ArrowDown color={colors.text} size={19} />
+            )}
+          </Pressable>
+        </View>
       ) : null}
     </View>
   );
@@ -251,24 +259,23 @@ const styles = StyleSheet.create({
   },
   jumpButton: {
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 23,
     borderWidth: 1,
+    height: 46,
+    justifyContent: 'center',
+    width: 46,
+  },
+  jumpWrap: {
+    alignItems: 'center',
     bottom: 12,
-    flexDirection: 'row',
-    gap: 6,
-    minHeight: 40,
-    paddingHorizontal: 12,
+    left: 0,
     position: 'absolute',
-    right: 12,
+    right: 0,
   },
   pressedButton: {
     opacity: 0.72,
   },
   disabledButton: {
     opacity: 0.52,
-  },
-  jumpButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
   },
 });

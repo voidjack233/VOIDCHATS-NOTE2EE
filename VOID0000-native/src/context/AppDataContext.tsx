@@ -12,18 +12,25 @@ import React, {
 } from 'react';
 import { AppState } from 'react-native';
 import { useAuth } from './AuthContext';
+import {
+  normalizePresenceMode,
+  resolveOwnPresenceStatus,
+  type PresenceActivityStatus,
+  type PresenceMode,
+  type PresenceStatus,
+} from '../features/presence/presenceStatus';
 import { fetchBootstrap } from '../services/bootstrap';
 import { chatService } from '../services/chat';
 import { gateway, GatewayConnectionState } from '../services/gateway';
 import { socialService } from '../services/social';
 import { playNotificationSound } from '../services/notificationSound';
+import { presenceService } from '../services/presence';
 import { useTheme } from '../theme/ThemeContext';
 import type {
   Conversation,
   Friend,
   FriendRequest,
   Message,
-  PresenceStatus,
 } from '../types/models';
 
 const BOOTSTRAP_CACHE_KEY = 'void_native_bootstrap';
@@ -39,7 +46,12 @@ interface AppDataContextValue {
   error: string | null;
   connectionState: GatewayConnectionState;
   isOnline: boolean;
+  presenceMode: PresenceMode;
+  ownStatus: PresenceStatus;
+  isUpdatingPresenceMode: boolean;
+  presenceModeError: string | null;
   refresh: () => Promise<void>;
+  setPresenceMode: (mode: PresenceMode) => Promise<boolean>;
   startDM: (userId: string) => Promise<Conversation>;
   createGroup: (name: string) => Promise<Conversation>;
   removeFriend: (friendshipId: number) => Promise<void>;
@@ -60,6 +72,31 @@ const sortConversations = (conversations: Conversation[]) => [...conversations].
   return right - left;
 });
 
+type BootstrapData = Awaited<ReturnType<typeof fetchBootstrap>>;
+
+const withPresenceMode = (data: BootstrapData, mode: PresenceMode): BootstrapData => ({
+  ...data,
+  preferences: {
+    ...(data.preferences && typeof data.preferences === 'object' ? data.preferences : {}),
+    presence_mode: mode,
+  },
+});
+
+async function updateCachedPresenceMode(userId: string, mode: PresenceMode) {
+  try {
+    const raw = await AsyncStorage.getItem(BOOTSTRAP_CACHE_KEY);
+    if (!raw) return;
+    const cached = JSON.parse(raw) as BootstrapData;
+    if (cached.user?.id !== userId) return;
+    await AsyncStorage.setItem(
+      BOOTSTRAP_CACHE_KEY,
+      JSON.stringify(withPresenceMode(cached, mode)),
+    );
+  } catch {
+    // Fresh bootstrap remains authoritative if the local cache is unavailable.
+  }
+}
+
 export function AppDataProvider({ children }: PropsWithChildren) {
   const { user, status } = useAuth();
   const { loadRemotePreferences, messageNotificationsEnabled } = useTheme();
@@ -73,9 +110,26 @@ export function AppDataProvider({ children }: PropsWithChildren) {
   const [error, setError] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<GatewayConnectionState>('disconnected');
   const [isOnline, setIsOnline] = useState(true);
+  const [activityStatus, setActivityStatus] = useState<PresenceActivityStatus>(
+    () => gateway.getPresenceStatus(),
+  );
+  const [presenceMode, setPresenceModeState] = useState<PresenceMode>('online');
+  const [isUpdatingPresenceMode, setIsUpdatingPresenceMode] = useState(false);
+  const [presenceModeError, setPresenceModeError] = useState<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
   const messageSoundsRef = useRef(messageNotificationsEnabled);
   const activeConversationIdsRef = useRef(new Set<string>());
+  const presenceModeRef = useRef<PresenceMode>('online');
+  const presenceModeRevisionRef = useRef(0);
+  const presenceModeUpdateInFlightRef = useRef(false);
+
+  const ownStatus = resolveOwnPresenceStatus(presenceMode, activityStatus);
+
+  const commitPresenceMode = useCallback((mode: PresenceMode, incrementRevision = false) => {
+    if (incrementRevision) presenceModeRevisionRef.current += 1;
+    presenceModeRef.current = mode;
+    setPresenceModeState(mode);
+  }, []);
 
   useEffect(() => {
     conversationsRef.current = conversations;
@@ -106,12 +160,19 @@ export function AppDataProvider({ children }: PropsWithChildren) {
 
   const refresh = useCallback(async () => {
     if (!user || status !== 'authenticated') return;
+    const hydrationRevision = presenceModeRevisionRef.current;
     setRefreshing(true);
     setError(null);
     try {
       const data = await fetchBootstrap();
       applyBootstrap(data);
-      await AsyncStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify(data));
+      if (presenceModeRevisionRef.current === hydrationRevision) {
+        commitPresenceMode(normalizePresenceMode(data.preferences?.presence_mode));
+      }
+      await AsyncStorage.setItem(
+        BOOTSTRAP_CACHE_KEY,
+        JSON.stringify(withPresenceMode(data, presenceModeRef.current)),
+      );
       const snapshot = await socialService.presence().catch(() => []);
       setPresences(Object.fromEntries(snapshot.map((presence) => [
         presence.user_id,
@@ -123,7 +184,7 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       setRefreshing(false);
       setLoading(false);
     }
-  }, [applyBootstrap, status, user]);
+  }, [applyBootstrap, commitPresenceMode, status, user]);
 
   useEffect(() => {
     if (!user || status !== 'authenticated') {
@@ -132,17 +193,29 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       setIncoming([]);
       setOutgoing([]);
       setPresences({});
+      presenceModeRevisionRef.current += 1;
+      commitPresenceMode('online');
+      setActivityStatus('online');
+      setIsUpdatingPresenceMode(false);
+      setPresenceModeError(null);
+      presenceModeUpdateInFlightRef.current = false;
       setLoading(false);
       gateway.disconnect();
       return;
     }
     let active = true;
+    const hydrationRevision = presenceModeRevisionRef.current;
     setLoading(true);
     void AsyncStorage.getItem(BOOTSTRAP_CACHE_KEY).then((raw) => {
       if (!active || !raw) return;
       try {
         const cached = JSON.parse(raw) as Awaited<ReturnType<typeof fetchBootstrap>>;
-        if (cached.user?.id === user.id) applyBootstrap(cached);
+        if (cached.user?.id === user.id) {
+          applyBootstrap(cached);
+          if (presenceModeRevisionRef.current === hydrationRevision) {
+            commitPresenceMode(normalizePresenceMode(cached.preferences?.presence_mode));
+          }
+        }
       } catch {
         void AsyncStorage.removeItem(BOOTSTRAP_CACHE_KEY);
       }
@@ -154,7 +227,7 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       active = false;
       gateway.disconnect();
     };
-  }, [applyBootstrap, refresh, status, user]);
+  }, [applyBootstrap, commitPresenceMode, refresh, status, user]);
 
   useEffect(() => {
     const unsubscribeNetwork = NetInfo.addEventListener((network) => {
@@ -194,6 +267,19 @@ export function AppDataProvider({ children }: PropsWithChildren) {
         ...current,
         [data.user_id!]: { status: data.status!, lastActive: data.last_active ?? null },
       }));
+    });
+    const offLocalPresenceActivity = gateway.on('LOCAL_PRESENCE_ACTIVITY', (raw) => {
+      const data = raw as { status?: PresenceActivityStatus };
+      if (data.status === 'online' || data.status === 'idle') {
+        setActivityStatus(data.status);
+      }
+    });
+    const offPresenceMode = gateway.on('PRESENCE_MODE_UPDATE', (raw) => {
+      if (!user?.id) return;
+      const data = raw as { mode?: unknown };
+      const nextMode = normalizePresenceMode(data.mode);
+      commitPresenceMode(nextMode, true);
+      void updateCachedPresenceMode(user.id, nextMode);
     });
     const offProfile = gateway.on('PROFILE_UPDATE', (raw) => {
       const data = raw as { user_id?: string; display_name?: string; avatar_url?: string; bio?: string };
@@ -305,6 +391,8 @@ export function AppDataProvider({ children }: PropsWithChildren) {
     return () => {
       offConnection();
       offPresence();
+      offLocalPresenceActivity();
+      offPresenceMode();
       offProfile();
       offFriendRequest();
       offFriendAccept();
@@ -316,7 +404,7 @@ export function AppDataProvider({ children }: PropsWithChildren) {
       offMemberLeave();
       offDmHidden();
     };
-  }, [refresh, user?.id]);
+  }, [commitPresenceMode, refresh, user?.id]);
 
   const patchConversation = useCallback((conversation: Conversation) => {
     setConversations((current) => {
@@ -381,6 +469,36 @@ export function AppDataProvider({ children }: PropsWithChildren) {
     if (result.request) setOutgoing((current) => [result.request!, ...current]);
   }, []);
 
+  const setPresenceMode = useCallback(async (mode: PresenceMode) => {
+    if (!user || status !== 'authenticated' || presenceModeUpdateInFlightRef.current) {
+      return false;
+    }
+    if (mode === presenceModeRef.current) {
+      setPresenceModeError(null);
+      return true;
+    }
+
+    presenceModeUpdateInFlightRef.current = true;
+    setIsUpdatingPresenceMode(true);
+    setPresenceModeError(null);
+
+    try {
+      const response = await presenceService.updateMode(mode);
+      const persistedMode = normalizePresenceMode(response.presence_mode);
+      commitPresenceMode(persistedMode, true);
+      void updateCachedPresenceMode(user.id, persistedMode);
+      return true;
+    } catch (caught) {
+      setPresenceModeError(
+        caught instanceof Error ? caught.message : 'Failed to update active status',
+      );
+      return false;
+    } finally {
+      presenceModeUpdateInFlightRef.current = false;
+      setIsUpdatingPresenceMode(false);
+    }
+  }, [commitPresenceMode, status, user]);
+
   const value = useMemo<AppDataContextValue>(() => ({
     conversations,
     friends,
@@ -392,7 +510,12 @@ export function AppDataProvider({ children }: PropsWithChildren) {
     error,
     connectionState,
     isOnline,
+    presenceMode,
+    ownStatus,
+    isUpdatingPresenceMode,
+    presenceModeError,
     refresh,
+    setPresenceMode,
     startDM,
     createGroup,
     removeFriend,
@@ -413,9 +536,12 @@ export function AppDataProvider({ children }: PropsWithChildren) {
     friends,
     incoming,
     isOnline,
+    isUpdatingPresenceMode,
     loading,
     outgoing,
     patchConversation,
+    presenceMode,
+    presenceModeError,
     presences,
     refresh,
     refreshing,
@@ -423,8 +549,10 @@ export function AppDataProvider({ children }: PropsWithChildren) {
     removeConversation,
     removeFriend,
     sendRequest,
+    setPresenceMode,
     setActiveConversation,
     startDM,
+    ownStatus,
   ]);
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;
