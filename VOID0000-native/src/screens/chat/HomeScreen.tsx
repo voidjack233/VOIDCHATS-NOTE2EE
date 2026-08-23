@@ -17,7 +17,7 @@ import { getPresenceModeLabel, type PresenceMode } from '../../features/presence
 import type { RootStackParamList } from '../../navigation/types';
 import { chatService } from '../../services/chat';
 import { useTheme } from '../../theme/ThemeContext';
-import type { Conversation } from '../../types/models';
+import type { Conversation, Friend } from '../../types/models';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 type Mode = 'friends' | 'dm' | 'group';
@@ -27,7 +27,6 @@ export function HomeScreen({ navigation }: Props) {
   const { user } = useAuth();
   const {
     conversations,
-    friends,
     presences,
     loading,
     refreshing,
@@ -47,8 +46,6 @@ export function HomeScreen({ navigation }: Props) {
   const [mode, setMode] = useState<Mode>('dm');
   const [search, setSearch] = useState('');
   const [presenceSheetOpen, setPresenceSheetOpen] = useState(false);
-  const myFriendRecord = friends.find((friend) => friend.id === user?.id);
-
   const filtered = useMemo(() => conversations.filter((conversation) => {
     if (conversation.type !== mode) return false;
     const name = conversation.type === 'dm'
@@ -77,7 +74,7 @@ export function HomeScreen({ navigation }: Props) {
     ]);
   };
 
-  const messageFriend = async (friend: typeof friends[number]) => {
+  const messageFriend = async (friend: Friend) => {
     try {
       const conversation = await startDM(friend.id);
       navigation.navigate('Chat', { conversation });
@@ -160,11 +157,11 @@ export function HomeScreen({ navigation }: Props) {
           style={({ pressed }) => [styles.identityMain, { backgroundColor: pressed ? palette.hover : 'transparent' }]}
         >
           <View style={styles.identityAvatar}>
-            <Avatar displayName={myFriendRecord?.display_name} size={32} uri={myFriendRecord?.avatar_url} username={user?.username} />
+            <Avatar displayName={user?.display_name} size={32} uri={user?.avatar_url} username={user?.username} />
             <View style={styles.identityPresence}><PresenceDot size={11} status={ownStatus} /></View>
           </View>
           <View style={styles.identityCopy}>
-            <Text numberOfLines={1} style={[styles.identityName, { color: palette.text }]}>{myFriendRecord?.display_name || user?.username || 'User'}</Text>
+            <Text numberOfLines={1} style={[styles.identityName, { color: palette.text }]}>{user?.display_name || user?.username || 'User'}</Text>
             <Text numberOfLines={1} style={[styles.identityStatus, { color: palette.muted }]}>{getPresenceModeLabel(presenceMode)}</Text>
           </View>
         </Pressable>

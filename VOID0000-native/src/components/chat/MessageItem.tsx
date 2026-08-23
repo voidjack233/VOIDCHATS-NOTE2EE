@@ -92,13 +92,11 @@ function FormattedMessage({
   color,
   fontSize,
   messageIdentity,
-  onHeightWillChange,
 }: {
   content: string;
   color: string;
   fontSize: number;
   messageIdentity: string;
-  onHeightWillChange?: () => void;
 }) {
   const [spoilersRevealed, setSpoilersRevealed] = useRecyclingState(false, [messageIdentity, content]);
   const pieces = useMemo(() => content.split(INLINE_PATTERN).filter(Boolean), [content]);
@@ -111,7 +109,7 @@ function FormattedMessage({
   };
 
   return (
-    <Text selectable style={{ color, fontSize, lineHeight: Math.round(fontSize * 1.42) }}>
+    <Text style={{ color, fontSize, lineHeight: Math.round(fontSize * 1.42) }}>
       {pieces.map((piece, index) => {
         if (/^https?:\/\//i.test(piece)) {
           return <Text key={`${piece}-${index}`} onPress={() => openExternalLink(piece)} style={styles.link}>{piece}</Text>;
@@ -121,10 +119,7 @@ function FormattedMessage({
             <Text
               accessibilityHint="Reveals hidden message text"
               key={`${piece}-${index}`}
-              onPress={() => {
-                onHeightWillChange?.();
-                setSpoilersRevealed((current) => !current);
-              }}
+              onPress={() => setSpoilersRevealed((current) => !current)}
               style={{ backgroundColor: spoilersRevealed ? 'rgba(255,255,255,0.12)' : color, color: spoilersRevealed ? color : 'transparent' }}
             >
               {piece.slice(2, -2)}
@@ -172,12 +167,10 @@ function AttachmentView({
   attachmentIdentity,
   raw,
   onOpen,
-  onHeightWillChange,
 }: {
   attachmentIdentity: string;
   raw: string;
   onOpen?: (attachment: Attachment) => void;
-  onHeightWillChange?: () => void;
 }) {
   const { palette } = useTheme();
   const [spoilerRevealed, setSpoilerRevealed] = useRecyclingState(false, [attachmentIdentity, raw]);
@@ -199,7 +192,6 @@ function AttachmentView({
         accessibilityLabel={attachment.spoiler && !spoilerRevealed ? 'Reveal spoiler' : 'Open image'}
         onPress={() => {
           if (attachment.spoiler && !spoilerRevealed) {
-            onHeightWillChange?.();
             setSpoilerRevealed(true);
           }
           else if (imageUri) onOpen?.({ ...attachment, url: imageUri });
@@ -270,7 +262,6 @@ interface MessageItemProps {
   onReply?: (message: Message) => void;
   onToggleReaction: (message: Message, emoji: string) => void;
   onOpenAttachment: (attachment: Attachment) => void;
-  onHeightWillChange?: () => void;
   onJumpToReply?: (messageId: string) => void;
   onRetry?: (message: Message) => void;
 }
@@ -288,7 +279,6 @@ export function MessageItem({
   onReply,
   onToggleReaction,
   onOpenAttachment,
-  onHeightWillChange,
   onJumpToReply,
   onRetry,
 }: MessageItemProps) {
@@ -449,7 +439,6 @@ export function MessageItem({
                               attachmentIdentity={attachmentIdentity}
                               key={getMappingKey(`${attachmentIdentity}:${raw}`, index)}
                               onOpen={onOpenAttachment}
-                              onHeightWillChange={onHeightWillChange}
                               raw={raw}
                             />
                           );
@@ -463,7 +452,6 @@ export function MessageItem({
                           content={message.content}
                           fontSize={fontSize}
                           messageIdentity={stableIdentity}
-                          onHeightWillChange={onHeightWillChange}
                         />
                       </View>
                     ) : null}

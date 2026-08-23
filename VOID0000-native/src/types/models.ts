@@ -6,6 +6,9 @@ export interface User {
   email: string;
   username: string;
   profile_id?: string;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  created_at?: string;
   is_verified?: boolean;
 }
 

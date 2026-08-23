@@ -26,7 +26,6 @@ export interface TimelineRenderInfo {
   message: TimelineMessage;
   index: number;
   highlighted: boolean;
-  onHeightWillChange: () => void;
 }
 
 export interface TimelineColors {
@@ -44,20 +43,11 @@ export interface TimelineVisibleRange {
   lastIndex: number | null;
 }
 
-export type TimelineHistoryPhase =
-  | 'idle'
-  | 'captured'
-  | 'loading'
-  | 'committed'
-  | 'restoring';
-
 export interface TimelineState {
-  initialRestoreComplete: boolean;
+  initialPositionComplete: boolean;
   isAtBeginning: boolean;
   isAtPresent: boolean;
   showJumpToPresent: boolean;
-  isLoadingHistory: boolean;
-  historyPhase: TimelineHistoryPhase;
   pendingJumpMessageId: string | null;
   highlightedMessageId: string | null;
 }
