@@ -33,6 +33,7 @@ import { MessageItem, normalizeReaction } from '../../components/chat/MessageIte
 import { ConversationOrigin, EmptyConversationState } from '../../components/chat/ConversationOrigin';
 import { Avatar } from '../../components/common/Avatar';
 import { FeedbackBanner } from '../../components/common/FeedbackBanner';
+import { NativeBottomSheet } from '../../components/common/NativeBottomSheet';
 import { Screen } from '../../components/common/Screen';
 import { StateView } from '../../components/common/StateView';
 import { API_URL } from '../../config';
@@ -511,7 +512,7 @@ export function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     if (
       !initialDataReady ||
-      !timelineState?.initialRestoreComplete ||
+      !timelineState?.initialPositionComplete ||
       !timelineState.isAtPresent ||
       hasNewer
     ) return;
@@ -1211,7 +1212,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const renderTimelineMessage = useCallback(({
     message: timelineMessage,
     index,
-    onHeightWillChange,
   }: TimelineRenderInfo) => {
     const {
       chatFontScale: currentFontScale,
@@ -1259,7 +1259,6 @@ export function ChatScreen({ navigation, route }: Props) {
         currentUserId={userId}
         fontSize={currentFontScale}
         message={resolved}
-        onHeightWillChange={onHeightWillChange}
         onJumpToReply={(messageId) => void jumpToLoadedMessage(messageId)}
         onLongPress={startAction}
         onOpenAttachment={openAttachment}
@@ -1367,43 +1366,44 @@ export function ChatScreen({ navigation, route }: Props) {
         slowmodeRemaining={slowmodeRemaining}
       />
 
-      <Modal animationType="slide" onRequestClose={() => setActionMessage(null)} transparent visible={Boolean(actionMessage)}>
-        <Pressable onPress={() => setActionMessage(null)} style={[styles.modalBackdrop, { backgroundColor: palette.overlay }]}>
-          <Pressable onPress={() => undefined} style={[
-            styles.actionSheet,
-            {
-              backgroundColor: palette.surfaceRaised,
-              borderColor: palette.border,
-              paddingBottom: Math.max(24, insets.bottom + 12),
-            },
-          ]}>
-            <View style={styles.sheetHandle} />
-            <Text style={[styles.sheetTitle, { color: palette.text }]}>Message actions</Text>
-            <View style={styles.quickReactions}>
-              {QUICK_REACTIONS.map((emoji) => (
-                <Pressable
-                  accessibilityLabel={`React ${emoji}`}
-                  key={emoji}
-                  onPress={() => {
-                    const target = actionMessage;
-                    setActionMessage(null);
-                    if (target) void toggleReaction(target, emoji);
-                  }}
-                  style={[styles.quickReaction, { backgroundColor: palette.hover }]}
-                >
-                  <Text style={styles.quickEmoji}>{emoji}</Text>
-                </Pressable>
-              ))}
-            </View>
-            {actionMessage?.content && !actionMessage.is_deleted ? <SheetAction icon={<Copy size={18} />} label="Copy Text" onPress={() => { void Clipboard.setStringAsync(actionMessage.content); setActionMessage(null); }} /> : null}
-            {!actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Reply size={18} />} label="Reply" onPress={() => { const target = actionMessage; if (target) beginReply(target); }} /> : null}
-            {!actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Forward size={18} />} label="Forward Message" onPress={() => { setForwarding(actionMessage); setActionMessage(null); }} /> : null}
-            {actionMessage?.sender_id === user?.id && !actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Pencil size={18} />} label="Edit Message" onPress={() => { const target = actionMessage; if (target) setEditing(target); setReplyTo(null); setActionMessage(null); }} /> : null}
-            {(actionMessage?.sender_id === user?.id || isModerator) && !actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction danger icon={<Trash2 size={18} />} label="Delete Message" onPress={() => { const target = actionMessage; if (target) void deleteSelected(target); }} /> : null}
-            <SheetAction icon={<X size={18} />} label="Cancel" onPress={() => setActionMessage(null)} />
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <NativeBottomSheet
+        backdropColor={palette.overlay}
+        closeAccessibilityLabel="Close message actions"
+        onClose={() => setActionMessage(null)}
+        sheetStyle={[
+          styles.actionSheet,
+          {
+            backgroundColor: palette.surfaceRaised,
+            borderColor: palette.border,
+            paddingBottom: Math.max(24, insets.bottom + 12),
+          },
+        ]}
+        visible={Boolean(actionMessage)}>
+        <View style={styles.sheetHandle} />
+        <Text style={[styles.sheetTitle, { color: palette.text }]}>Message actions</Text>
+        <View style={styles.quickReactions}>
+          {QUICK_REACTIONS.map((emoji) => (
+            <Pressable
+              accessibilityLabel={`React ${emoji}`}
+              key={emoji}
+              onPress={() => {
+                const target = actionMessage;
+                setActionMessage(null);
+                if (target) void toggleReaction(target, emoji);
+              }}
+              style={[styles.quickReaction, { backgroundColor: palette.hover }]}
+            >
+              <Text style={styles.quickEmoji}>{emoji}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {actionMessage?.content && !actionMessage.is_deleted ? <SheetAction icon={<Copy size={18} />} label="Copy Text" onPress={() => { void Clipboard.setStringAsync(actionMessage.content); setActionMessage(null); }} /> : null}
+        {!actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Reply size={18} />} label="Reply" onPress={() => { const target = actionMessage; if (target) beginReply(target); }} /> : null}
+        {!actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Forward size={18} />} label="Forward Message" onPress={() => { setForwarding(actionMessage); setActionMessage(null); }} /> : null}
+        {actionMessage?.sender_id === user?.id && !actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction icon={<Pencil size={18} />} label="Edit Message" onPress={() => { const target = actionMessage; if (target) setEditing(target); setReplyTo(null); setActionMessage(null); }} /> : null}
+        {(actionMessage?.sender_id === user?.id || isModerator) && !actionMessage?.is_deleted && !actionMessage?.local_status ? <SheetAction danger icon={<Trash2 size={18} />} label="Delete Message" onPress={() => { const target = actionMessage; if (target) void deleteSelected(target); }} /> : null}
+        <SheetAction icon={<X size={18} />} label="Cancel" onPress={() => setActionMessage(null)} />
+      </NativeBottomSheet>
 
       <Modal animationType="fade" onRequestClose={() => setSelectedAttachment(null)} transparent visible={Boolean(selectedAttachment)}>
         <View style={styles.viewer}>
@@ -1483,7 +1483,6 @@ const styles = StyleSheet.create({
   headerSubtitle: { fontSize: 11, marginTop: 2 },
   typingWrap: { height: 19, justifyContent: 'center', paddingHorizontal: 16 },
   typing: { fontSize: 11, fontStyle: 'italic' },
-  modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
   actionSheet: { borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, paddingBottom: 24, paddingHorizontal: 12, paddingTop: 8 },
   sheetHandle: { alignSelf: 'center', backgroundColor: '#6b7280', borderRadius: 2, height: 4, marginBottom: 12, opacity: 0.6, width: 38 },
   sheetTitle: { fontSize: 15, fontWeight: '800', marginBottom: 12, paddingHorizontal: 8 },

@@ -107,14 +107,12 @@ function NativeMessageTimelineInstance({
             message: item,
             index,
             highlighted,
-            onHeightWillChange: controller.onItemHeightWillChange,
           })}
         </View>
       );
     },
     [
       colors.accent,
-      controller.onItemHeightWillChange,
       controller.state.highlightedMessageId,
       renderMessage,
     ],
@@ -130,10 +128,22 @@ function NativeMessageTimelineInstance({
     () => ({ highlightedMessageId: controller.state.highlightedMessageId }),
     [controller.state.highlightedMessageId],
   );
+  // FlashList owns prepend anchoring; the controller does not counter-scroll history updates.
   const maintainVisibleContentPosition = useMemo(() => ({
-    animateAutoScrollToBottom: false,
+    animateAutoScrollToBottom: true,
+    autoscrollToBottomThreshold: 0.04,
     startRenderingFromBottom: !initialScrollToStart,
   }), [initialScrollToStart]);
+  const historyHeader = useMemo(() => {
+    if (loadingOlder) {
+      return (
+        <View pointerEvents="none" style={styles.historyLoading}>
+          <ActivityIndicator color={colors.accent} size="small" />
+        </View>
+      );
+    }
+    return hasOlder ? null : listHeader ? <>{listHeader}</> : null;
+  }, [colors.accent, hasOlder, listHeader, loadingOlder]);
 
   return (
     <View
@@ -149,7 +159,7 @@ function NativeMessageTimelineInstance({
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         keyExtractor={(item) => item.id}
-        ListHeaderComponent={listHeader ? <>{listHeader}</> : null}
+        ListHeaderComponent={historyHeader}
         ListEmptyComponent={
           emptyComponent ? <>{emptyComponent}</> : (
             <View style={styles.empty}>
@@ -160,19 +170,15 @@ function NativeMessageTimelineInstance({
           )
         }
         maintainVisibleContentPosition={maintainVisibleContentPosition}
-        onCommitLayoutEffect={controller.onCommitLayoutEffect}
         onContentSizeChange={controller.onContentSizeChange}
         onEndReached={controller.onEndReached}
         onEndReachedThreshold={0.2}
         onLayout={controller.onLayout}
         onLoad={controller.onLoad}
-        onMomentumScrollBegin={controller.onMomentumScrollBegin}
-        onMomentumScrollEnd={controller.onMomentumScrollEnd}
         onScroll={controller.onScroll}
         onScrollBeginDrag={controller.onScrollBeginDrag}
-        onScrollEndDrag={controller.onScrollEndDrag}
         onStartReached={
-          controller.state.initialRestoreComplete
+          controller.state.initialPositionComplete
             ? controller.onStartReached
             : undefined
         }
@@ -183,12 +189,6 @@ function NativeMessageTimelineInstance({
         showsVerticalScrollIndicator
         viewabilityConfig={VIEWABILITY_CONFIG}
       />
-
-      {controller.state.isLoadingHistory || loadingOlder ? (
-        <View pointerEvents="none" style={styles.loadingOlder}>
-          <ActivityIndicator color={colors.accent} size="small" />
-        </View>
-      ) : null}
 
       {controller.state.showJumpToPresent ? (
         <View pointerEvents="box-none" style={styles.jumpWrap}>
@@ -249,13 +249,11 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
   },
-  loadingOlder: {
+  historyLoading: {
     alignItems: 'center',
-    left: 0,
-    paddingTop: 8,
-    position: 'absolute',
-    right: 0,
-    top: 0,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingVertical: 10,
   },
   jumpButton: {
     alignItems: 'center',
