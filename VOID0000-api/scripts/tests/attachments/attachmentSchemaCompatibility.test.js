@@ -90,11 +90,11 @@ test('schema verification errors prevent startup instead of assuming compatibili
 test('message and worker entrypoints verify schema before accepting attachment work', async () => {
   const [messageEntrypoint, workerEntrypoint] = await Promise.all([
     readFile(
-      new URL('../../../server/entrypoints/message-server.js', import.meta.url),
+      new URL('../../../server/entrypoints/message-server.ts', import.meta.url),
       'utf8',
     ),
     readFile(
-      new URL('../../../server/entrypoints/worker-server.js', import.meta.url),
+      new URL('../../../server/entrypoints/worker-server.ts', import.meta.url),
       'utf8',
     ),
   ]);

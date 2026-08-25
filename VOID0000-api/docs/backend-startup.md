@@ -20,19 +20,19 @@ At runtime it is split into:
 
 - `voidapp-api`
   - account/control API
-  - runs from `server/entrypoints/account-server.js`
+  - source: `server/entrypoints/account-server.ts`
   - default port: `3001`
 - `voidapp-message-service`
   - messages, reactions, and attachment uploads
-  - runs from `server/entrypoints/message-server.js`
+  - source: `server/entrypoints/message-server.ts`
   - default port: `3002`
 - `voidapp-social-profile-service`
   - profiles, friends, and user search
-  - runs from `server/entrypoints/social-server.js`
+  - source: `server/entrypoints/social-server.ts`
   - default port: `3004`
 - `voidapp-conversation-service`
   - conversations, groups, members, invites, and permissions
-  - runs from `server/entrypoints/conversation-server.js`
+  - source: `server/entrypoints/conversation-server.ts`
   - default port: `3005`
 - `voidapp-gateway-phoenix`
   - Phoenix websocket gateway
@@ -40,9 +40,12 @@ At runtime it is split into:
   - default port: `4001`
 - `voidapp-worker-service`
   - avatar image jobs, local chat-image sanitization, cleanup, and presence fanout
-  - runs from `server/entrypoints/worker-server.js`
+  - source: `server/entrypoints/worker-server.ts`
 
 PM2 manages the current NOTE2EE app processes.
+
+Run `npm run build` before starting PM2. The files above are TypeScript source;
+PM2 executes their emitted JavaScript counterparts under `dist/server/entrypoints/`.
 
 PM2 does **not** start PostgreSQL, Valkey, ScyllaDB, or MinIO for you.
 
@@ -75,22 +78,22 @@ That migration command now covers:
 Main runtime files:
 
 - `ecosystem.config.cjs`
-- `server/entrypoints/account-server.js`
-- `server/entrypoints/message-server.js`
-- `server/entrypoints/social-server.js`
-- `server/entrypoints/conversation-server.js`
-- `server/entrypoints/worker-server.js`
+- `server/entrypoints/account-server.ts`
+- `server/entrypoints/message-server.ts`
+- `server/entrypoints/social-server.ts`
+- `server/entrypoints/conversation-server.ts`
+- `server/entrypoints/worker-server.ts`
 - `server/config.json`
 - `startup/run-phoenix-gateway.sh`
 - `void_gateway/config/runtime.exs`
 
 Service connection files:
 
-- `server/db.js`
-- `server/valkey.js`
-- `server/valkey-pubsub.js`
-- `server/scylla.js`
-- `server/minio.js`
+- `server/db.ts`
+- `server/valkey.ts`
+- `server/valkey-pubsub.ts`
+- `server/scylla.ts`
+- `server/minio.ts`
 
 ## How PM2 Starts The Backend
 
@@ -101,17 +104,17 @@ PM2 reads:
 That file defines the backend apps:
 
 1. `voidapp-api`
-   - script: `server/entrypoints/account-server.js`
+   - source: `server/entrypoints/account-server.ts`
 2. `voidapp-message-service`
-   - script: `server/entrypoints/message-server.js`
+   - source: `server/entrypoints/message-server.ts`
 3. `voidapp-conversation-service`
-   - script: `server/entrypoints/conversation-server.js`
+   - source: `server/entrypoints/conversation-server.ts`
 4. `voidapp-social-profile-service`
-   - script: `server/entrypoints/social-server.js`
+   - source: `server/entrypoints/social-server.ts`
 5. `voidapp-gateway-phoenix`
    - script: `startup/run-phoenix-gateway.sh`
 6. `voidapp-worker-service`
-   - script: `server/entrypoints/worker-server.js`
+   - source: `server/entrypoints/worker-server.ts`
 
 `server/config.json` controls:
 
@@ -128,7 +131,7 @@ If it is not, the backend intentionally fails fast.
 
 Account/control entry:
 
-- `server/entrypoints/account-server.js`
+- `server/entrypoints/account-server.ts`
 
 Startup sequence:
 
@@ -216,7 +219,7 @@ Used by:
 
 Connection file:
 
-- `server/db.js`
+- `server/db.ts`
 
 Important env:
 
@@ -241,8 +244,8 @@ Used by:
 
 Connection files:
 
-- `server/valkey.js`
-- `server/valkey-pubsub.js`
+- `server/valkey.ts`
+- `server/valkey-pubsub.ts`
 - Phoenix also connects directly from `void_gateway`
 
 Important env:
@@ -271,7 +274,7 @@ Used by:
 
 Connection file:
 
-- `server/scylla.js`
+- `server/scylla.ts`
 
 Important env:
 
@@ -310,7 +313,7 @@ Used by:
 
 Connection file:
 
-- `server/minio.js`
+- `server/minio.ts`
 
 Important env:
 

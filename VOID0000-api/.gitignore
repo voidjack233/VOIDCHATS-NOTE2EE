@@ -1,5 +1,8 @@
 # Node
 node_modules/
+dist/
+.dist-build/
+.dist-previous/
 .env
 .runtime/
 /bin/voidapp-vmd

@@ -1,0 +1,66 @@
+import express from 'express';
+import dotenv from 'dotenv';
+import { fromProjectRoot } from '../config/projectRoot.js';
+import { createServer } from 'http';
+
+dotenv.config({ path: fromProjectRoot('.env') });
+
+const { pool } = await import('../db.js');
+const { minioClient, ATTACH_BUCKET } = await import('../minio.js');
+const { createReadinessHandler } = await import('../health/readiness.js');
+const { getVmdSigningKey } = await import('../vmd/capability.js');
+const { initializeVmdCacheStorage } = await import('../vmd/persistentCache.js');
+const { getVmdStorageMetrics } = await import('../vmd/storage.js');
+const { default: vmdRouter } = await import('../vmd/index.js');
+
+getVmdSigningKey();
+void initializeVmdCacheStorage().then(
+  (cacheStorage) => {
+    console.log('[VMD_CACHE] persistent storage ready', cacheStorage);
+  },
+  (error) => {
+    console.warn('[VMD_CACHE] persistent storage initialization failed; continuing without cache', {
+      error: error instanceof Error ? error.message : String(error || ''),
+    });
+  },
+);
+
+const app = express();
+const PORT = Number(process.env.VMD_SERVICE_PORT || 3006);
+const HOST = process.env.HOST || process.env.BIND_HOST || '0.0.0.0';
+
+app.disable('x-powered-by');
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
+
+app.get('/health', (_req, res) => {
+  res.json({
+    success: true,
+    service: 'voidapp-vmd-service',
+    pid: process.pid,
+    metrics: getVmdStorageMetrics(),
+  });
+});
+
+app.get('/ready', createReadinessHandler({
+  service: 'voidapp-vmd-service',
+  checks: {
+    postgres: () => pool.query('SELECT 1'),
+    minio: () => minioClient.bucketExists(ATTACH_BUCKET),
+  },
+}));
+
+app.use(vmdRouter);
+
+app.use((_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(404).json({
+    success: false,
+    code: 'VMD_ROUTE_NOT_FOUND',
+  });
+});
+
+const httpServer = createServer(app);
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`VMD service running on ${HOST}:${PORT} (PID ${process.pid})`);
+});

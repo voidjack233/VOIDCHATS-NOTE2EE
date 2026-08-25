@@ -25,7 +25,8 @@ const commonEnv = {
 const apps = [
   {
     name: 'voidapp-api',
-    script: 'server/entrypoints/account-server.js',
+    script: 'dist/server/entrypoints/account-server.js',
+    cwd: __dirname,
     instances: clusterEnabled ? workers : 1,
     exec_mode: clusterEnabled ? 'cluster' : 'fork',
     env: {
@@ -38,7 +39,8 @@ const apps = [
   },
   {
     name: 'voidapp-message-service',
-    script: 'server/entrypoints/message-server.js',
+    script: 'dist/server/entrypoints/message-server.js',
+    cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
     env: {
@@ -66,7 +68,8 @@ const apps = [
   },
   {
     name: 'voidapp-social-profile-service',
-    script: 'server/entrypoints/social-server.js',
+    script: 'dist/server/entrypoints/social-server.js',
+    cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
     env: {
@@ -79,7 +82,8 @@ const apps = [
   },
   {
     name: 'voidapp-conversation-service',
-    script: 'server/entrypoints/conversation-server.js',
+    script: 'dist/server/entrypoints/conversation-server.js',
+    cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
     env: {
@@ -111,7 +115,8 @@ const apps = [
   },
   {
     name: 'voidapp-worker-service',
-    script: 'server/entrypoints/worker-server.js',
+    script: 'dist/server/entrypoints/worker-server.js',
+    cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
     env: commonEnv,

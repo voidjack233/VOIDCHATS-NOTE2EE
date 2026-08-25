@@ -90,14 +90,14 @@ test('non-array attachment edits are rejected', () => {
 test('message edit route reads and emits stored attachments without updating the column', async () => {
   const source = await readFile(
     new URL(
-      '../../../server/routes/conversations/messages/byId.js',
+      '../../../server/routes/conversations/messages/byId.ts',
       import.meta.url,
     ),
     'utf8',
   );
   const editRoute = source.slice(
-    source.indexOf("router.put('/:messageId'"),
-    source.indexOf("router.delete('/:messageId'"),
+    source.indexOf('router.put'),
+    source.indexOf('router.delete'),
   );
 
   assert.match(editRoute, /SELECT sender_id, is_deleted, message_type, attachments/i);

@@ -6,11 +6,11 @@ Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. 
 
 ## Runtime Shape
 
-- `server/entrypoints/account-server.js` - account/control API on port `3001`.
-- `server/entrypoints/message-server.js` - messages, reactions, and attachment uploads on port `3002`.
-- `server/entrypoints/social-server.js` - profiles, friends, and user search on port `3004`.
-- `server/entrypoints/conversation-server.js` - conversations, groups, members, invites, and permissions on port `3005`.
-- `server/entrypoints/worker-server.js` - background workers, cleanup, and presence fanout.
+- `server/entrypoints/account-server.ts` - account/control API on port `3001`.
+- `server/entrypoints/message-server.ts` - messages, reactions, and attachment uploads on port `3002`.
+- `server/entrypoints/social-server.ts` - profiles, friends, and user search on port `3004`.
+- `server/entrypoints/conversation-server.ts` - conversations, groups, members, invites, and permissions on port `3005`.
+- `server/entrypoints/worker-server.ts` - background workers, cleanup, and presence fanout.
 - `void_gateway` - Phoenix websocket gateway.
 - `ecosystem.config.cjs` - PM2 definitions for the current NOTE2EE backend.
 - `db/migrations` - canonical Postgres schema migrations.

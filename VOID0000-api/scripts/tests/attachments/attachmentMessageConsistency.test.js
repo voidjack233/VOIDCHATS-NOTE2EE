@@ -99,7 +99,7 @@ test('acknowledgement failure is reported after the Scylla write is known to hav
 test('message send wires quorum consistency to attachment writes and recovery operations', async () => {
   const source = await readFile(
     new URL(
-      '../../../server/routes/conversations/messages/sendMessage.js',
+      '../../../server/routes/conversations/messages/sendMessage.ts',
       import.meta.url,
     ),
     'utf8',

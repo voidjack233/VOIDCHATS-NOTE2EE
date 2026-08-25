@@ -63,7 +63,7 @@ pm2 save
 
 The PM2 service keeps the existing name and port. If rollback is required, the
 previous Node entrypoint remains available through `npm run start:vmd:node` and
-`server/entrypoints/vmd-server.js` until the Go migration is frozen.
+`server/entrypoints/vmd-server.ts` until the Go migration is frozen.
 
 The frontend Content Security Policy must include
 `https://vmd.void0000.online` in `img-src`. No VMD origin is needed in
