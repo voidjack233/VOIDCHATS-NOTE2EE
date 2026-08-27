@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1.7
+
+ARG GO_IMAGE=golang:1.26.0-alpine3.23
+
+FROM ${GO_IMAGE} AS build
+
+WORKDIR /build
+
+RUN apk add --no-cache ca-certificates
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+  go mod download
+
+COPY cmd ./cmd
+COPY internal ./internal
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+  CGO_ENABLED=0 GOOS=linux go build \
+    -buildvcs=false \
+    -trimpath \
+    -ldflags='-s -w' \
+    -o /out/voidapp-vmd \
+    ./cmd/vmd \
+  && mkdir -p /out/run/voidapp \
+  && chmod 0700 /out/run/voidapp
+
+FROM scratch AS runtime
+
+ARG APP_VERSION=dev
+ARG VCS_REF=unknown
+ARG VOIDAPP_UID=10001
+ARG VOIDAPP_GID=10001
+
+LABEL org.opencontainers.image.title="VOID Media Delivery" \
+  org.opencontainers.image.description="Canonical Go VMD service" \
+  org.opencontainers.image.version="${APP_VERSION}" \
+  org.opencontainers.image.revision="${VCS_REF}"
+
+ENV NODE_ENV=production \
+  HOST=0.0.0.0 \
+  VMD_SERVICE_PORT=3006
+
+WORKDIR /app
+
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build --chown=${VOIDAPP_UID}:${VOIDAPP_GID} --chmod=0700 /out/run/voidapp /run/voidapp
+COPY --from=build --chown=${VOIDAPP_UID}:${VOIDAPP_GID} /out/voidapp-vmd /app/voidapp-vmd
+
+USER ${VOIDAPP_UID}:${VOIDAPP_GID}
+
+EXPOSE 3006
+
+ENTRYPOINT ["/app/voidapp-vmd"]

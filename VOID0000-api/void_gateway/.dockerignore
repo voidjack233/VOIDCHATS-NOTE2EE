@@ -1,3 +1,11 @@
-deps
+.git
+.github
+.env
+.env.*
+!.env.example
 _build
+coverage
+deps
 erl_crash.dump
+test
+*.log
