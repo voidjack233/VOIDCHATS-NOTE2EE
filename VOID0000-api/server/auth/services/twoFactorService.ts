@@ -10,7 +10,7 @@ import {
 } from '../config/authSecrets.js';
 
 interface BackupCodeRow extends QueryResultRow {
-  id: string;
+  id: number;
   code_hash: string;
 }
 
@@ -89,7 +89,7 @@ export function safeEqualHex(left: unknown, right: unknown): boolean {
 export async function findMatchingBackupCodeId(
   rows: BackupCodeRow[],
   code: string,
-): Promise<string | null> {
+): Promise<number | null> {
   const normalizedCode = code.trim().toUpperCase();
   for (const row of rows) {
     if (await argon2.verify(row.code_hash, normalizedCode)) {
@@ -101,10 +101,10 @@ export async function findMatchingBackupCodeId(
 
 export async function consumeBackupCode(
   queryable: DatabaseQueryable,
-  backupCodeId: string,
+  backupCodeId: number,
   userId: string,
 ): Promise<boolean> {
-  const result = await queryable.query<{ id: string }>(
+  const result = await queryable.query<{ id: number }>(
     `UPDATE user_2fa_backup_codes
      SET is_used = true,
          used_at = NOW()

@@ -8,11 +8,11 @@ type LifecycleRow = {
   blob_id: string;
   bucket: string;
   object_key: string;
-  content_hash: string;
-  content_type: string;
-  inline: boolean;
-  filename: string;
-  size_bytes: number | string;
+  content_hash: string | null;
+  content_type: string | null;
+  inline: boolean | null;
+  filename: string | null;
+  size_bytes: number | string | null;
   status: string;
   uploader_id: string;
   conversation_id: string;
@@ -26,7 +26,7 @@ type LifecycleRow = {
   staged_bytes: number | string;
   ref_count: number | string;
   orphaned_at: Date | null;
-  expires_at: Date;
+  expires_at: Date | null;
   lastModified: Date;
   has_references: boolean;
 };

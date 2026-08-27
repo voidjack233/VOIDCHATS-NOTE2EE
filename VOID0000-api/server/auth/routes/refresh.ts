@@ -28,8 +28,8 @@ import { debugLog } from '../../utils/debugLog.js';
 const router = Router();
 
 interface RefreshTokenRecord {
-  id: string;
-  token_hash: string;
+  id: number;
+  token_hash: string | null;
   jti: string;
   device_id: string;
   device_name: string | null;

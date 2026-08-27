@@ -45,7 +45,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 interface AttachmentObjectRow extends Record<string, unknown> {
   object_key: string;
-  filename: string;
+  filename: string | null;
 }
 
 interface ConversationMemberRow extends Record<string, unknown> {
@@ -174,7 +174,7 @@ function setAttachmentResponseHeaders(
   res: Response,
   objectStat: BucketItemStat,
   objectKey: string,
-  logicalFilename: string,
+  logicalFilename: string | null,
 ): void {
   const headers = createProtectedAttachmentResponseHeaders(
     objectStat,
@@ -229,7 +229,7 @@ async function readAttachmentObjectWithinBudget(
 async function streamAttachmentObject(
   res: Response,
   objectKey: string,
-  logicalFilename: string,
+  logicalFilename: string | null,
 ) {
   let objectStat: BucketItemStat;
   try {

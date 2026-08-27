@@ -26,9 +26,7 @@
     "test": "tsx --test --test-concurrency=1 scripts/tests/*/*.test.js",
     "lint": "eslint .",
     "migrate": "tsx scripts/migrate.ts",
-    "migrate:status": "tsx scripts/migrate.ts --status",
-    "backfill:conversation-public-ids": "tsx server/scripts/backfillConversationPublicIds.js",
-    "migrate:legacy-group-to-general": "tsx server/scripts/migrateLegacyGroupToGeneral.js"
+    "migrate:status": "tsx scripts/migrate.ts --status"
   },
   "dependencies": {
     "argon2": "^0.44.0",

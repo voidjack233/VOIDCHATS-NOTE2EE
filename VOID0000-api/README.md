@@ -105,8 +105,6 @@ Expected PM2 apps:
 | `npm run lint` | Run ESLint. |
 | `npm run migrate` | Apply pending Postgres and ScyllaDB migrations. |
 | `npm run migrate:status` | Show migration status without applying changes. |
-| `npm run backfill:conversation-public-ids` | Run the conversation public ID backfill. |
-| `npm run migrate:legacy-group-to-general` | Run the legacy group-to-general migration script. |
 
 ## Environment
 

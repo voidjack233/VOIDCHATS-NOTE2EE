@@ -69,7 +69,7 @@ interface PostClaimErrorBody {
 }
 
 interface BackupCodeRow extends QueryResultRow {
-  id: string;
+  id: number;
   code_hash: string;
 }
 
