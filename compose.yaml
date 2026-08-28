@@ -83,7 +83,7 @@ services:
     volumes:
       - scylla-data:/var/lib/scylla
     healthcheck:
-      test: ["CMD-SHELL", "cqlsh 127.0.0.1 -e 'SELECT now() FROM system.local' >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "cqlsh \"$$(hostname -i | awk '{print $$1}')\" -e 'SELECT key FROM system.local' >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
       retries: 45
