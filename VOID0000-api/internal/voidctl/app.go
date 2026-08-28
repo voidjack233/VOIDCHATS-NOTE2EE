@@ -369,18 +369,18 @@ func (app App) checkEdgeBind(ctx context.Context, runtime Runtime) error {
 	if _, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(bind, port)); err != nil {
 		return fmt.Errorf("invalid edge bind address: %w", err)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(bind, port))
-	if err == nil {
-		return listener.Close()
-	}
-	// A running edge is the only expected reason for the configured port to be occupied.
+	// A running edge must be reachable. A stopped deployment must leave the bind free.
 	status, statusErr := queryDeploymentStatus(ctx, app.Executor, app.Root, runtime)
 	if statusErr == nil {
 		for _, container := range status.Containers {
 			if container.Service == "edge" && strings.ToLower(container.State) == "running" {
-				return nil
+				return checkEdgeEndpoint(ctx, app.Root)
 			}
 		}
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(bind, port))
+	if err == nil {
+		return listener.Close()
 	}
 	return fmt.Errorf("cannot bind %s: %w", net.JoinHostPort(bind, port), err)
 }

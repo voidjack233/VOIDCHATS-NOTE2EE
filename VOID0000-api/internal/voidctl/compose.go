@@ -3,8 +3,11 @@ package voidctl
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func composeInvocation(root string, runtime Runtime, command ...string) (string, []string, error) {
@@ -44,5 +47,57 @@ func queryDeploymentStatus(
 	if err != nil {
 		return DeploymentStatus{}, fmt.Errorf("parse compose status: %w", err)
 	}
-	return ClassifyStatus(containers), nil
+	status := ClassifyStatus(containers)
+	if status.State == Ready {
+		if edgeErr := checkEdgeEndpoint(ctx, root); edgeErr != nil {
+			status.State = Degraded
+			status.Reasons = append(status.Reasons, "edge endpoint unreachable: "+edgeErr.Error())
+		}
+	}
+	return status, nil
+}
+
+func edgeAddress(root string) (string, error) {
+	environment, err := ReadEnvironment(filepath.Join(root, "deploy", ".env"))
+	if err != nil {
+		return "", err
+	}
+	bind := strings.TrimSpace(environment["VOID_EDGE_BIND"])
+	if bind == "" || bind == "0.0.0.0" {
+		bind = "127.0.0.1"
+	} else if bind == "::" {
+		bind = "::1"
+	}
+	port := strings.TrimSpace(environment["VOID_EDGE_PORT"])
+	if port == "" {
+		port = "8080"
+	}
+	return net.JoinHostPort(bind, port), nil
+}
+
+func checkEdgeEndpoint(ctx context.Context, root string) error {
+	address, err := edgeAddress(root)
+	if err != nil {
+		return err
+	}
+	requestContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(
+		requestContext,
+		http.MethodGet,
+		"http://"+address+"/health",
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("HTTP status %d", response.StatusCode)
+	}
+	return nil
 }

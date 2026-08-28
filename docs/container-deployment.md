@@ -15,8 +15,9 @@ unchanged.
 - `volume-init`, `minio-init`, and `migrate` are idempotent one-shot services.
 - Application roles cannot start until migrations succeed. Message and VMD
   readiness also verify their required worker IPC socket.
-- Data, edge, and outbound networks are separate. PostgreSQL, Scylla, Valkey,
-  and internal application ports are never published to the host.
+- Data, edge, and outbound networks are separate. The edge alone also joins the
+  outbound network so Docker can establish its host NAT binding. PostgreSQL,
+  Scylla, Valkey, and internal application ports are never published to the host.
 
 ## First setup
 
