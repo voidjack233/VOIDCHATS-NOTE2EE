@@ -59,7 +59,7 @@ class Gateway {
       return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/gateway`;
     }
 
-    const fallbackBase = SOCKET_URL || 'https://api.void0000.online';
+    const fallbackBase = SOCKET_URL || window.location.origin;
 
     try {
       const url = new URL(fallbackBase);
@@ -71,7 +71,7 @@ class Gateway {
 
       return url.toString();
     } catch {
-      return 'wss://api.void0000.online/gateway';
+      return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/gateway`;
     }
   }
 

@@ -1,0 +1,165 @@
+map $http_upgrade $void_connection_upgrade {
+    default upgrade;
+    "" close;
+}
+
+server {
+    listen ${VOID_WEB_PORT};
+    server_name ${VOID_WEB_SERVER_NAME};
+
+    root /usr/share/nginx/html;
+    index index.html;
+    server_tokens off;
+    client_max_body_size 12m;
+
+    resolver ${VOID_DNS_RESOLVER} valid=10s ipv6=off;
+
+    set $void_account http://account:3001;
+    set $void_message http://message:3002;
+    set $void_social http://social:3004;
+    set $void_conversation http://conversation:3005;
+    set $void_vmd http://vmd:3006;
+    set $void_gateway http://gateway:4001;
+    set $void_minio http://minio:9000;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Frame-Options "DENY" always;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Port $server_port;
+
+    location = /health {
+        access_log off;
+        default_type application/json;
+        return 200 '{"success":true,"service":"voidapp-edge"}\n';
+    }
+
+    location = /ready {
+        proxy_pass $void_account/ready;
+    }
+
+    location ^~ /gateway {
+        proxy_pass $void_gateway;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $void_connection_upgrade;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        proxy_buffering off;
+    }
+
+    location ^~ /api/auth {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/me {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/csrf {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/captcha {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/security {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/link-preview {
+        proxy_pass $void_account;
+    }
+
+    location = /api/users/account {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/users/sessions {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/users/preferences {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/notifications {
+        proxy_pass $void_account;
+    }
+
+    location ^~ /api/users/search {
+        proxy_pass $void_social;
+    }
+
+    location ^~ /api/users {
+        proxy_pass $void_social;
+    }
+
+    location ^~ /api/friends {
+        proxy_pass $void_social;
+    }
+
+    location ~ ^/api/conversations/[^/]+/(messages|attachments|reactions)(/|$) {
+        proxy_request_buffering off;
+        proxy_pass $void_message;
+    }
+
+    location = /api/bootstrap {
+        proxy_pass $void_conversation;
+    }
+
+    # Do not use ^~ here: the message-service regex above must win for nested
+    # message, reaction, and attachment routes.
+    location /api/conversations {
+        proxy_pass $void_conversation;
+    }
+
+    location ^~ /v1/images/ {
+        proxy_pass $void_vmd;
+        proxy_buffering on;
+    }
+
+    location ^~ /avatars/ {
+        proxy_pass $void_minio;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    location ^~ /group-avatars/ {
+        proxy_pass $void_minio;
+        proxy_hide_header Cache-Control;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    location ^~ /chat-attachments/ {
+        proxy_pass $void_minio;
+        proxy_buffering on;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+        try_files $uri =404;
+    }
+
+    location = /version.json {
+        add_header Cache-Control "no-store" always;
+        try_files $uri =404;
+    }
+
+    location ^~ /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    location / {
+        add_header Cache-Control "no-store" always;
+        try_files $uri $uri/ /index.html;
+    }
+}

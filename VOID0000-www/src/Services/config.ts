@@ -4,12 +4,12 @@ const viteEnv = import.meta.env;
 
 export const API_URL = viteEnv?.DEV
   ? ''
-  : viteEnv?.VITE_API_URL;
+  : viteEnv?.VITE_API_URL ?? '';
 
 export const CDN_URL = viteEnv?.DEV
   ? ''
-  : viteEnv?.CDN_URL;
+  : viteEnv?.CDN_URL ?? '';
 
 export const SOCKET_URL = viteEnv?.DEV
   ? ''
-  : viteEnv?.VITE_GATEWAY_URL || viteEnv?.VITE_API_URL;
+  : viteEnv?.VITE_GATEWAY_URL || viteEnv?.VITE_API_URL || '';

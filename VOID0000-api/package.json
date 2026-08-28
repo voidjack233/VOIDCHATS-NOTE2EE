@@ -18,6 +18,7 @@
     "start:conversations": "node dist/server/entrypoints/conversation-server.js",
     "start:messages": "node dist/server/entrypoints/message-server.js",
     "build:vmd": "bash scripts/build-vmd-go.sh",
+    "build:voidctl": "go build -trimpath -o bin/voidctl ./cmd/voidctl",
     "start:vmd": "bash startup/run-vmd-go.sh",
     "start:vmd:node": "node dist/server/entrypoints/vmd-server.js",
     "test:vmd:go": "go test ./internal/vmd ./scripts/tests/vmd-go",

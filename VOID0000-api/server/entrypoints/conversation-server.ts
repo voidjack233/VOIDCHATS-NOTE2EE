@@ -24,7 +24,8 @@ const { default: membersRouter } = await import('../routes/conversations/members
 const { default: permissionsRouter } = await import('../routes/conversations/permissions.js');
 const { default: rootRouter } = await import('../routes/conversations/root/index.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
-const { initPublisher } = await import('../valkey-pubsub.js');
+const { installGracefulHttpShutdown } = await import('../health/gracefulHttpShutdown.js');
+const { closePubSub, initPublisher } = await import('../valkey-pubsub.js');
 
 const app = express();
 const PORT = Number(process.env.CONVERSATION_SERVICE_PORT || process.env.PORT || 3005);
@@ -85,4 +86,9 @@ const httpServer = createServer(app);
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`✅ Conversation service running on ${HOST}:${PORT} (PID ${process.pid})`);
+});
+
+installGracefulHttpShutdown(httpServer, {
+  service: 'Conversation service',
+  hooks: [() => closePubSub(), () => valkey.quit(), () => pool.end()],
 });

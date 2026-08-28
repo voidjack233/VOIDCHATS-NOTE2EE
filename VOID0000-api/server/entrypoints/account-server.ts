@@ -8,8 +8,9 @@ import { securityMiddleware } from '../middleware/xss/index.js';
 import captchaRouter from '../routes/captcha/index.js';
 import { pool } from '../db.js';
 import valkey from '../valkey.js';
-import { initPublisher } from '../valkey-pubsub.js';
+import { closePubSub, initPublisher } from '../valkey-pubsub.js';
 import { createReadinessHandler } from '../health/readiness.js';
+import { installGracefulHttpShutdown } from '../health/gracefulHttpShutdown.js';
 import {
   authRouter,
   authenticateUser,
@@ -170,4 +171,9 @@ const httpServer = createServer(app);
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`✅ Account/control service running on ${HOST}:${PORT} (PID ${process.pid})`);
+});
+
+installGracefulHttpShutdown(httpServer, {
+  service: 'Account/control service',
+  hooks: [() => closePubSub(), () => valkey.quit(), () => pool.end()],
 });

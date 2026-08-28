@@ -44,6 +44,7 @@ ENV LANG=C.UTF-8 \
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     libncurses6 \
     libstdc++6 \
     openssl \

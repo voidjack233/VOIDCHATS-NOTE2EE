@@ -17,7 +17,7 @@ const { default: profileFieldsRouter } = await import('../routes/user/profileFie
 const { default: profileAvatarRouter } = await import('../routes/user/profileAvatar.js');
 const { default: friendRouter } = await import('../routes/friends/index.js');
 const { default: userSearchRouter } = await import('../routes/user/userSearch.js');
-const { initPublisher } = await import('../valkey-pubsub.js');
+const { closePubSub, initPublisher } = await import('../valkey-pubsub.js');
 
 const app = express();
 const PORT = Number(process.env.SOCIAL_SERVICE_PORT || process.env.PORT || 3004);
@@ -28,6 +28,7 @@ const { pool } = await import('../db.js');
 const { default: valkey } = await import('../valkey.js');
 const { minioClient, BUCKET, GROUP_AVATAR_BUCKET } = await import('../minio.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
+const { installGracefulHttpShutdown } = await import('../health/gracefulHttpShutdown.js');
 
 const allowedOrigins = [
   FRONT_URL,
@@ -78,4 +79,9 @@ const httpServer = createServer(app);
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`✅ Social/profile service running on ${HOST}:${PORT} (PID ${process.pid})`);
+});
+
+installGracefulHttpShutdown(httpServer, {
+  service: 'Social/profile service',
+  hooks: [() => closePubSub(), () => valkey.quit(), () => pool.end()],
 });

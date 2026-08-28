@@ -26,7 +26,10 @@ const { default: batchReactionsRouter } = await import('../routes/conversations/
 const { default: messagesRouter } = await import('../routes/conversations/messages.js');
 const { default: reactionsRouter } = await import('../routes/conversations/reactions.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
-const { initPublisher } = await import('../valkey-pubsub.js');
+const { installGracefulHttpShutdown } = await import('../health/gracefulHttpShutdown.js');
+const { checkUnixSocket } = await import('../health/unixSocket.js');
+const { getAttachmentSanitizerSocketPath } = await import('../attachmentSanitizer/ipcProtocol.js');
+const { closePubSub, initPublisher } = await import('../valkey-pubsub.js');
 
 const app = express();
 const PORT = Number(process.env.MESSAGE_SERVICE_PORT || process.env.PORT || 3002);
@@ -73,6 +76,7 @@ app.get('/ready', createReadinessHandler({
     valkey: () => valkey.ping(),
     scylla: () => scyllaClient.execute('SELECT key FROM system.local'),
     minio: () => minioClient.bucketExists(ATTACH_BUCKET),
+    attachmentSanitizer: () => checkUnixSocket(getAttachmentSanitizerSocketPath()),
   },
 }));
 
@@ -107,4 +111,14 @@ const httpServer = createServer(app);
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`✅ Message service running on ${HOST}:${PORT} (PID ${process.pid})`);
+});
+
+installGracefulHttpShutdown(httpServer, {
+  service: 'Message service',
+  hooks: [
+    () => closePubSub(),
+    () => valkey.quit(),
+    () => scyllaClient.shutdown(),
+    () => pool.end(),
+  ],
 });

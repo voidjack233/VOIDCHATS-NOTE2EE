@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,24 @@ import (
 	"github.com/voidjack233/voidchats-note2ee/VOID0000-api/internal/vmd"
 )
 
+func runHealthcheck() int {
+	port := os.Getenv("VMD_SERVICE_PORT")
+	if port == "" {
+		port = "3006"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	response, err := client.Get("http://127.0.0.1:" + port + "/ready")
+	if err != nil {
+		return 1
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return 1
+	}
+	return 0
+}
+
 func postgresURL(config vmd.Config) string {
 	databaseURL := &url.URL{
 		Scheme: "postgres",
@@ -35,6 +54,10 @@ func postgresURL(config vmd.Config) string {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
 	_ = godotenv.Load(".env")
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	config, err := vmd.LoadConfig()

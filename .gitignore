@@ -6,6 +6,10 @@ voidapp-backups/
 *.dump
 *.rdb
 
+# Production deployment runtime state and generated secrets
+/deploy/.env
+/.voidctl/
+
 # MinIO data
 minio-data/
 

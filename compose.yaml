@@ -1,0 +1,420 @@
+name: ${VOID_COMPOSE_PROJECT:-voidapp-prod}
+
+x-api-common: &api-common
+  image: void-api:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+  env_file:
+    - ./deploy/.env
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  stop_grace_period: 12s
+  networks:
+    - data
+    - edge
+    - egress
+
+x-node-healthcheck: &node-healthcheck
+  interval: 10s
+  timeout: 3s
+  retries: 6
+  start_period: 20s
+
+services:
+  volume-init:
+    image: void-api:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+    user: "0:0"
+    read_only: true
+    network_mode: none
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    volumes:
+      - ipc-data:/mnt/ipc
+      - minio-data:/mnt/minio
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        chown 10001:10001 /mnt/ipc
+        chmod 0700 /mnt/ipc
+        chown 10002:10002 /mnt/minio
+        chmod 0700 /mnt/minio
+
+  postgres:
+    image: postgres@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+    environment:
+      POSTGRES_USER: ${PGUSER}
+      POSTGRES_PASSWORD: ${PGPASSWORD}
+      POSTGRES_DB: ${PGDATABASE}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+
+  scylla:
+    image: scylladb/scylla@sha256:7e93267357fe3fbd3da3c92aa0e980f08ddadc1fe8a38c2aae3a3f7f9a1014a7
+    command:
+      - --developer-mode=1
+      - --overprovisioned=1
+      - --smp=1
+      - --memory=1G
+      - --api-address=0.0.0.0
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh 127.0.0.1 -e 'SELECT now() FROM system.local' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 45
+      start_period: 60s
+    restart: unless-stopped
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+
+  valkey:
+    image: valkey/valkey@sha256:1cb6b20b70d927560cc4cc5397b5f045e74aa603ff7696274778880bb6fadc75
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    user: "10002:10002"
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    command: ["server", "/data", "--address", ":9000"]
+    environment:
+      HOME: /tmp
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_BROWSER: "off"
+    volumes:
+      - minio-data:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+      - edge
+
+  minio-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    user: "10001:10001"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_CONFIG_DIR: /tmp/.mc
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MINIO_GROUP_AVATAR_BUCKET: ${MINIO_GROUP_AVATAR_BUCKET}
+      MINIO_ATTACH_BUCKET: ${MINIO_ATTACH_BUCKET}
+      MINIO_VMD_CACHE_BUCKET: ${MINIO_VMD_CACHE_BUCKET}
+    volumes:
+      - ./deploy/minio/init.sh:/config/init.sh:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    entrypoint: ["/bin/sh", "/config/init.sh"]
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+
+  migrate:
+    image: void-api:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+    env_file:
+      - ./deploy/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+    command: ["node", "dist/scripts/migrate.js"]
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+
+  worker:
+    <<: *api-common
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    command: ["node", "dist/server/entrypoints/worker-server.js"]
+    volumes:
+      - ipc-data:/run/voidapp
+    healthcheck:
+      test: ["CMD", "node", "dist/scripts/check-worker-ipc.js"]
+      <<: *node-healthcheck
+      start_period: 30s
+
+  account:
+    <<: *api-common
+    build:
+      context: ./VOID0000-api
+      args:
+        APP_VERSION: ${VOID_IMAGE_TAG}
+        VCS_REF: ${VOID_GIT_SHA}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    environment:
+      PORT: "3001"
+    command: ["node", "dist/server/entrypoints/account-server.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      <<: *node-healthcheck
+
+  message:
+    <<: *api-common
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      worker:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      PORT: "3002"
+      MESSAGE_SERVICE_PORT: "3002"
+    command: ["node", "dist/server/entrypoints/message-server.js"]
+    volumes:
+      - ipc-data:/run/voidapp
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      <<: *node-healthcheck
+
+  social:
+    <<: *api-common
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      PORT: "3004"
+      SOCIAL_SERVICE_PORT: "3004"
+    command: ["node", "dist/server/entrypoints/social-server.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3004/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      <<: *node-healthcheck
+
+  conversation:
+    <<: *api-common
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    environment:
+      PORT: "3005"
+      CONVERSATION_SERVICE_PORT: "3005"
+    command: ["node", "dist/server/entrypoints/conversation-server.js"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3005/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      <<: *node-healthcheck
+
+  vmd:
+    image: void-vmd:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+    build:
+      context: ./VOID0000-api
+      dockerfile: Dockerfile.vmd
+      args:
+        APP_VERSION: ${VOID_IMAGE_TAG}
+        VCS_REF: ${VOID_GIT_SHA}
+    env_file:
+      - ./deploy/.env
+    depends_on:
+      worker:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    read_only: true
+    volumes:
+      - ipc-data:/run/voidapp
+    healthcheck:
+      test: ["CMD", "/app/voidapp-vmd", "healthcheck"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 12s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+      - edge
+      - egress
+
+  gateway:
+    image: void-gateway:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+    build:
+      context: ./VOID0000-api/void_gateway
+      args:
+        APP_VERSION: ${VOID_IMAGE_TAG}
+        VCS_REF: ${VOID_GIT_SHA}
+    env_file:
+      - ./deploy/.env
+    depends_on:
+      valkey:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:4001/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+      - edge
+
+  edge:
+    image: void-web:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+    build:
+      context: ./VOID0000-www
+      args:
+        APP_VERSION: ${VOID_IMAGE_TAG}
+        VCS_REF: ${VOID_GIT_SHA}
+        VITE_API_URL: ""
+        VITE_GATEWAY_URL: ""
+        CDN_URL: ""
+    depends_on:
+      account:
+        condition: service_healthy
+      message:
+        condition: service_healthy
+      social:
+        condition: service_healthy
+      conversation:
+        condition: service_healthy
+      vmd:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    environment:
+      VOID_WEB_PORT: "8080"
+      VOID_WEB_SERVER_NAME: "_"
+      VOID_DNS_RESOLVER: ${VOID_DNS_RESOLVER:-127.0.0.11}
+      NGINX_ENVSUBST_FILTER: ^VOID_(WEB_|DNS_)
+    volumes:
+      - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "${VOID_EDGE_BIND:-127.0.0.1}:${VOID_EDGE_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - edge
+
+volumes:
+  postgres-data:
+  scylla-data:
+  valkey-data:
+  minio-data:
+  ipc-data:
+
+networks:
+  data:
+    internal: true
+  edge:
+    internal: true
+  egress:
