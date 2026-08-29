@@ -232,8 +232,13 @@ func (app App) up(ctx context.Context) error {
 		return err
 	}
 
-	if err := app.composeInteractive(ctx, runtime, "build", "account", "vmd", "gateway", "edge"); err != nil {
-		return fmt.Errorf("production image build failed: %w", err)
+	// Build one image at a time so TypeScript, Go, and Elixir compilers cannot
+	// contend for the host's memory during a production deployment.
+	for _, service := range []string{"account", "vmd", "gateway", "edge"} {
+		fmt.Fprintf(app.Stdout, "building production image: %s\n", service)
+		if err := app.composeInteractive(ctx, runtime, "build", service); err != nil {
+			return fmt.Errorf("production image build failed for %s: %w", service, err)
+		}
 	}
 	if err := app.composeInteractive(ctx, runtime, "up", "--detach", "--remove-orphans"); err != nil {
 		status, _ := queryDeploymentStatus(ctx, app.Executor, app.Root, runtime)

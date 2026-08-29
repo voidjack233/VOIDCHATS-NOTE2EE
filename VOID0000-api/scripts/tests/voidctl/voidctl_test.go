@@ -2,8 +2,12 @@ package voidctl_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +20,7 @@ import (
 type fakeExecutor struct {
 	runs        [][]string
 	interactive [][]string
+	composePS   string
 }
 
 func (executor *fakeExecutor) Run(
@@ -29,6 +34,13 @@ func (executor *fakeExecutor) Run(
 	executor.runs = append(executor.runs, command)
 	if name == "git" && reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}) {
 		return voidctl.Result{Stdout: strings.Repeat("a", 40) + "\n"}, nil
+	}
+	if name == "docker" && executor.composePS != "" {
+		for _, argument := range args {
+			if argument == "ps" {
+				return voidctl.Result{Stdout: executor.composePS}, nil
+			}
+		}
 	}
 	return voidctl.Result{}, nil
 }
@@ -49,6 +61,8 @@ func deploymentTemplate() string {
 		"VOID_COMPOSE_PROJECT=voidapp-test",
 		"VOID_IMAGE_TAG=replace-with-git-sha",
 		"VOID_GIT_SHA=replace-with-full-git-sha",
+		"VOID_EDGE_BIND=127.0.0.1",
+		"VOID_EDGE_PORT=8080",
 		"VOID_DNS_RESOLVER=127.0.0.11",
 		"PGPASSWORD=replace-with-random-password",
 		"MINIO_ACCESS_KEY=replace-with-random-access-key",
@@ -146,6 +160,51 @@ func TestDownNeverRequestsVolumeDeletion(t *testing.T) {
 	}
 	if !strings.Contains(command, " down --remove-orphans") {
 		t.Fatalf("unexpected down command: %s", command)
+	}
+}
+
+func TestUpBuildsProductionImagesSequentiallyBeforeStarting(t *testing.T) {
+	root := testRoot(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := json.Marshal(healthyContainers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &fakeExecutor{composePS: string(states)}
+	app := voidctl.App{Root: root, Executor: executor, Stdout: io.Discard, Stderr: io.Discard}
+	if err := app.Run(context.Background(), []string{"setup", "--runtime", "docker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := voidctl.UpdateDeploymentEnvironment(root, map[string]string{
+		"VOID_EDGE_BIND": host,
+		"VOID_EDGE_PORT": port,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.Run(context.Background(), []string{"up"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.interactive) != 5 {
+		t.Fatalf("interactive commands = %d, want 5", len(executor.interactive))
+	}
+	for index, service := range []string{"account", "vmd", "gateway", "edge"} {
+		command := strings.Join(executor.interactive[index], " ")
+		if !strings.HasSuffix(command, " build "+service) {
+			t.Fatalf("build %d = %s, want only %s", index, command, service)
+		}
+	}
+	startCommand := strings.Join(executor.interactive[4], " ")
+	if !strings.HasSuffix(startCommand, " up --detach --remove-orphans") {
+		t.Fatalf("start command = %s", startCommand)
 	}
 }
 
