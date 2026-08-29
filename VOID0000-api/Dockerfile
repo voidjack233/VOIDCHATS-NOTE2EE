@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_IMAGE=node:24.13.1-bookworm-slim
+ARG NODE_IMAGE=node:24.13.1-bookworm-slim@sha256:a81a03dd965b4052269a57fac857004022b522a4bf06e7a739e25e18bce45af2
 
 FROM ${NODE_IMAGE} AS build
 
@@ -34,15 +34,8 @@ RUN npm run build \
 
 FROM ${NODE_IMAGE} AS runtime
 
-ARG APP_VERSION=dev
-ARG VCS_REF=unknown
 ARG VOIDAPP_UID=10001
 ARG VOIDAPP_GID=10001
-
-LABEL org.opencontainers.image.title="VOID API" \
-  org.opencontainers.image.description="Compiled VOID backend roles" \
-  org.opencontainers.image.version="${APP_VERSION}" \
-  org.opencontainers.image.revision="${VCS_REF}"
 
 ENV NODE_ENV=production \
   VOIDAPP_ROOT=/app
@@ -59,6 +52,14 @@ RUN apt-get update \
   && groupadd --gid "${VOIDAPP_GID}" voidapp \
   && useradd --uid "${VOIDAPP_UID}" --gid "${VOIDAPP_GID}" \
     --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin voidapp
+
+ARG APP_VERSION=dev
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.title="VOID API" \
+  org.opencontainers.image.description="Compiled VOID backend roles" \
+  org.opencontainers.image.version="${APP_VERSION}" \
+  org.opencontainers.image.revision="${VCS_REF}"
 
 WORKDIR /app
 

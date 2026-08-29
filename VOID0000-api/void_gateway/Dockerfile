@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG ELIXIR_IMAGE=elixir:1.16.3-otp-26-slim
+ARG ELIXIR_IMAGE=elixir:1.16.3-otp-26-slim@sha256:ecc7e32010b22d0f150415c961e7ac468f2711988cd9cf8ab7252ac9e361c960
 
 FROM ${ELIXIR_IMAGE} AS build
 
@@ -25,17 +25,10 @@ COPY lib ./lib
 RUN mix compile \
   && mix release
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS runtime
 
-ARG APP_VERSION=dev
-ARG VCS_REF=unknown
 ARG VOIDAPP_UID=10001
 ARG VOIDAPP_GID=10001
-
-LABEL org.opencontainers.image.title="VOID Gateway" \
-  org.opencontainers.image.description="Phoenix realtime gateway release" \
-  org.opencontainers.image.version="${APP_VERSION}" \
-  org.opencontainers.image.revision="${VCS_REF}"
 
 ENV LANG=C.UTF-8 \
   HOME=/app \
@@ -52,6 +45,14 @@ RUN apt-get update \
   && groupadd --gid "${VOIDAPP_GID}" voidapp \
   && useradd --uid "${VOIDAPP_UID}" --gid "${VOIDAPP_GID}" \
     --no-create-home --home-dir /app --shell /usr/sbin/nologin voidapp
+
+ARG APP_VERSION=dev
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.title="VOID Gateway" \
+  org.opencontainers.image.description="Phoenix realtime gateway release" \
+  org.opencontainers.image.version="${APP_VERSION}" \
+  org.opencontainers.image.revision="${VCS_REF}"
 
 WORKDIR /app
 

@@ -1,6 +1,5 @@
 import fs from 'fs/promises';
 import net, { type Socket } from 'net';
-import os from 'os';
 import path from 'path';
 import { runSharpWork } from '../imageProcessing/sharpWorkGate.js';
 import {
@@ -15,8 +14,11 @@ import {
   type VmdTransformedImage,
 } from './imageVariants.js';
 import { isVmdImageVariant, type VmdImageVariant } from './capability.js';
+import {
+  getVmdTransformSocketPath,
+  VMD_TRANSFORM_PROTOCOL_VERSION,
+} from './transformProtocol.js';
 
-const VMD_TRANSFORM_PROTOCOL_VERSION = 1;
 const DEFAULT_MAX_SOURCE_BYTES = 12 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_CONCURRENCY = 2;
@@ -93,23 +95,6 @@ function resolveNonNegativeInteger(
   return Number.isSafeInteger(parsed) && parsed >= 0
     ? Math.min(parsed, maximum)
     : fallback;
-}
-
-function getVmdTransformSocketPath(): string {
-  const configuredPath = String(process.env.VMD_TRANSFORM_SOCKET_PATH || '').trim();
-  const socketPath = configuredPath || path.join(
-    os.tmpdir(),
-    `voidapp-vmd-transform-${typeof process.getuid === 'function' ? process.getuid() : 'default'}`,
-    'worker.sock',
-  );
-
-  if (!path.isAbsolute(socketPath) || socketPath.includes('\0')) {
-    throw new Error('VMD_TRANSFORM_SOCKET_PATH must be an absolute path');
-  }
-  if (Buffer.byteLength(socketPath) > 100) {
-    throw new Error('VMD_TRANSFORM_SOCKET_PATH is too long for a Unix socket');
-  }
-  return socketPath;
 }
 
 class VmdTransformTransportError extends Error {

@@ -456,6 +456,18 @@ export async function startAttachmentSanitizerServer(
         }
 
         const request = await reader.readControlFrame();
+        if (
+          request.version === ATTACHMENT_SANITIZER_PROTOCOL_VERSION &&
+          request.operation === 'ping'
+        ) {
+          await writeSocket(socket, encodeControlFrame({
+            version: ATTACHMENT_SANITIZER_PROTOCOL_VERSION,
+            type: 'pong',
+          }));
+          socket.end();
+          return;
+        }
+
         validateRequest(request);
         reservation = workQueue.reserve(request.payloadLength);
 

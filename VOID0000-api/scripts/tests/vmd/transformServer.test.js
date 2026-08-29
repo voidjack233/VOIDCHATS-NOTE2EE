@@ -8,10 +8,12 @@ import sharp from 'sharp';
 
 import {
   encodeControlFrame,
+  pingIpcControlSocket,
   SocketFrameReader,
   writeSocket,
 } from '../../../server/attachmentSanitizer/ipcProtocol.js';
 import { startVmdTransformServer } from '../../../server/vmd/transformServer.js';
+import { VMD_TRANSFORM_PROTOCOL_VERSION } from '../../../server/vmd/transformProtocol.js';
 
 async function connect(socketPath) {
   const socket = net.createConnection({ path: socketPath });
@@ -56,19 +58,7 @@ test('VMD transform socket responds to readiness ping', async (t) => {
     await fs.rm(directory, { recursive: true, force: true });
   });
 
-  const socket = await connect(socketPath);
-  const reader = new SocketFrameReader(socket);
-  try {
-    await writeSocket(socket, encodeControlFrame({
-      version: 1,
-      operation: 'ping',
-    }));
-    const response = await reader.readControlFrame();
-    assert.deepEqual(response, { version: 1, type: 'pong' });
-  } finally {
-    reader.dispose();
-    socket.destroy();
-  }
+  await pingIpcControlSocket(socketPath, VMD_TRANSFORM_PROTOCOL_VERSION);
 });
 
 test('VMD transform socket returns a bounded WebP variant through Sharp', async (t) => {

@@ -1,13 +1,20 @@
-import { checkUnixSocket } from '../server/health/unixSocket.js';
-import { getAttachmentSanitizerSocketPath } from '../server/attachmentSanitizer/ipcProtocol.js';
-
-const vmdSocketPath = String(process.env.VMD_TRANSFORM_SOCKET_PATH || '').trim();
-
-if (!vmdSocketPath) {
-  throw new Error('VMD_TRANSFORM_SOCKET_PATH is required');
-}
+import {
+  ATTACHMENT_SANITIZER_PROTOCOL_VERSION,
+  getAttachmentSanitizerSocketPath,
+  pingIpcControlSocket,
+} from '../server/attachmentSanitizer/ipcProtocol.js';
+import {
+  getVmdTransformSocketPath,
+  VMD_TRANSFORM_PROTOCOL_VERSION,
+} from '../server/vmd/transformProtocol.js';
 
 await Promise.all([
-  checkUnixSocket(getAttachmentSanitizerSocketPath()),
-  checkUnixSocket(vmdSocketPath),
+  pingIpcControlSocket(
+    getAttachmentSanitizerSocketPath(),
+    ATTACHMENT_SANITIZER_PROTOCOL_VERSION,
+  ),
+  pingIpcControlSocket(
+    getVmdTransformSocketPath(),
+    VMD_TRANSFORM_PROTOCOL_VERSION,
+  ),
 ]);

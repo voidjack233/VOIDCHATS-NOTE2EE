@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_IMAGE=node:24.13.1-bookworm-slim
+ARG NODE_IMAGE=node:24.13.1-bookworm-slim@sha256:a81a03dd965b4052269a57fac857004022b522a4bf06e7a739e25e18bce45af2
 
 FROM ${NODE_IMAGE} AS build
 
@@ -22,7 +22,7 @@ ENV VITE_API_URL=${VITE_API_URL} \
 
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.28.0-alpine AS runtime
+FROM nginxinc/nginx-unprivileged:1.28.0-alpine@sha256:c97ff0bf7cbae369953c6da1232ec14ad9f971d66360c5698db0856a4cd657a0 AS runtime
 
 ARG APP_VERSION=dev
 ARG VCS_REF=unknown

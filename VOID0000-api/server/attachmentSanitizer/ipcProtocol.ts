@@ -7,6 +7,8 @@ export const ATTACHMENT_SANITIZER_PROTOCOL_VERSION = 1;
 export const MAX_ATTACHMENT_SANITIZER_HEADER_BYTES = 4 * 1024;
 export const MAX_ATTACHMENT_SANITIZER_PAYLOAD_BYTES = MAX_CHAT_ATTACHMENT_BYTES;
 
+const DEFAULT_IPC_PING_TIMEOUT_MS = 1_000;
+
 const DEFAULT_SOCKET_DIRECTORY = `voidapp-attachment-sanitizer-${
   typeof process.getuid === 'function' ? process.getuid() : 'default'
 }`;
@@ -275,4 +277,58 @@ export class SocketFrameReader {
 
 export function connectToUnixSocket(socketPath: string): Socket {
   return net.createConnection({ path: socketPath });
+}
+
+export async function pingIpcControlSocket(
+  socketPath: string,
+  protocolVersion: number,
+  timeoutMs = DEFAULT_IPC_PING_TIMEOUT_MS,
+): Promise<void> {
+  if (!path.isAbsolute(socketPath) || socketPath.includes('\0')) {
+    throw new Error('IPC socket path must be absolute');
+  }
+  if (!Number.isSafeInteger(protocolVersion) || protocolVersion <= 0) {
+    throw new Error('IPC protocol version must be a positive integer');
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('IPC ping timeout must be a positive integer');
+  }
+
+  const socket = connectToUnixSocket(socketPath);
+  const reader = new SocketFrameReader(socket);
+  let timer: NodeJS.Timeout | undefined;
+
+  const operation = (async () => {
+    await new Promise<void>((resolve, reject) => {
+      if (socket.readyState === 'open') {
+        resolve();
+        return;
+      }
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    });
+    await writeSocket(socket, encodeControlFrame({
+      version: protocolVersion,
+      operation: 'ping',
+    }));
+    const response = await reader.readControlFrame();
+    if (response.version !== protocolVersion || response.type !== 'pong') {
+      throw new Error('IPC readiness ping returned an invalid response');
+    }
+  })();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`IPC readiness ping timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      operation.then(resolve, reject);
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+    reader.dispose();
+    socket.destroy();
+  }
 }

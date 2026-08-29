@@ -1,23 +1,26 @@
 # Single-host container deployment
 
-`compose.yaml` is the canonical production topology. The older
-`docker-compose.yml` remains the local development topology and is intentionally
-unchanged.
+`compose.yaml` is the sole canonical production topology. Pass it explicitly in
+manual automation or use `voidctl`, which always selects it and the configured
+project name.
 
 ## Architecture
 
 - `edge` serves the built web client and is the only service with a host port.
 - `account`, `message`, `social`, and `conversation` are roles from one compiled
   Node image tagged with the deployed Git SHA.
-- `worker` owns the attachment sanitizer and VMD transform Unix sockets.
+- `worker` owns the attachment sanitizer and VMD transform Unix sockets. Worker
+  and message readiness perform protocol-level pings rather than accepting a
+  socket connection as proof of readiness.
 - `vmd` is the static Go media delivery image; `gateway` is the Phoenix release.
 - PostgreSQL, Scylla, Valkey, and MinIO use named persistent volumes.
 - `volume-init`, `minio-init`, and `migrate` are idempotent one-shot services.
 - Application roles cannot start until migrations succeed. Message and VMD
   readiness also verify their required worker IPC socket.
-- Data, edge, and outbound networks are separate. The edge alone also joins the
-  outbound network so Docker can establish its host NAT binding. PostgreSQL,
-  Scylla, Valkey, and internal application ports are never published to the host.
+- Data, edge, and outbound networks are separate. Only services with a concrete
+  outbound requirement join the outbound network; the edge also joins it so
+  Docker can establish its host NAT binding. PostgreSQL, Scylla, Valkey, and
+  internal application ports are never published to the host.
 
 ## First setup
 
@@ -57,6 +60,10 @@ builds the four production images, starts the topology, and waits for aggregate
 `READY`. `down` never passes `--volumes` or `-v`; named data volumes survive
 normal shutdown and restart.
 
+`GET /health` is edge liveness. `GET /ready` exposes account-service readiness
+for load balancers that need an HTTP upstream probe; it is not aggregate stack
+readiness. `voidctl status` is authoritative for the whole topology.
+
 Status meanings:
 
 - `RUNNING`: startup is still in progress or a health check has not settled.
@@ -91,5 +98,6 @@ than claiming tested support.
   already initialized inside persistent volumes.
 - MinIO avatar buckets are public-read; attachment and VMD cache buckets are
   private. Only signed attachment paths and VMD capabilities are routed.
-- Infrastructure images are pinned by digest. Application images are local,
-  immutable Git-SHA tags; no production service uses `latest`.
+- Infrastructure and application build-base images are pinned by digest.
+  Application outputs use local immutable Git-SHA tags; no production service
+  uses `latest`.

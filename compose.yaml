@@ -213,6 +213,8 @@ services:
     command: ["node", "dist/server/entrypoints/worker-server.js"]
     volumes:
       - ipc-data:/run/voidapp
+    networks:
+      - data
     healthcheck:
       test: ["CMD", "node", "dist/scripts/check-worker-ipc.js"]
       <<: *node-healthcheck
@@ -271,6 +273,9 @@ services:
       PORT: "3004"
       SOCIAL_SERVICE_PORT: "3004"
     command: ["node", "dist/server/entrypoints/social-server.js"]
+    networks:
+      - data
+      - edge
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3004/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       <<: *node-healthcheck
@@ -286,6 +291,9 @@ services:
       PORT: "3005"
       CONVERSATION_SERVICE_PORT: "3005"
     command: ["node", "dist/server/entrypoints/conversation-server.js"]
+    networks:
+      - data
+      - edge
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3005/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       <<: *node-healthcheck
@@ -325,7 +333,6 @@ services:
     networks:
       - data
       - edge
-      - egress
 
   gateway:
     image: void-gateway:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
@@ -386,6 +393,11 @@ services:
       VOID_WEB_SERVER_NAME: "_"
       VOID_DNS_RESOLVER: ${VOID_DNS_RESOLVER:-127.0.0.11}
       NGINX_ENVSUBST_FILTER: ^VOID_(WEB_|DNS_)
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d:rw,noexec,nosuid,size=1m
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m
     volumes:
       - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
     ports:
