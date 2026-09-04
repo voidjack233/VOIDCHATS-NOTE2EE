@@ -130,7 +130,7 @@ function NativeMessageTimelineInstance({
   );
   // FlashList owns prepend anchoring; the controller does not counter-scroll history updates.
   const maintainVisibleContentPosition = useMemo(() => ({
-    animateAutoScrollToBottom: true,
+    animateAutoScrollToBottom: false,
     autoscrollToBottomThreshold: 0.04,
     startRenderingFromBottom: !initialScrollToStart,
   }), [initialScrollToStart]);

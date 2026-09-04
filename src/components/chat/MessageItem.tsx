@@ -11,14 +11,17 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_URL } from '../../config';
 import { parseAttachment } from '../../services/chat';
 import { useTheme } from '../../theme/ThemeContext';
 import type { Attachment, Message, ReactionValue } from '../../types/models';
 import { Avatar } from '../common/Avatar';
+import { calculateMessageImageGeometry } from './messageImageGeometry';
 
 export interface NormalizedReaction {
   count: number;
@@ -173,9 +176,16 @@ function AttachmentView({
   onOpen?: (attachment: Attachment) => void;
 }) {
   const { palette } = useTheme();
+  const { width: viewportWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [spoilerRevealed, setSpoilerRevealed] = useRecyclingState(false, [attachmentIdentity, raw]);
   const attachment = useMemo(() => parseAttachment(raw), [raw]);
   const image = isImageAttachment(attachment);
+  const imageGeometry = calculateMessageImageGeometry(
+    attachment.width,
+    attachment.height,
+    viewportWidth - insets.left - insets.right,
+  );
   const imageUrls = useMemo(() => directImageUrls(attachment), [attachment]);
   const imageUrlsIdentity = imageUrls.join('|');
   const [sourceIndex, setSourceIndex] = useRecyclingState(0, [
@@ -192,14 +202,18 @@ function AttachmentView({
         accessibilityLabel={attachment.spoiler && !spoilerRevealed ? 'Reveal spoiler' : 'Open image'}
         onPress={() => {
           if (attachment.spoiler && !spoilerRevealed) {
-            setSpoilerRevealed(true);
+            setSpoilerRevealed(true, true);
           }
           else if (imageUri) onOpen?.({ ...attachment, url: imageUri });
         }}
-        style={[styles.imageFrame, { backgroundColor: palette.bg }]}
+        style={[styles.imageFrame, imageGeometry, { backgroundColor: palette.bg }]}
       >
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: palette.hover }]}
+        />
         {failed ? (
-          <View style={styles.unavailable}>
+          <View style={[StyleSheet.absoluteFill, styles.unavailable]}>
             <ImageOff color={palette.muted} size={24} />
             <Text style={[styles.unavailableText, { color: palette.muted }]}>Attachment unavailable</Text>
           </View>
@@ -207,11 +221,11 @@ function AttachmentView({
           <Image
             blurRadius={attachment.spoiler && !spoilerRevealed ? 28 : 0}
             onError={() => {
-              setSourceIndex((current) => current + 1);
+              setSourceIndex((current) => current + 1, true);
             }}
             resizeMode="cover"
             source={{ uri: imageUri }}
-            style={styles.image}
+            style={StyleSheet.absoluteFill}
           />
         )}
         {attachment.spoiler && !spoilerRevealed && !failed ? (
@@ -522,9 +536,8 @@ const styles = StyleSheet.create({
   bubbleOwn: { borderBottomLeftRadius: 14, borderBottomRightRadius: 5 },
   attachments: { gap: 6 },
   caption: { marginTop: 8 },
-  imageFrame: { borderRadius: 10, height: 190, minWidth: 220, overflow: 'hidden', position: 'relative' },
-  image: { height: '100%', width: '100%' },
-  unavailable: { alignItems: 'center', flex: 1, gap: 7, justifyContent: 'center', padding: 20 },
+  imageFrame: { borderRadius: 10, overflow: 'hidden', position: 'relative' },
+  unavailable: { alignItems: 'center', gap: 7, justifyContent: 'center', padding: 20 },
   unavailableText: { fontSize: 12 },
   spoilerLabel: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 7, left: '35%', paddingHorizontal: 8, paddingVertical: 5, position: 'absolute', top: '42%' },
   spoilerLabelText: { color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 1 },
