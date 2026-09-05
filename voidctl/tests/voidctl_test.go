@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/voidjack233/voidchats-note2ee/VOID0000-api/internal/voidctl"
+	"github.com/voidjack233/voidchats-note2ee/voidctl"
 )
 
 type fakeExecutor struct {

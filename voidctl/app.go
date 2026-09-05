@@ -31,7 +31,7 @@ func FindRepositoryRoot(start string) (string, error) {
 	}
 	for candidate := absolute; ; candidate = filepath.Dir(candidate) {
 		if fileExists(filepath.Join(candidate, "compose.yaml")) &&
-			fileExists(filepath.Join(candidate, "VOID0000-api", "go.mod")) {
+			fileExists(filepath.Join(candidate, "deploy", ".env.example")) {
 			return candidate, nil
 		}
 		parent := filepath.Dir(candidate)

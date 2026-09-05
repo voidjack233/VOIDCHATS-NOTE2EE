@@ -9,6 +9,7 @@ voidapp-backups/
 # Production deployment runtime state and generated secrets
 /deploy/.env
 /.voidctl/
+/voidctl/bin/
 
 # MinIO data
 minio-data/

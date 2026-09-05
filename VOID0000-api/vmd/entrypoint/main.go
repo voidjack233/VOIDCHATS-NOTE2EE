@@ -19,7 +19,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
-	"github.com/voidjack233/voidchats-note2ee/VOID0000-api/internal/vmd"
+	"github.com/voidjack233/voidchats-note2ee/VOID0000-api/vmd"
 )
 
 func runHealthcheck() int {

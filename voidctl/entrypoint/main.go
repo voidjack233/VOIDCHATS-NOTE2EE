@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/voidjack233/voidchats-note2ee/VOID0000-api/internal/voidctl"
+	"github.com/voidjack233/voidchats-note2ee/voidctl"
 )
 
 func main() {

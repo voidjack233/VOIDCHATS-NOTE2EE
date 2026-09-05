@@ -27,11 +27,9 @@ project name.
 Build the host CLI and select exactly one container runtime:
 
 ```bash
-cd VOID0000-api
-npm run build:voidctl
-cd ..
-./VOID0000-api/bin/voidctl setup --runtime docker
-./VOID0000-api/bin/voidctl doctor
+go build -C voidctl -trimpath -o bin/voidctl ./entrypoint
+./voidctl/bin/voidctl setup --runtime docker
+./voidctl/bin/voidctl doctor
 ```
 
 `setup` creates `deploy/.env` with mode `0600` and stores the runtime selection
@@ -48,11 +46,11 @@ served so MinIO signatures retain the expected host.
 ## Lifecycle
 
 ```bash
-./VOID0000-api/bin/voidctl up
-./VOID0000-api/bin/voidctl status
-./VOID0000-api/bin/voidctl logs -f message worker
-./VOID0000-api/bin/voidctl restart
-./VOID0000-api/bin/voidctl down
+./voidctl/bin/voidctl up
+./voidctl/bin/voidctl status
+./voidctl/bin/voidctl logs -f message worker
+./voidctl/bin/voidctl restart
+./voidctl/bin/voidctl down
 ```
 
 `up` refuses tracked Git changes, updates the image tag to the current commit,

@@ -14,4 +14,4 @@ fi
 
 mkdir -p "$ROOT_DIR/bin"
 cd "$ROOT_DIR"
-exec env CGO_ENABLED=0 "$GO_BIN" build -trimpath -o "$ROOT_DIR/bin/voidapp-vmd" ./cmd/vmd
+exec env CGO_ENABLED=0 "$GO_BIN" build -trimpath -o "$ROOT_DIR/bin/voidapp-vmd" ./vmd/entrypoint
