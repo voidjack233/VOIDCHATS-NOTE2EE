@@ -19,6 +19,8 @@ import {
 } from '../../../server/auth/services/twoFactorChallengeService.js';
 import { totp } from '../../../server/auth/services/totpService.js';
 import { encrypt } from '../../../server/auth/services/twoFactorService.js';
+import { hashToken } from '../../../server/auth/services/tokenService.js';
+const passwordFingerprint = hashToken('test-password-hash');
 
 const schema = `test_2fa_completion_${crypto.randomBytes(6).toString('hex')}`;
 const quotedSchema = `"${schema}"`;
@@ -67,6 +69,7 @@ before(async () => {
       email TEXT NOT NULL,
       username TEXT NOT NULL,
       profile_id TEXT NOT NULL,
+      password_hash TEXT NOT NULL DEFAULT 'test-password-hash',
       is_verified BOOLEAN NOT NULL DEFAULT TRUE
     );
 
@@ -189,13 +192,13 @@ async function createUser({ method, backupCode = null }) {
 }
 
 async function createTotpChallenge(userId, secret, req) {
-  const token = await create2FASession(userId, req, ['totp']);
+  const token = await create2FASession(userId, req, ['totp'], passwordFingerprint);
   trackedTokens.add(token);
   return { token, code: totp.generateToken(secret) };
 }
 
 async function createEmailChallenge(userId, req, code = '123456') {
-  const token = await create2FASession(userId, req, ['email']);
+  const token = await create2FASession(userId, req, ['email'], passwordFingerprint);
   trackedTokens.add(token);
   const current = await getPendingTwoFactorSession(token);
   assert.equal(await updatePendingTwoFactorSession(token, current, {
@@ -207,7 +210,7 @@ async function createEmailChallenge(userId, req, code = '123456') {
 }
 
 async function createBackupChallenge(userId, req, code) {
-  const token = await create2FASession(userId, req, ['totp', 'backup']);
+  const token = await create2FASession(userId, req, ['totp', 'backup'], passwordFingerprint);
   trackedTokens.add(token);
   return { token, code };
 }
@@ -664,5 +667,16 @@ test('a wrong TOTP increments failures without claiming the challenge', async (t
   assert.equal(response.statusCode, 400);
   await assertPendingAndUnclaimed(challenge.token);
   assert.equal(await valkey.get(getChallengeKeys(challenge.token)[1]), '1');
+  assert.equal(await countLoginSessions(userId), 0);
+});
+
+test('a pending login cannot survive password replacement', async (t) => {
+  const req = createRequest();
+  const { userId } = await createUser({ method: 'email' });
+  const challenge = await createEmailChallenge(userId, req);
+  t.after(() => cleanupChallenge(challenge.token));
+  await databasePool.query('UPDATE users SET password_hash = $1 WHERE id = $2', ['replacement-hash', userId]);
+  const response = await invoke(buildHandler(), withVerificationBody(req, { ...challenge, method: 'email' }));
+  assert.equal(response.statusCode, 401);
   assert.equal(await countLoginSessions(userId), 0);
 });

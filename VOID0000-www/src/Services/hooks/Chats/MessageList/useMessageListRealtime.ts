@@ -60,11 +60,12 @@ const useMessageListRealtime = ({
   }, [conversationId]);
 
   useEffect(() => {
+    if (!userId) return;
     let ignore = false;
 
     (async () => {
       try {
-        const queued = await queuedSendStore.getByConversation(conversationId);
+        const queued = await queuedSendStore.getByConversation(conversationId, userId);
         if (ignore || queued.length === 0) return;
 
         const queuedMessages: Message[] = queued.map((record) => ({

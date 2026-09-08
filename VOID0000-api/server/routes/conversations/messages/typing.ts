@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { pool } from '../../../db.js';
+import { canInteractInConversation } from '../../../utils/conversationInteraction.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import {
   getConversationMembers,
@@ -27,6 +29,9 @@ router.post<{ conversationId: string }>('/typing', async (req, res) => {
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
     if (member.role === 'viewer') return res.status(403).json({ error: 'Viewers cannot send typing indicators' });
+    if (!await canInteractInConversation(pool, resolvedConversation.conversation, userId)) {
+      return res.status(403).json({ error: 'You can only DM friends' });
+    }
 
     const payload = {
       conversation_id: conversationId,

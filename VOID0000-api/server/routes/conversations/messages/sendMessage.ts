@@ -1,4 +1,5 @@
 import { sendLiveEventToUser } from '../../../gateway/client.js';
+import { canInteractInConversation } from '../../../utils/conversationInteraction.js';
 import {
   AttachmentLifecycleError,
   attachmentLifecycle,
@@ -225,6 +226,7 @@ export async function sendConversationMessage({
     const member = await verifyMembership(conversationId, userId);
     if (!member) fail(403, { error: 'Not a member of this conversation' });
     if (member.role === 'viewer') fail(403, { error: 'Viewers cannot send messages' });
+    if (!await canInteractInConversation(pool, conversation, userId)) fail(403, { error: 'You can only DM friends' });
 
     const normalizedClientMessageId =
       typeof client_message_id === 'string' && client_message_id.trim().length > 0

@@ -7,7 +7,7 @@ import {
   GROUP_AVATAR_BUCKET,
   PUBLIC_IMAGE_CACHE_CONTROL,
 } from '../../../minio.js';
-import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
+import { canPerformGroupOperation, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
   ALLOWED_ICON_MIME_PREFIXES,
   MAX_ICON_DIMENSION,
@@ -61,7 +61,7 @@ router.put('/:conversationId/icon', async (req, res) => {
     }
 
     const perms = resolvePermissions(resolvedConversation.permissions);
-    if (!meetsWhoThreshold(memberRole, perms.who_can_edit_group_profile)) {
+    if (!canPerformGroupOperation(memberRole, perms, 'profile')) {
       return res.status(403).json({ error: 'You do not have permission to edit the group profile' });
     }
 
@@ -152,7 +152,7 @@ router.delete('/:conversationId/icon', async (req, res) => {
     }
 
     const perms = resolvePermissions(resolvedConversation.permissions);
-    if (!meetsWhoThreshold(memberRole, perms.who_can_edit_group_profile)) {
+    if (!canPerformGroupOperation(memberRole, perms, 'profile')) {
       return res.status(403).json({ error: 'You do not have permission to edit the group profile' });
     }
 

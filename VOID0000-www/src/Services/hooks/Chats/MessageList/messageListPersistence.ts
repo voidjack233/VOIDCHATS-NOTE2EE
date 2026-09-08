@@ -61,9 +61,12 @@ const toLocalMessages = (messages: Message[]): LocalMessage[] => messages.map((m
   link_preview: message.link_preview,
 }));
 
-const persistFetchedMessagesSafely = async (messages: Message[]): Promise<LocalMessage[]> => {
+const persistFetchedMessagesSafely = async (
+  messages: Message[],
+  store: Pick<typeof messageStore, 'putMessages'> = messageStore,
+): Promise<LocalMessage[]> => {
   const localMessages = toLocalMessages(messages);
-  if (localMessages.length > 0) await messageStore.putMessages(localMessages);
+  if (localMessages.length > 0) await store.putMessages(localMessages);
   return localMessages;
 };
 

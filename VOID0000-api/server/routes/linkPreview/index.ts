@@ -3,6 +3,7 @@ import http from 'http';
 import https from 'https';
 import net from 'net';
 import express from 'express';
+import { isPublicNetworkAddress } from '../../utils/publicNetworkAddress.js';
 import type {
   IncomingHttpHeaders,
   IncomingMessage,
@@ -128,54 +129,8 @@ function getRequestPort(parsedUrl: URL): number {
   return port;
 }
 
-function isPrivateIPv4(address: string): boolean {
-  const octets = address.split('.').map((part) => Number(part));
-  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return true;
-  }
-
-  const [a, b] = octets;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    a >= 224 ||
-    a === 255
-  );
-}
-
-function isPrivateIPv6(address: string): boolean {
-  const normalized = address.toLowerCase();
-  if (
-    normalized === '::1' ||
-    normalized === '::' ||
-    normalized.startsWith('fc') ||
-    normalized.startsWith('fd') ||
-    normalized.startsWith('fe80:') ||
-    normalized.startsWith('ff')
-  ) {
-    return true;
-  }
-
-  if (normalized.startsWith('::ffff:')) {
-    const mapped = normalized.slice('::ffff:'.length);
-    if (net.isIP(mapped) === 4) {
-      return isPrivateIPv4(mapped);
-    }
-  }
-
-  return false;
-}
-
 function isPrivateAddress(address: string): boolean {
-  const family = net.isIP(address);
-  if (family === 4) return isPrivateIPv4(address);
-  if (family === 6) return isPrivateIPv6(address);
-  return true;
+  return !isPublicNetworkAddress(address);
 }
 
 async function assertPublicHttpUrl(parsedUrl: URL): Promise<{

@@ -8,6 +8,7 @@ import {
 } from '../../../Chat/chatConstants';
 import type { Message } from '../../../Chat/chatService';
 import { sortMessages } from './messageListPersistence';
+import { onChatStorageAccountChange } from '../../../Chat/chatStorageAccount';
 
 type PageDirection = 'initial' | 'older' | 'newer' | 'live';
 
@@ -21,6 +22,7 @@ interface PageCache {
 }
 
 interface ConversationRuntime {
+  storageGeneration: number;
   conversationId: string;
   messageById: Map<string, Message>;
   pages: PageCache[];
@@ -51,10 +53,16 @@ interface RuntimePaginationBoundaryCommit {
 }
 
 const runtimeRegistry = new Map<string, ConversationRuntime>();
+let storageGeneration = 0;
+onChatStorageAccountChange(() => {
+  storageGeneration++;
+  runtimeRegistry.clear();
+});
 
 const getMessageId = (message: Pick<Message, 'message_id'>) => String(message.message_id);
 
 const createEmptyRuntime = (conversationId: string): ConversationRuntime => ({
+  storageGeneration,
   conversationId,
   messageById: new Map(),
   pages: [],
@@ -260,6 +268,7 @@ const recordMeasuredMessageHeights = (
 };
 
 const saveConversationRuntime = (runtime: ConversationRuntime) => {
+  if (runtime.storageGeneration !== storageGeneration) return;
   runtimeRegistry.set(runtime.conversationId, cloneRuntime(runtime));
 
   if (runtimeRegistry.size <= MAX_ACTIVE_CONVERSATIONS) {

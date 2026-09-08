@@ -33,16 +33,9 @@ interface IpStatsRow extends QueryResultRow {
   last_seen: Date | string | null;
 }
 
-function firstHeaderValue(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) return value[0] || null;
-  return value || null;
-}
-
 export function getClientIP(req: Request): string | null {
-  const forwardedFor = firstHeaderValue(req.headers['x-forwarded-for']);
-  const ip = firstHeaderValue(req.headers['cf-connecting-ip']) ||
-    forwardedFor?.split(',')[0]?.trim() ||
-    req.ip ||
+  // Express resolves the trusted proxy chain; raw forwarding headers are input.
+  const ip = req.ip ||
     req.socket?.remoteAddress ||
     null;
 

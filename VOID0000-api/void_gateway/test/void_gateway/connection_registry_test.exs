@@ -4,6 +4,42 @@ defmodule VoidGateway.ConnectionRegistryTest do
   alias VoidGateway.ConnectionRegistry
   alias VoidGateway.EventDispatcher
 
+  test "pending sockets count toward admission and receive revocation, but not presence" do
+    user = "pending-#{System.unique_integer([:positive])}"
+    assert :ok = ConnectionRegistry.register_pending(user, "device", self())
+    assert ConnectionRegistry.presence_summary(user) == %{status: "offline", active_count: 0}
+    assert self() in ConnectionRegistry.lookup(user, "device")
+
+    assert :ok =
+             EventDispatcher.dispatch(%{
+               "type" => "command",
+               "command" => "disconnectSession",
+               "data" => %{
+                 "userId" => user,
+                 "deviceId" => "device",
+                 "code" => 4001,
+                 "reason" => "revoked"
+               }
+             })
+
+    assert_receive {:disconnect, 4001, "revoked"}
+    ConnectionRegistry.unregister(user, "device", self())
+  end
+
+  test "pending connection admission is atomic and bounded per account" do
+    user = "bounded-#{System.unique_integer([:positive])}"
+    sockets = for _ <- 1..12, do: socket_process()
+
+    results =
+      Enum.map(sockets, fn pid -> ConnectionRegistry.register_pending(user, "device", pid) end)
+
+    assert Enum.count(results, &(&1 == :ok)) == 8
+    assert length(ConnectionRegistry.lookup_all_for_user(user)) == 8
+    Enum.each(sockets, fn pid -> ConnectionRegistry.unregister(user, "device", pid) end)
+    assert :ok = ConnectionRegistry.register_pending(user, "device", self())
+    ConnectionRegistry.unregister(user, "device", self())
+  end
+
   test "aggregates activity across every socket for a user" do
     user_id = "presence-user"
     online_socket = socket_process()

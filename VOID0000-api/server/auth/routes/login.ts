@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { hashToken } from '../services/tokenService.js';
 import { pool } from '../../db.js';
 import { IPSecurity, getClientIP } from '../../utils/securityUtils.js';
 import { updateTrustScore } from '../../middleware/captcha/trustScore.js';
@@ -75,7 +76,7 @@ router.post('/', async (req, res) => {
 
     const methods = await loadAllowedTwoFactorMethods(pool, user.id);
     if (methods.length > 0) {
-      const twoFactorToken = await create2FASession(user.id, req, methods);
+      const twoFactorToken = await create2FASession(user.id, req, methods, hashToken(user.password_hash));
 
       return res.json({
         success: true,
@@ -88,6 +89,11 @@ router.post('/', async (req, res) => {
 
     client = await pool.connect();
     await client.query('BEGIN');
+    const currentCredential = await client.query('SELECT password_hash FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+    if (currentCredential.rows[0]?.password_hash !== user.password_hash) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ success: false, message: 'Credentials changed. Please login again.' });
+    }
 
     await IPSecurity.logIPActivity(req, 'LOGIN_SUCCESS', user.id, client);
 

@@ -9,13 +9,12 @@ defmodule VoidGateway.SocketAuth do
        Algorithm: HS256 with shared ACCESS_SECRET env var.
        Same secret Node uses in gateway/index.js authenticateUpgradeRequest().
 
-    2. Valkey session EXISTS check: session:{userId}:{deviceId}
+    2. Valkey session identity/generation check: session:{userId}:{deviceId}
        A revoked session still has a valid JWT until the token expires.
        The Valkey key written by Node's sessionStore.js is the live source of truth.
 
-       NOTE: The current Node gateway does NOT perform this check at upgrade time
-       (it only checks the JWT). Phoenix adding this check is a security improvement
-       over the existing baseline.
+       Pending sockets register before the second check and revalidate before
+       IDENTIFY/RESUME, so revocation cannot miss an unidentified connection.
 
   Fails closed on Valkey errors — if the session liveness check cannot complete,
   the upgrade is rejected. Do not loosen this without explicit discussion.
@@ -23,7 +22,12 @@ defmodule VoidGateway.SocketAuth do
 
   require Logger
 
-  @type auth :: %{user_id: String.t(), device_id: String.t(), token_exp: integer()}
+  @type auth :: %{
+          user_id: String.t(),
+          device_id: String.t(),
+          token_exp: integer(),
+          session_generation: number()
+        }
 
   @spec verify_upgrade(Plug.Conn.t()) :: {:ok, auth()} | {:error, atom()}
   def verify_upgrade(conn) do
@@ -32,8 +36,8 @@ defmodule VoidGateway.SocketAuth do
     with {:ok, token} <- extract_token(conn.cookies),
          {:ok, claims} <- verify_jwt(token),
          {:ok, auth} <- extract_claims(claims),
-         :ok <- check_session_liveness(auth) do
-      {:ok, auth}
+         {:ok, generation} <- session_generation(auth) do
+      {:ok, Map.put(auth, :session_generation, generation)}
     else
       {:error, reason} = err ->
         Logger.debug("[SocketAuth] Upgrade rejected: #{reason}")
@@ -88,15 +92,33 @@ defmodule VoidGateway.SocketAuth do
 
   defp extract_claims(_), do: {:error, :invalid_claims}
 
-  defp check_session_liveness(%{user_id: user_id, device_id: device_id}) do
+  def check_session_liveness(%{session_generation: expected, token_exp: exp} = auth) do
+    with true <- exp > System.system_time(:second),
+         {:ok, ^expected} <- session_generation(auth) do
+      :ok
+    else
+      _ -> {:error, :session_revoked}
+    end
+  end
+
+  def check_session_liveness(_), do: {:error, :session_revoked}
+
+  defp session_generation(%{user_id: user_id, device_id: device_id}) do
     # Key written by Node's sessionStore.js create() and deleted by revoke().
     key = "session:#{user_id}:#{device_id}"
 
-    case Redix.command(:redix, ["EXISTS", key]) do
-      {:ok, 1} ->
-        :ok
+    case Redix.command(:redix, ["GET", key]) do
+      {:ok, raw} when is_binary(raw) ->
+        case Jason.decode(raw) do
+          {:ok, %{"userId" => ^user_id, "deviceId" => ^device_id, "createdAt" => generation}}
+          when is_number(generation) ->
+            {:ok, generation}
 
-      {:ok, 0} ->
+          _ ->
+            {:error, :session_revoked}
+        end
+
+      {:ok, nil} ->
         # Session was revoked (logout) but the JWT hasn't expired yet.
         # This is the gap that Node's own gateway doesn't currently catch.
         {:error, :session_revoked}

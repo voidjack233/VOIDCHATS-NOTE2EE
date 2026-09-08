@@ -35,12 +35,17 @@ defmodule VoidGateway.ConnectionRegistry do
 
   @table :gateway_connections
   @active_presence_statuses ["online", "idle"]
+  @max_connections_per_user 8
 
   # ---------------------------------------------------------------------------
   # Client API
   # ---------------------------------------------------------------------------
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
+
+  def register_pending(user_id, device_id, pid) do
+    GenServer.call(__MODULE__, {:register_pending, user_id, device_id, pid})
+  end
 
   @doc """
   Register a socket and return any displaced pids.
@@ -100,6 +105,7 @@ defmodule VoidGateway.ConnectionRegistry do
     statuses =
       :ets.match_object(@table, {{user_id, :_, :_}, :_})
       |> Enum.map(fn {_key, metadata} -> metadata.presence_status end)
+      |> Enum.filter(&(&1 in @active_presence_statuses))
 
     status =
       cond do
@@ -162,6 +168,20 @@ defmodule VoidGateway.ConnectionRegistry do
   # Atomic register-and-displace. All three steps (find displaced, insert,
   # monitor) happen inside the GenServer so concurrent callers are serialized.
   @impl true
+  def handle_call({:register_pending, user_id, device_id, pid}, _from, state) do
+    if length(lookup_all_for_user(user_id)) >= @max_connections_per_user do
+      {:reply, {:error, :connection_limit}, state}
+    else
+      :ets.insert(
+        @table,
+        {{user_id, device_id, pid}, %{client_instance_id: nil, presence_status: nil}}
+      )
+
+      ref = Process.monitor(pid)
+      {:reply, :ok, %{state | monitors: Map.put(state.monitors, ref, {user_id, device_id, pid})}}
+    end
+  end
+
   def handle_call(
         {:register, user_id, device_id, client_instance_id, pid, presence_status},
         _from,
@@ -182,8 +202,12 @@ defmodule VoidGateway.ConnectionRegistry do
 
     :ets.insert(@table, {{user_id, device_id, pid}, metadata})
 
-    ref = Process.monitor(pid)
-    new_monitors = Map.put(monitors, ref, {user_id, device_id, pid})
+    new_monitors =
+      if Enum.any?(monitors, fn {_ref, entry} -> entry == {user_id, device_id, pid} end) do
+        monitors
+      else
+        Map.put(monitors, Process.monitor(pid), {user_id, device_id, pid})
+      end
 
     {:reply, displaced, %{state | monitors: new_monitors}}
   end

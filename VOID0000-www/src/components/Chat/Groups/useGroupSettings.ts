@@ -125,8 +125,14 @@ export function useGroupSettings({
     memberList.find((member) => member.user_id === currentUserId)?.role ||
     conversation.role ||
     (isOwner ? 'owner' : null);
-  const canManageInvites = isOwner;
-  const canManageProfile = isOwner || currentUserRole === 'admin';
+  const permitsAudience = (audience: 'everyone' | 'admins' | 'owner' = 'admins') =>
+    isOwner || (audience === 'everyone' && currentUserRole === 'member') ||
+    (audience !== 'owner' && currentUserRole === 'admin');
+  const canManageInvites = isOwner || (currentUserRole === 'admin' &&
+    permitsAudience(conversation.permissions?.who_can_create_invite_links) &&
+    (conversation.permissions?.admin_can_manage_invite_links ?? true));
+  const canManageProfile = isOwner || (permitsAudience(conversation.permissions?.who_can_edit_group_profile) &&
+    (currentUserRole !== 'admin' || (conversation.permissions?.admin_can_edit_group_profile ?? true)));
   const isSoloOwner = isOwner && memberList.length <= 1;
   const canLeaveGroup = !isOwner || isSoloOwner;
   const canTransferOwnership = isOwner && memberList.length > 1;

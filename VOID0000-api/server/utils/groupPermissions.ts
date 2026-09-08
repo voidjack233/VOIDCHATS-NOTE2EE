@@ -85,7 +85,7 @@ export function validatePermissions(input: unknown):
  */
 export function meetsWhoThreshold(role: unknown, who: unknown): boolean {
   if (role === 'owner') return true;
-  if (who === 'everyone') return role !== 'viewer';
+  if (who === 'everyone') return role === 'member' || role === 'admin';
   if (who === 'admins') return role === 'admin';
   // who === 'owner'
   return false;
@@ -98,6 +98,29 @@ export function meetsWhoThreshold(role: unknown, who: unknown): boolean {
  */
 export function meetsAdminToggle(role: unknown, toggleValue: unknown): boolean {
   if (role === 'owner') return true;
-  if (role === 'admin') return Boolean(toggleValue);
+  if (role === 'admin') return toggleValue === true;
   return false;
+}
+
+const OPERATION_PERMISSIONS = {
+  profile: ['who_can_edit_group_profile', 'admin_can_edit_group_profile'],
+  otherNickname: ['who_can_edit_other_nicknames', 'admin_can_edit_member_nicknames'],
+  ownNickname: ['who_can_edit_own_nickname', 'members_can_set_own_nickname'],
+  invites: ['who_can_create_invite_links', 'admin_can_manage_invite_links'],
+  approvals: ['who_can_approve_requests', 'admin_can_approve_join_requests'],
+} as const;
+
+export function canPerformGroupOperation(role: unknown, stored: unknown, operation: keyof typeof OPERATION_PERMISSIONS): boolean {
+  const permissions = resolvePermissions(stored);
+  const [audience, toggle] = OPERATION_PERMISSIONS[operation];
+  if (!meetsWhoThreshold(role, permissions[audience])) return false;
+  if (role === 'owner') return true;
+  // Audience limits and role switches are both restrictions, never overrides.
+  if (operation === 'invites' || operation === 'approvals') {
+    return meetsAdminToggle(role, permissions[toggle]);
+  }
+  if (role === 'admin' || (operation === 'ownNickname' && role === 'member')) {
+    return permissions[toggle] === true;
+  }
+  return true;
 }

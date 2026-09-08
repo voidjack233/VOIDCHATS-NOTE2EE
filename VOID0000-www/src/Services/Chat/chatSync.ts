@@ -3,6 +3,7 @@ import { getMessages } from './chatService';
 import { messageStore } from './chatStore';
 import { MessageSync } from './chatSyncCore';
 import { messagesNeedAttachmentDeliveryRefresh } from './attachmentDeliveryFreshness';
+import { onChatStorageAccountChange } from './chatStorageAccount';
 
 export {
   MESSAGE_SYNC_CACHE_TTL_MS,
@@ -17,10 +18,13 @@ export type {
   SyncResult,
 } from './chatSyncCore';
 
-export const messageSync = new MessageSync(
+function createMessageSync() { return new MessageSync(
   messageStore,
   getMessages,
   Date.now,
   debugLog,
   messagesNeedAttachmentDeliveryRefresh,
-);
+); }
+
+export let messageSync = createMessageSync();
+onChatStorageAccountChange(() => { messageSync = createMessageSync(); });

@@ -734,6 +734,7 @@ export const useMessageList = (
   }, [getMessageHeight]);
 
   const loadMessageContext = useCallback(async (targetMessageId: string) => {
+    const storage = messageStore;
     try {
       const context = await getMessageContext(
         conversationId,
@@ -750,7 +751,7 @@ export const useMessageList = (
         return false;
       }
 
-      const localMessages = await persistFetchedMessagesSafely(visibleMessages);
+      const localMessages = await persistFetchedMessagesSafely(visibleMessages, storage);
       const contextMessages = sortMessages(localMessages.map(toUIMessage));
       if (!contextMessages.some((message) => String(message.message_id) === String(targetId))) {
         return false;

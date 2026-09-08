@@ -11,6 +11,7 @@
 //   conversations_meta: { conversation_id, last_opened_at }
 
 import { MESSAGE_PAGE_SIZE } from './chatConstants';
+import { deleteChatDatabase, getChatStorageAccount, onChatStorageAccountChange } from './chatStorageAccount';
 
 const DB_NAME = 'void_messages';
 const DB_VERSION = 3;
@@ -57,17 +58,26 @@ export interface SyncCursor {
 
 class MessageStore {
   private db: IDBDatabase | null = null;
-  private dbReady: Promise<IDBDatabase>;
+  private dbReady: Promise<IDBDatabase> | null = null;
+  private active = true;
 
-  constructor() {
-    this.dbReady = this.open();
+  constructor(private readonly accountId: string | null) {}
+
+  private get databaseName(): string {
+    return `${DB_NAME}:${this.accountId}`;
+  }
+
+  retire(): void {
+    this.active = false;
+    this.db?.close();
+    if (this.accountId) deleteChatDatabase(this.databaseName);
   }
 
   // ============== Database Setup ==============
 
   private open(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      const request = indexedDB.open(this.databaseName, DB_VERSION);
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
@@ -103,6 +113,8 @@ class MessageStore {
 
       request.onsuccess = (event) => {
         this.db = (event.target as IDBOpenDBRequest).result;
+        this.db.onversionchange = () => this.db?.close();
+        if (!this.active) this.db.close();
         resolve(this.db);
       };
 
@@ -114,8 +126,10 @@ class MessageStore {
   }
 
   private async getDb(): Promise<IDBDatabase> {
-    if (this.db) return this.db;
-    return this.dbReady;
+    if (!this.active || !this.accountId) throw new Error('Chat account is no longer active');
+    const db = await (this.dbReady ??= this.open());
+    if (!this.active) throw new Error('Chat account is no longer active');
+    return db;
   }
 
   // ============== Message Operations ==============
@@ -403,11 +417,17 @@ class MessageStore {
     }
 
     return new Promise((resolve, reject) => {
-      const request = indexedDB.deleteDatabase(DB_NAME);
+      const request = indexedDB.deleteDatabase(this.databaseName);
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });
   }
 }
 
-export const messageStore = new MessageStore();
+export let messageStore = new MessageStore(getChatStorageAccount());
+onChatStorageAccountChange((accountId) => {
+  messageStore.retire();
+  messageStore = new MessageStore(accountId);
+  // The legacy database has no trustworthy account owner. Never adopt it.
+  deleteChatDatabase(DB_NAME);
+});

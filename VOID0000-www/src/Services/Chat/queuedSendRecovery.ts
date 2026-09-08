@@ -291,7 +291,8 @@ class QueuedSendRecovery {
   }
 
   private async flushRecords(userId: string, generation: number): Promise<FlushResult> {
-    const queuedSends = (await queuedSendStore.getAll())
+    const store = queuedSendStore;
+    const queuedSends = (await store.getAll(userId))
       .filter((record) => record.sender_id === userId)
       .sort((left, right) => (
         new Date(left.created_at).getTime() - new Date(right.created_at).getTime()
@@ -324,7 +325,8 @@ class QueuedSendRecovery {
             })
           : await sendImageOnlyMessage(record.conversation_id, record.uploaded_urls, options);
 
-        await queuedSendStore.remove(record.conversation_id, record.local_client_id);
+        if (this.generation !== generation || this.activeUserId !== userId) return 'complete';
+        await store.remove(record.conversation_id, record.local_client_id);
         emitOutcome({
           status: 'sent',
           record,
@@ -336,6 +338,7 @@ class QueuedSendRecovery {
         });
         debugLog('[QUEUED_SEND] recovered', { queueKey });
       } catch (error) {
+        if (this.generation !== generation || this.activeUserId !== userId) return 'complete';
         if (isTransientMessageSendFailure(error)) {
           debugLog('[QUEUED_SEND] recovery deferred', {
             queueKey,
@@ -344,7 +347,7 @@ class QueuedSendRecovery {
           return 'retry';
         }
 
-        await queuedSendStore.remove(record.conversation_id, record.local_client_id)
+        await store.remove(record.conversation_id, record.local_client_id)
           .catch((removeError) => {
             console.error('[QUEUED_SEND] failed to remove terminal queue record', removeError);
           });

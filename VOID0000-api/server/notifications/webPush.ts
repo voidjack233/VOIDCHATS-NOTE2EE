@@ -2,6 +2,7 @@ import webPush from 'web-push';
 import type { PushSubscription } from 'web-push';
 import type { QueryResultRow } from 'pg';
 import { pool } from '../db.js';
+import { sendPrivatePush, validatePushSubscription, withPushCapacity } from './pushTransport.js';
 
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
@@ -69,25 +70,6 @@ type RevokeSubscriptionInput = {
 };
 
 type Mention = { user_id?: unknown };
-
-function hasUsableSubscription(subscription: unknown): subscription is PushSubscription {
-  return Boolean(
-    subscription &&
-    typeof subscription === 'object' &&
-    'endpoint' in subscription &&
-    typeof subscription.endpoint === 'string' &&
-    subscription.endpoint.trim() &&
-    'keys' in subscription &&
-    subscription.keys &&
-    typeof subscription.keys === 'object' &&
-    'p256dh' in subscription.keys &&
-    typeof subscription.keys.p256dh === 'string' &&
-    subscription.keys.p256dh.trim() &&
-    'auth' in subscription.keys &&
-    typeof subscription.keys.auth === 'string' &&
-    subscription.keys.auth.trim()
-  );
-}
 
 function toPushSubscription(row: PushSubscriptionRow): PushSubscription {
   return {
@@ -181,18 +163,18 @@ async function sendPayloadToRows(
   }
 
   const body = JSON.stringify(payload);
-  const results = await Promise.allSettled(
-    rows.map((row) => webPush.sendNotification(toPushSubscription(row), body))
-  );
-
-  await Promise.all(results.map((result, index) => (
-    result.status === 'fulfilled'
-      ? markPushSuccess(rows[index].id)
-      : markPushFailure(rows[index].id, result.reason)
-  )));
+  const results = await Promise.allSettled(rows.slice(0, 10).map((row) => withPushCapacity(async () => {
+    try {
+      await sendPrivatePush(toPushSubscription(row), body);
+      await markPushSuccess(row.id);
+    } catch (error) {
+      await markPushFailure(row.id, error);
+      throw error;
+    }
+  })));
 
   return {
-    attempted: rows.length,
+    attempted: results.length,
     delivered: results.filter((result) => result.status === 'fulfilled').length,
     failed: results.filter((result) => result.status === 'rejected').length,
   };
@@ -220,23 +202,28 @@ export async function saveWebPushSubscription({
     throw error;
   }
 
-  if (!hasUsableSubscription(subscription)) {
-    const error = Object.assign(new Error('Invalid push subscription'), { status: 400 });
-    throw error;
-  }
-
-  const endpoint = subscription.endpoint.trim();
-  const p256dh = subscription.keys.p256dh.trim();
-  const auth = subscription.keys.auth.trim();
-
-  const result = await pool.query<SubscriptionIdRow>(
+  const validated = validatePushSubscription(subscription);
+  const { endpoint, keys: { p256dh, auth } } = validated;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Serialize quota checks and subscription insertion for this account.
+    await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const existing = await client.query(
+      'SELECT endpoint, device_id FROM push_subscriptions WHERE user_id = $1', [userId],
+    );
+    const replacing = existing.rows.some((row) => row.endpoint === endpoint);
+    const otherDeviceSubscriptions = existing.rows.filter((row) => row.endpoint !== endpoint && row.device_id === deviceId).length;
+    if ((!replacing && existing.rows.length >= 10) || otherDeviceSubscriptions >= 2) {
+      throw Object.assign(new Error('Push subscription limit reached; remove an old subscription first'), { status: 429 });
+    }
+    const result = await client.query<SubscriptionIdRow>(
     `INSERT INTO push_subscriptions (
        user_id, device_id, provider, endpoint, p256dh, auth, user_agent,
        enabled, revoked_at, updated_at
      )
      VALUES ($1, $2, 'web_push', $3, $4, $5, $6, TRUE, NULL, NOW())
      ON CONFLICT (endpoint) DO UPDATE SET
-       user_id = EXCLUDED.user_id,
        device_id = EXCLUDED.device_id,
        provider = 'web_push',
        p256dh = EXCLUDED.p256dh,
@@ -245,11 +232,17 @@ export async function saveWebPushSubscription({
        enabled = TRUE,
        revoked_at = NULL,
        updated_at = NOW()
+     WHERE push_subscriptions.user_id = EXCLUDED.user_id
      RETURNING id`,
-    [userId, deviceId, endpoint, p256dh, auth, userAgent || null]
+    [userId, deviceId, endpoint, p256dh, auth, userAgent?.slice(0, 512) || null]
   );
-
-  return result.rows[0];
+    if (!result.rows[0]) throw Object.assign(new Error('Subscription belongs to another account'), { status: 409 });
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
 }
 
 export async function revokeWebPushSubscription({
@@ -259,10 +252,7 @@ export async function revokeWebPushSubscription({
 }: RevokeSubscriptionInput): Promise<void> {
   if (endpoint) {
     await pool.query(
-      `UPDATE push_subscriptions
-       SET enabled = FALSE,
-           revoked_at = NOW(),
-           updated_at = NOW()
+      `DELETE FROM push_subscriptions
        WHERE user_id = $1
          AND endpoint = $2`,
       [userId, endpoint]
@@ -271,10 +261,7 @@ export async function revokeWebPushSubscription({
   }
 
   await pool.query(
-    `UPDATE push_subscriptions
-     SET enabled = FALSE,
-         revoked_at = NOW(),
-         updated_at = NOW()
+    `DELETE FROM push_subscriptions
      WHERE user_id = $1
        AND device_id = $2
        AND provider = 'web_push'
@@ -299,7 +286,8 @@ export async function sendTestPush(userId: string): Promise<{
      WHERE user_id = $1
        AND provider = 'web_push'
        AND enabled = TRUE
-       AND revoked_at IS NULL`,
+       AND revoked_at IS NULL
+     LIMIT 10`,
     [userId]
   );
 
@@ -369,7 +357,10 @@ export async function dispatchMessagePushNotifications({
       rowsByUserId.set(row.user_id, rows);
     }
 
-    await Promise.all(targetUserIds.map((recipientId) => {
+    // Bound recipient fanout too, rather than filling the delivery queue with
+    // every member of a large group at once.
+    for (let offset = 0; offset < targetUserIds.length; offset += 4) {
+    await Promise.all(targetUserIds.slice(offset, offset + 4).map((recipientId) => {
       const rows = rowsByUserId.get(recipientId) || [];
       if (rows.length === 0) return Promise.resolve();
 
@@ -382,6 +373,7 @@ export async function dispatchMessagePushNotifications({
         })
       );
     }));
+    }
   } catch (error) {
     console.warn('[PUSH] failed to dispatch message push notifications', {
       error: error instanceof Error ? error.message : String(error),

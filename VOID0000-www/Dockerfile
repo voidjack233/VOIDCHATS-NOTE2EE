@@ -37,6 +37,7 @@ ENV VOID_WEB_PORT=8080 \
   NGINX_ENVSUBST_FILTER='^VOID_WEB_'
 
 COPY --chown=101:101 docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --chown=101:101 docker/nginx/security-headers.conf /etc/nginx/void-security-headers.conf
 COPY --from=build --chown=101:101 /build/dist /usr/share/nginx/html
 
 USER 101:101

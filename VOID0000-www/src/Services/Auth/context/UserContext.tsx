@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { clearAppBootstrap } from '../../bootstrap';
+import { getChatStorageAccount, setChatStorageAccount } from '../../Chat/chatStorageAccount';
+import { queuedSendRecovery } from '../../Chat/queuedSendRecovery';
 import { gateway } from '../../Gateway/gateway';
 import { markStartupPerformanceOnce } from '../../Performance/startupPerformance';
 import {
@@ -20,7 +22,11 @@ const USER_STORAGE_KEY = 'void_user';
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<User | null>(() => {
     const stored = localStorage.getItem(USER_STORAGE_KEY);
-    return stored ? JSON.parse(stored) : null;
+    try {
+      const cached = stored ? JSON.parse(stored) : null;
+      setChatStorageAccount(typeof cached?.id === 'string' ? cached.id : null);
+      return cached;
+    } catch { return null; }
   });
   const [loading, setLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -30,6 +36,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   const setUser = (nextUser: User | null) => {
     const previousUserId = user?.id;
+    if (previousUserId !== nextUser?.id) queuedSendRecovery.stop();
+    setChatStorageAccount(nextUser?.id ?? null);
     setUserState(nextUser);
     if (nextUser) {
       localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(nextUser));
@@ -102,6 +110,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     setIsLoggingOut(true);
+    queuedSendRecovery.stop();
+    setChatStorageAccount(null);
     gateway.disconnect();
     clearAppBootstrap();
     resetAuthStartupSession();
@@ -126,8 +136,23 @@ export function UserProvider({ children }: { children: ReactNode }) {
     };
 
     window.addEventListener(AUTH_SESSION_INVALIDATED_EVENT, handleSessionInvalidated);
+    const handleAccountChange = (event: StorageEvent) => {
+      if (event.key !== USER_STORAGE_KEY && event.key !== null) return;
+      try {
+        if (event.newValue && JSON.parse(event.newValue)?.id === getChatStorageAccount()) return;
+      } catch { /* An invalid account record must also stop this tab's writers. */ }
+      // Cookies are shared across tabs: stop this tab's writers immediately.
+      queuedSendRecovery.stop();
+      setChatStorageAccount(null);
+      gateway.disconnect();
+      clearAppBootstrap();
+      resetAuthStartupSession();
+      setUserState(null);
+    };
+    window.addEventListener('storage', handleAccountChange);
     return () => {
       window.removeEventListener(AUTH_SESSION_INVALIDATED_EVENT, handleSessionInvalidated);
+      window.removeEventListener('storage', handleAccountChange);
     };
   }, []);
 

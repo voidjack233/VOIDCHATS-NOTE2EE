@@ -335,17 +335,26 @@ app.patch('/api/users/:userId', async (req, res) => {
 
     updates.push('updated_at = NOW()');
 
-    const updatedResult = await pool.query(
-      `
-        UPDATE users
-        SET ${updates.join(', ')}
-        WHERE id = $1
-        RETURNING id, username, email, is_verified, profile_id, created_at, updated_at
-      `,
-      values,
-    );
-
-    return res.json({ row: updatedResult.rows[0] });
+    // Use the same compiled credential invalidation flow as the account service.
+    const invalidation = password !== undefined
+      ? await import('../VOID0000-api/dist/server/auth/services/credentialInvalidation.js')
+      : null;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const updatedResult = await client.query(
+        `UPDATE users SET ${updates.join(', ')} WHERE id = $1
+         RETURNING id, username, email, is_verified, profile_id, created_at, updated_at`,
+        values,
+      );
+      if (invalidation) await invalidation.revokeCredentialRecords(client, userId);
+      await client.query('COMMIT');
+      if (invalidation) await invalidation.invalidateCredentialSessions(userId);
+      return res.json({ row: updatedResult.rows[0] });
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally { client.release(); }
   } catch (error) {
     console.error('Failed to update user:', error);
     return res.status(500).json({ error: 'Failed to update user' });

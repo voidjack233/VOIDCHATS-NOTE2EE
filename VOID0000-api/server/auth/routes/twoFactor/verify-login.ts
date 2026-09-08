@@ -3,6 +3,7 @@ import type { PoolClient, QueryResultRow } from 'pg';
 import { pool } from '../../../db.js';
 import type { DatabaseQueryable } from '../../../db/types.js';
 import { totp } from '../../services/totpService.js';
+import { hashToken } from '../../services/tokenService.js';
 import { sendVerificationEmail } from '../../../middleware/emailService.js';
 import { updateTrustScore } from '../../../middleware/captcha/trustScore.js';
 import { DeviceFingerprint } from '../../../utils/deviceFingerprint.js';
@@ -567,11 +568,12 @@ export function createVerifyLoginHandler({
       }
 
       const userResult = await dbClient.query(
-        'SELECT id, email, username, profile_id, is_verified FROM users WHERE id = $1',
+        'SELECT id, email, username, profile_id, is_verified, password_hash FROM users WHERE id = $1 FOR UPDATE',
         [userId],
       );
       const user = userResult.rows[0];
-      if (!user) {
+      if (!user || !user.is_verified || typeof claimedSession.passwordFingerprint !== 'string' ||
+          claimedSession.passwordFingerprint !== hashToken(user.password_hash)) {
         throw new PostClaimValidationError(401, {
           success: false,
           message: 'Session expired. Please login again.',

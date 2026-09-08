@@ -1,6 +1,6 @@
 module github.com/voidjack233/voidchats-note2ee/VOID0000-api
 
-go 1.26.0
+go 1.26.6
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0

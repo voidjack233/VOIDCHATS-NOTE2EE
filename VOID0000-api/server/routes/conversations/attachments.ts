@@ -16,6 +16,7 @@ import {
   createAttachmentUploadProcessor,
 } from '../../attachments/uploadProcessor.js';
 import { pool } from '../../db.js';
+import { canInteractInConversation } from '../../utils/conversationInteraction.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
 import { attachmentUploadLimiter } from '../../middleware/rate_limit.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
@@ -309,6 +310,9 @@ router.post<{ conversationId: string }>('/', attachmentUploadLimiter, async (req
     }
 
     conversation = resolved.conversation;
+    if (!await canInteractInConversation(pool, conversation, userId)) {
+      return res.status(403).json({ error: 'You can only DM friends' });
+    }
 
     if (conversation.type === 'group' || conversation.type === 'channel') {
       let permissionsSource = conversation.permissions;

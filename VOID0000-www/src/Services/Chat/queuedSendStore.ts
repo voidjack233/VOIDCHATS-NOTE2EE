@@ -4,6 +4,7 @@
 // They survive conversation switches, refreshes, and browser crashes.
 
 import type { LinkPreviewMetadata } from './chatTypes';
+import { deleteChatDatabase, getChatStorageAccount, onChatStorageAccountChange } from './chatStorageAccount';
 
 const DB_NAME = 'void_queued_sends';
 const DB_VERSION = 1;
@@ -26,15 +27,24 @@ export interface QueuedSendRecord {
 
 class QueuedSendStore {
   private db: IDBDatabase | null = null;
-  private dbReady: Promise<IDBDatabase>;
+  private dbReady: Promise<IDBDatabase> | null = null;
+  private active = true;
 
-  constructor() {
-    this.dbReady = this.open();
+  constructor(private readonly accountId: string | null) {}
+
+  private get databaseName(): string {
+    return `${DB_NAME}:${this.accountId}`;
+  }
+
+  retire(): void {
+    this.active = false;
+    this.db?.close();
+    if (this.accountId) deleteChatDatabase(this.databaseName);
   }
 
   private open(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      const request = indexedDB.open(this.databaseName, DB_VERSION);
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
@@ -48,6 +58,8 @@ class QueuedSendStore {
 
       request.onsuccess = (event) => {
         this.db = (event.target as IDBOpenDBRequest).result;
+        this.db.onversionchange = () => this.db?.close();
+        if (!this.active) this.db.close();
         resolve(this.db);
       };
 
@@ -59,11 +71,14 @@ class QueuedSendStore {
   }
 
   private async getDb(): Promise<IDBDatabase> {
-    if (this.db) return this.db;
-    return this.dbReady;
+    if (!this.active || !this.accountId) throw new Error('Chat account is no longer active');
+    const db = await (this.dbReady ??= this.open());
+    if (!this.active) throw new Error('Chat account is no longer active');
+    return db;
   }
 
   async put(record: QueuedSendRecord): Promise<void> {
+    if (record.sender_id !== this.accountId) throw new Error('Queued message owner mismatch');
     const db = await this.getDb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -83,26 +98,33 @@ class QueuedSendStore {
     });
   }
 
-  async getByConversation(conversationId: string): Promise<QueuedSendRecord[]> {
+  async getByConversation(conversationId: string, userId: string): Promise<QueuedSendRecord[]> {
+    if (userId !== this.accountId) return [];
     const db = await this.getDb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
       const index = tx.objectStore(STORE_NAME).index('by_conversation');
       const request = index.getAll(IDBKeyRange.only(conversationId));
-      request.onsuccess = () => resolve(request.result || []);
+      request.onsuccess = () => resolve((request.result || []).filter((row: QueuedSendRecord) => row.sender_id === userId));
       request.onerror = () => reject(request.error);
     });
   }
 
-  async getAll(): Promise<QueuedSendRecord[]> {
+  async getAll(userId: string): Promise<QueuedSendRecord[]> {
+    if (userId !== this.accountId) return [];
     const db = await this.getDb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
       const request = tx.objectStore(STORE_NAME).getAll();
-      request.onsuccess = () => resolve(request.result || []);
+      request.onsuccess = () => resolve((request.result || []).filter((row: QueuedSendRecord) => row.sender_id === userId));
       request.onerror = () => reject(request.error);
     });
   }
 }
 
-export const queuedSendStore = new QueuedSendStore();
+export let queuedSendStore = new QueuedSendStore(getChatStorageAccount());
+onChatStorageAccountChange((accountId) => {
+  queuedSendStore.retire();
+  queuedSendStore = new QueuedSendStore(accountId);
+  deleteChatDatabase(DB_NAME);
+});

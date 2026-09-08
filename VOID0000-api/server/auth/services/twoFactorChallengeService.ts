@@ -424,6 +424,7 @@ export async function create2FASession(
   userId: string,
   req: Request,
   allowedMethods: unknown,
+  passwordFingerprint: string,
 ): Promise<string> {
   const token = uuidv4();
   const normalizedMethods = buildAllowedTwoFactorMethods(
@@ -436,6 +437,7 @@ export async function create2FASession(
 
   await savePendingTwoFactorSession(token, {
     userId,
+    passwordFingerprint,
     allowedMethods: normalizedMethods,
     ip: getClientIP(req),
     ...getRequestBinding(req),

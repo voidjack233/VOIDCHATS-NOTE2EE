@@ -49,6 +49,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   alias VoidGateway.ConnectionRegistry
   alias VoidGateway.Presence
   alias VoidGateway.SessionBuffer
+  alias VoidGateway.SocketAuth
 
   # Opcodes (mirror gateway/index.js OP constants)
   @op_event 0
@@ -79,6 +80,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
           user_id: String.t(),
           device_id: String.t(),
           token_exp: integer(),
+          session_generation: number(),
           session_id: String.t() | nil,
           client_instance_id: String.t() | nil,
           presence_status: String.t(),
@@ -98,7 +100,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # Called immediately after WebSocket upgrade completes.
   # auth comes from GatewayUpgrade via WebSockAdapter.upgrade/4.
   @impl WebSock
-  def init(%{user_id: user_id, device_id: device_id, token_exp: token_exp}) do
+  def init(%{user_id: user_id, device_id: device_id, token_exp: token_exp} = auth) do
     identify_timer = Process.send_after(self(), :identify_timeout, @identify_timeout_ms)
 
     state = %{
@@ -106,6 +108,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
       user_id: user_id,
       device_id: device_id,
       token_exp: token_exp,
+      session_generation: Map.get(auth, :session_generation),
       session_id: nil,
       client_instance_id: nil,
       presence_status: "online",
@@ -122,17 +125,32 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
       %{user_id: user_id, device_id: device_id}
     )
 
-    # Send HELLO immediately. Client must respond with IDENTIFY or RESUME within 10 seconds.
-    hello = encode!(%{op: @op_hello, d: %{heartbeat_interval: @heartbeat_interval_ms}})
-    {:push, {:text, hello}, state}
+    # Register before the liveness check so revocation cannot miss a pending socket.
+    with :ok <- ConnectionRegistry.register_pending(user_id, device_id, self()),
+         :ok <- SocketAuth.check_session_liveness(state) do
+      hello = encode!(%{op: @op_hello, d: %{heartbeat_interval: @heartbeat_interval_ms}})
+      {:push, {:text, hello}, state}
+    else
+      {:error, :connection_limit} -> do_close(state, 1013, "Connection limit reached")
+      _ -> do_close(state, @close_unauthorized, "Session unavailable")
+    end
   end
 
   # Incoming WebSocket text frame
   @impl WebSock
   def handle_in({data, [opcode: :text]}, state) do
     case Jason.decode(data) do
-      {:ok, msg} -> dispatch_opcode(msg, state)
-      {:error, _} -> do_close(state, @close_protocol_error, "Invalid JSON")
+      {:ok, %{"op" => op} = msg} when op in [@op_identify, @op_resume] ->
+        case SocketAuth.check_session_liveness(state) do
+          :ok -> dispatch_opcode(msg, state)
+          _ -> do_close(state, @close_unauthorized, "Session revoked")
+        end
+
+      {:ok, msg} ->
+        dispatch_opcode(msg, state)
+
+      {:error, _} ->
+        do_close(state, @close_protocol_error, "Invalid JSON")
     end
   end
 
@@ -251,9 +269,10 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   def terminate(_reason, state) do
     cancel_token_timers(state)
     cancel_heartbeat_timeout(state)
+    if state.identify_timer_ref, do: Process.cancel_timer(state.identify_timer_ref)
+    ConnectionRegistry.unregister(state.user_id, state.device_id, self())
 
     if state.status == :identified do
-      ConnectionRegistry.unregister(state.user_id, state.device_id, self())
       sync_aggregate_presence(state.user_id)
     end
 

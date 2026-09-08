@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createConfiguredLimiter as createLimiter } from '../../middleware/rateLimits/createLimiter.js';
 import {
   getVapidPublicKey,
   isWebPushConfigured,
@@ -8,6 +9,8 @@ import {
 } from '../../notifications/webPush.js';
 
 const router = Router();
+const subscriptionLimiter = createLimiter({ algorithm: 'token_bucket', scope: 'user', keyPrefix: 'push:subscription', bucketSize: 10, refillWindowSec: 600 });
+const testLimiter = createLimiter({ algorithm: 'token_bucket', scope: 'user', keyPrefix: 'push:test', bucketSize: 3, refillWindowSec: 600 });
 
 router.get('/vapid-public-key', (_req, res) => {
   res.json({
@@ -17,7 +20,7 @@ router.get('/vapid-public-key', (_req, res) => {
   });
 });
 
-router.post('/subscribe', async (req, res) => {
+router.post('/subscribe', subscriptionLimiter, async (req, res) => {
   const user = req.user;
   if (!user) {
     return res.status(401).json({ success: false, error: 'Authentication required' });
@@ -74,7 +77,7 @@ router.post('/unsubscribe', async (req, res) => {
   }
 });
 
-router.post('/test', async (req, res) => {
+router.post('/test', testLimiter, async (req, res) => {
   const user = req.user;
   if (!user) {
     return res.status(401).json({ success: false, error: 'Authentication required' });

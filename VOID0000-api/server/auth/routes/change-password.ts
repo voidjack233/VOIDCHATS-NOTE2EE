@@ -9,6 +9,7 @@ import { encryptedCSRFProtection } from '../../middleware/encryptedCSRF.js';
 import { totp } from '../services/totpService.js';
 import {
   decrypt,
+  consumeBackupCode,
   findMatchingBackupCodeId,
   getActionEmailKey,
   hashActionEmailCode,
@@ -20,15 +21,21 @@ import {
   hashPassword,
   verifyPassword,
 } from '../services/credentialService.js';
+import { reserveSensitiveTwoFactorActionAttempt } from '../services/authAttemptLimitService.js';
+import { handleSensitiveActionSecurityError, sendSensitiveActionRateLimit } from './twoFactor/actionSecurityResponses.js';
+import { createConfiguredLimiter } from '../../middleware/rateLimits/createLimiter.js';
+import { revokeCredentialRecords, invalidateCredentialSessions } from '../services/credentialInvalidation.js';
+import { createLoginSessionRecord, activateLoginSession, setLoginSessionCookies } from '../services/loginSessionService.js';
 
 const router = Router();
 const CHANGE_PASSWORD_EMAIL_ACTION = 'change_password';
 
-router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => {
+const sourceLimiter = createConfiguredLimiter({ scope: 'ip', keyPrefix: 'auth:change-password:ip', bucketSize: 30, refillWindowSec: 900 });
+router.post('/', sourceLimiter, authenticateUser, encryptedCSRFProtection, async (req, res) => {
   const { currentPassword, newPassword, twoFactorMethod, twoFactorCode } = req.body;
   const userId = requireAuthenticatedUser(req).id;
 
-  if (!currentPassword || !newPassword) {
+  if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 1024 || !newPassword) {
     return res.status(400).json({
       success: false,
       message: 'Current password and new password are required'
@@ -53,6 +60,8 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
   let client;
 
   try {
+    const attempt = await reserveSensitiveTwoFactorActionAttempt({ req, userId, action: CHANGE_PASSWORD_EMAIL_ACTION });
+    if (attempt.blocked) return sendSensitiveActionRateLimit(res, attempt);
     client = await pool.connect();
     await client.query('BEGIN');
 
@@ -93,10 +102,10 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
           });
         }
 
-        await client.query(
-          `UPDATE user_2fa_backup_codes SET is_used = true, used_at = NOW() WHERE id = $1`,
-          [usedCodeId]
-        );
+        if (!await consumeBackupCode(client, usedCodeId, userId)) {
+          await client.query('ROLLBACK');
+          return res.status(401).json({ success: false, code: 'TWO_FACTOR_INVALID', message: 'Invalid backup code.' });
+        }
       } else if (twoFactorMethod === 'totp') {
         if (!enabledMethods.includes('totp')) {
           await client.query('ROLLBACK');
@@ -166,7 +175,7 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
     }
 
     const userResult = await client.query(
-      'SELECT password_hash FROM users WHERE id = $1 FOR UPDATE',
+      'SELECT id, profile_id, password_hash FROM users WHERE id = $1 FOR UPDATE',
       [userId]
     );
 
@@ -198,7 +207,12 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       [newHash, userId]
     );
 
+    await revokeCredentialRecords(client, userId);
+    const replacement = await createLoginSessionRecord({ queryable: client, user, req, res });
     await client.query('COMMIT');
+    await invalidateCredentialSessions(userId);
+    if (!await activateLoginSession(replacement)) throw new Error('Replacement session unavailable');
+    setLoginSessionCookies(req, res, replacement);
     await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGE_SUCCESS', userId);
 
     res.json({
@@ -210,6 +224,7 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
     if (client) {
       await client.query('ROLLBACK').catch(() => {});
     }
+    if (handleSensitiveActionSecurityError(res, err)) return;
     console.error('Change password error:', err);
     await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGE_ERROR', userId);
     res.status(500).json({

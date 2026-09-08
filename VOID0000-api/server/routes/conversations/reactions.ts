@@ -1,6 +1,7 @@
 // server/routes/conversations/reactions.js
 import { Router } from 'express';
 import { pool } from '../../db.js';
+import { canInteractInConversation } from '../../utils/conversationInteraction.js';
 import scylla, { cassandra } from '../../scylla.js';
 import { queueReactionEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
@@ -132,6 +133,9 @@ router.put<{ conversationId: string; messageId: string; emoji: string }>('/:emoj
     const member = await verifyMembership(conversationId, userId);
     if (!member) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+    if (!await canInteractInConversation(pool, resolvedConversation.conversation, userId)) {
+      return res.status(403).json({ error: 'You can only DM friends' });
     }
 
     const convUuid = cassandra.types.Uuid.fromString(storageConversationId);

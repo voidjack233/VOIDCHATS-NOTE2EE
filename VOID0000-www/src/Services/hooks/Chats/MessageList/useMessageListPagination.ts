@@ -1,3 +1,4 @@
+import { messageStore } from '../../../Chat/chatStore';
 import {
   useCallback,
   useEffect,
@@ -381,6 +382,7 @@ const useMessageListPagination = ({
   }, [applyAppendedWindow, messagesRef]);
 
   const fetchOlderMessages = useCallback(async (oldestMessageId: string) => {
+    const storage = messageStore;
     let result: { messages: LocalMessage[]; has_more: boolean };
     let localCount = 0;
     let localHasMore = false;
@@ -396,7 +398,7 @@ const useMessageListPagination = ({
       });
       serverCount = serverResult.messages.length;
       serverHasMore = serverResult.has_more;
-      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
+      const localMessages = await persistFetchedMessagesSafely(serverResult.messages, storage);
       result = {
         messages: localMessages,
         has_more: serverResult.has_more,
@@ -554,6 +556,7 @@ const useMessageListPagination = ({
   }, [loadOlderPage]);
 
   const loadNewer = useCallback(async () => {
+    const storage = messageStore;
     if (loadingNewer || !hasNewer || messages.length === 0) return false;
 
     setLoadingNewer(true);
@@ -572,7 +575,7 @@ const useMessageListPagination = ({
           after: newestMessage.message_id,
           limit: FETCH_SIZE,
         });
-        const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
+        const localMessages = await persistFetchedMessagesSafely(serverResult.messages, storage);
         result = {
           // Newer pagination must stay contiguous. Local IndexedDB can already
           // contain a far-future live message, so merging sparse local rows here
@@ -667,6 +670,7 @@ const useMessageListPagination = ({
   type RecentReconcileSource = 'gateway_ready' | 'gateway_resumed';
 
   const reconcileRecentMessages = useCallback(async (source: RecentReconcileSource) => {
+    const storage = messageStore;
     const newestMessage = getNewestServerBackedMessage(messagesRef.current);
     if (!newestMessage) return;
 
@@ -680,7 +684,7 @@ const useMessageListPagination = ({
       const latestServerResult = await getMessages(conversationId, {
         limit: FETCH_SIZE,
       });
-      const latestLocalMessages = await persistFetchedMessagesSafely(latestServerResult.messages);
+      const latestLocalMessages = await persistFetchedMessagesSafely(latestServerResult.messages, storage);
       const visibleLatestMessages = filterMessagesByHistoryFence(latestLocalMessages, historyAccessFence);
       const latestUI = sortMessages(visibleLatestMessages.map(toUIMessage));
 
@@ -705,7 +709,7 @@ const useMessageListPagination = ({
         return;
       }
 
-      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
+      const localMessages = await persistFetchedMessagesSafely(serverResult.messages, storage);
       const visibleServerMessages = filterMessagesByHistoryFence(localMessages, historyAccessFence);
       const newerUI = sortMessages(visibleServerMessages.map(toUIMessage));
       const hasNewerAfterMerge = serverResult.has_more;
@@ -799,6 +803,7 @@ const useMessageListPagination = ({
   ]);
 
   const jumpToPresent = useCallback(async () => {
+    const storage = messageStore;
     historyRequestGenerationRef.current += 1;
     const requestGeneration = historyRequestGenerationRef.current;
     setLoadingNewer(true);
@@ -808,7 +813,7 @@ const useMessageListPagination = ({
       const serverResult = await getMessages(conversationId, {
         limit: presentLimit,
       });
-      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
+      const localMessages = await persistFetchedMessagesSafely(serverResult.messages, storage);
       const visibleFreshMessages = filterMessagesByHistoryFence(localMessages, historyAccessFence);
       const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
       if (requestGeneration !== historyRequestGenerationRef.current) {

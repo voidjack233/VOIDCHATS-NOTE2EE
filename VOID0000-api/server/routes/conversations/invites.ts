@@ -9,7 +9,7 @@ import {
   getGroupMembership,
   resolveMembershipConversation,
 } from '../../utils/groupMembership.js';
-import { meetsAdminToggle, resolvePermissions } from '../../utils/groupPermissions.js';
+import { canPerformGroupOperation, resolvePermissions } from '../../utils/groupPermissions.js';
 import { generateInviteCode } from './inviteLinks.js';
 
 const router = Router({ mergeParams: true });
@@ -106,7 +106,7 @@ router.get<{ conversationId: string }>('/', async (req, res) => {
     const { conversation, membership } = access;
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsAdminToggle(membership.role, perms.admin_can_manage_invite_links)) {
+    if (!canPerformGroupOperation(membership.role, perms, 'invites')) {
       return res.status(403).json({ error: 'You do not have permission to manage invite links' });
     }
 
@@ -203,7 +203,7 @@ router.post<{ conversationId: string }>('/', async (req, res) => {
     const { conversation, membership } = access;
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsAdminToggle(membership.role, perms.admin_can_manage_invite_links)) {
+    if (!canPerformGroupOperation(membership.role, perms, 'invites')) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'You do not have permission to create invite links' });
     }
@@ -295,7 +295,7 @@ router.post<{ conversationId: string; requestId: string }>('/requests/:requestId
     const { conversation, membership } = access;
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
+    if (!canPerformGroupOperation(membership.role, perms, 'approvals')) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'You do not have permission to approve join requests' });
     }
@@ -404,7 +404,7 @@ router.post<{ conversationId: string; requestId: string }>('/requests/:requestId
     const { conversation, membership } = access;
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
+    if (!canPerformGroupOperation(membership.role, perms, 'approvals')) {
       return res.status(403).json({ error: 'You do not have permission to manage join requests' });
     }
 
@@ -451,7 +451,7 @@ router.post<{ conversationId: string; inviteId: string }>('/:inviteId/revoke', a
     const { conversation, membership } = access;
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsAdminToggle(membership.role, perms.admin_can_manage_invite_links)) {
+    if (!canPerformGroupOperation(membership.role, perms, 'invites')) {
       return res.status(403).json({ error: 'You do not have permission to manage invite links' });
     }
 
