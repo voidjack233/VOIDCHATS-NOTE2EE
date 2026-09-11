@@ -46,6 +46,7 @@ export function createTokenPair({
   userId,
   profileId,
   deviceId,
+  sessionId,
 }: TokenPairInput): TokenPair {
   const accessJti = uuidv4();
   const refreshJti = uuidv4();
@@ -53,6 +54,7 @@ export function createTokenPair({
     id: userId,
     profile_id: profileId,
     device_id: deviceId,
+    sid: sessionId,
   };
   const accessToken = signAccessToken(payload, accessJti);
   const refreshToken = signRefreshToken(payload, refreshJti);
@@ -99,9 +101,10 @@ export function isAuthenticatedRequestUser(
     decoded.id.length > 0 &&
     typeof decoded.device_id === 'string' &&
     decoded.device_id.length > 0 &&
+    typeof decoded.sid === 'string' && decoded.sid.length > 0 &&
     (decoded.profile_id === undefined || typeof decoded.profile_id === 'string') &&
     (decoded.jti === undefined || typeof decoded.jti === 'string') &&
-    (decoded.type === undefined || decoded.type === 'access' || decoded.type === 'refresh')
+    decoded.type === 'access'
   );
 }
 
@@ -118,6 +121,7 @@ export function isAuthTokenClaims(
     decoded.profile_id.length > 0 &&
     typeof decoded.device_id === 'string' &&
     decoded.device_id.length > 0 &&
+    typeof decoded.sid === 'string' && decoded.sid.length > 0 &&
     typeof decoded.jti === 'string' &&
     decoded.jti.length > 0 &&
     (decoded.type === 'access' || decoded.type === 'refresh') &&

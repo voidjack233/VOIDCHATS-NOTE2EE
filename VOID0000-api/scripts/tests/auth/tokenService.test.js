@@ -32,6 +32,7 @@ test('created token pairs expose validated access and refresh claims', () => {
     userId: 'user-1',
     profileId: 'profile-1',
     deviceId: 'device-1',
+    sessionId: 'immutable-login-id',
   });
 
   const accessClaims = verifyAccessToken(tokens.accessToken);
@@ -41,6 +42,9 @@ test('created token pairs expose validated access and refresh claims', () => {
   assert.equal(isAuthTokenClaims(accessClaims, 'access'), true);
   assert.equal(isAuthTokenClaims(refreshClaims, 'refresh'), true);
   assert.equal(isAuthTokenClaims(refreshClaims, 'access'), false);
+  assert.equal(accessClaims.sid, 'immutable-login-id');
+  assert.equal(refreshClaims.sid, accessClaims.sid);
+  assert.equal(isAuthenticatedRequestUser(refreshClaims), false);
 });
 
 test('a verified JWT with a non-object payload is not an authenticated user', () => {

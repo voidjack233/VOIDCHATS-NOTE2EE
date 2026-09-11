@@ -118,7 +118,9 @@ router.post('/', async (req, res) => {
 
     await client.query('COMMIT');
 
-    await activateLoginSession(loginSession);
+    if (!await activateLoginSession(loginSession, client)) throw new Error('Session activation unavailable');
+    client.release();
+    client = undefined;
 
     // Record successful login for trust scoring
     await updateTrustScore(trustDeviceId, 'LOGIN_SUCCESS', req);
@@ -142,7 +144,11 @@ router.post('/', async (req, res) => {
     });
 
   } catch (err) {
-    if (client) await client.query('ROLLBACK');
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+      client = undefined;
+    }
 
     console.error('Login error:', err);
     await IPSecurity.logIPActivity(req, 'LOGIN_ERROR_SERVER');

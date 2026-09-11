@@ -79,7 +79,7 @@ defmodule VoidGateway.EventDispatcher do
 
     pids = resolve_pids(user_id, device_id)
 
-    Enum.each(pids, fn pid -> send(pid, {:disconnect, code, reason}) end)
+    Enum.each(pids, fn pid -> send(pid, {:disconnect, code, reason, data["sessionId"]}) end)
 
     :telemetry.execute(
       [:void_gateway, :command, :disconnect_session],
@@ -113,7 +113,7 @@ defmodule VoidGateway.EventDispatcher do
     device_id = data["deviceId"]
     pids = resolve_pids(user_id, device_id)
 
-    Enum.each(pids, fn pid -> send(pid, {:update_token_expiry, new_exp}) end)
+    Enum.each(pids, fn pid -> send(pid, {:update_token_expiry, new_exp, data["sessionId"]}) end)
 
     :telemetry.execute(
       [:void_gateway, :command, :update_token_expiry],

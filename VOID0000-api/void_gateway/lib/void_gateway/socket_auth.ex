@@ -26,7 +26,7 @@ defmodule VoidGateway.SocketAuth do
           user_id: String.t(),
           device_id: String.t(),
           token_exp: integer(),
-          session_generation: number()
+          session_generation: String.t()
         }
 
   @spec verify_upgrade(Plug.Conn.t()) :: {:ok, auth()} | {:error, atom()}
@@ -36,8 +36,8 @@ defmodule VoidGateway.SocketAuth do
     with {:ok, token} <- extract_token(conn.cookies),
          {:ok, claims} <- verify_jwt(token),
          {:ok, auth} <- extract_claims(claims),
-         {:ok, generation} <- session_generation(auth) do
-      {:ok, Map.put(auth, :session_generation, generation)}
+         :ok <- check_session_liveness(auth) do
+      {:ok, auth}
     else
       {:error, reason} = err ->
         Logger.debug("[SocketAuth] Upgrade rejected: #{reason}")
@@ -78,15 +78,26 @@ defmodule VoidGateway.SocketAuth do
 
   # Matches Node token payload: { id, device_id, exp }
   # (jwt.js sets `id`, not `user_id`, as the subject claim)
-  defp extract_claims(%{"id" => user_id, "device_id" => device_id, "exp" => exp})
+  defp extract_claims(%{
+         "id" => user_id,
+         "device_id" => device_id,
+         "exp" => exp,
+         "sid" => sid,
+         "type" => "access"
+       })
        when is_binary(user_id) and user_id != "" and
-              is_binary(device_id) and device_id != "" do
+              is_binary(device_id) and device_id != "" and is_binary(sid) and sid != "" do
     now = System.system_time(:second)
 
     cond do
-      not is_integer(exp) -> {:error, :missing_exp}
-      exp <= now -> {:error, :token_expired}
-      true -> {:ok, %{user_id: user_id, device_id: device_id, token_exp: exp}}
+      not is_integer(exp) ->
+        {:error, :missing_exp}
+
+      exp <= now ->
+        {:error, :token_expired}
+
+      true ->
+        {:ok, %{user_id: user_id, device_id: device_id, token_exp: exp, session_generation: sid}}
     end
   end
 
@@ -103,22 +114,22 @@ defmodule VoidGateway.SocketAuth do
 
   def check_session_liveness(_), do: {:error, :session_revoked}
 
-  defp session_generation(%{user_id: user_id, device_id: device_id}) do
+  defp session_generation(%{user_id: user_id, device_id: device_id, session_generation: expected}) do
     # Key written by Node's sessionStore.js create() and deleted by revoke().
     key = "session:#{user_id}:#{device_id}"
 
-    case Redix.command(:redix, ["GET", key]) do
-      {:ok, raw} when is_binary(raw) ->
+    case Redix.command(:redix, ["MGET", key, "auth:revoked-session:#{expected}"]) do
+      {:ok, [raw, nil]} when is_binary(raw) ->
         case Jason.decode(raw) do
-          {:ok, %{"userId" => ^user_id, "deviceId" => ^device_id, "createdAt" => generation}}
-          when is_number(generation) ->
+          {:ok, %{"userId" => ^user_id, "deviceId" => ^device_id, "sessionId" => generation}}
+          when is_binary(generation) and generation != "" ->
             {:ok, generation}
 
           _ ->
             {:error, :session_revoked}
         end
 
-      {:ok, nil} ->
+      {:ok, _} ->
         # Session was revoked (logout) but the JWT hasn't expired yet.
         # This is the gap that Node's own gateway doesn't currently catch.
         {:error, :session_revoked}

@@ -349,7 +349,6 @@ app.patch('/api/users/:userId', async (req, res) => {
       );
       if (invalidation) await invalidation.revokeCredentialRecords(client, userId);
       await client.query('COMMIT');
-      if (invalidation) await invalidation.invalidateCredentialSessions(userId);
       return res.json({ row: updatedResult.rows[0] });
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});

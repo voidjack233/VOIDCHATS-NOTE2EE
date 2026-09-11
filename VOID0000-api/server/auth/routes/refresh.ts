@@ -24,6 +24,8 @@ import {
 } from '../services/refreshRotationReceiptService.js';
 import { syncLiveTokenExpiry } from '../../gateway/control.js';
 import { debugLog } from '../../utils/debugLog.js';
+import { matchesRequestAccount, accountChangedResponse } from '../middleware/requestAccount.js';
+import { sessionStore } from '../services/sessionService.js';
 
 const router = Router();
 
@@ -32,6 +34,7 @@ interface RefreshTokenRecord {
   token_hash: string | null;
   jti: string;
   device_id: string;
+  session_id: string;
   device_name: string | null;
   device_type: string | null;
   is_verified: boolean;
@@ -40,6 +43,7 @@ interface RefreshTokenRecord {
 interface RefreshGatewaySyncOptions {
   userId: string;
   deviceId: string;
+  sessionId: string;
   accessTokenExp: number | undefined;
 }
 
@@ -66,11 +70,12 @@ const normalizeIP = (ip: string | null | undefined): string | null => {
 const syncRefreshGatewayBestEffort = ({
   userId,
   deviceId,
+  sessionId,
   accessTokenExp,
 }: RefreshGatewaySyncOptions): void => {
   if (typeof accessTokenExp !== 'number' || !Number.isInteger(accessTokenExp)) return;
 
-  void syncLiveTokenExpiry(userId, deviceId, accessTokenExp).catch((error) => {
+  void syncLiveTokenExpiry(userId, deviceId, accessTokenExp, sessionId).catch((error) => {
     console.warn('[AUTH_REFRESH] best-effort gateway synchronization failed', {
       user_id: userId,
       error: error instanceof Error ? error.message : String(error || ''),
@@ -123,6 +128,7 @@ const getReplacementRefreshToken = ({
       replacementDecoded.id === decoded.id &&
       replacementDecoded.profile_id === decoded.profile_id &&
       replacementDecoded.device_id === decoded.device_id &&
+      replacementDecoded.sid === decoded.sid && decoded.sid === tokenRecord.session_id &&
       replacementDecoded.jti === String(tokenRecord.jti) &&
       hashToken(receipt.replacementRefreshToken) === tokenRecord.token_hash;
 
@@ -165,9 +171,18 @@ router.post('/', async (req, res) => {
       });
     }
 
+    if (!matchesRequestAccount(req, decoded.id)) return res.status(409).json(accountChangedResponse);
+    if (await sessionStore.isRevoked(decoded.sid)) {
+      clearAuthCookies(req, res);
+      return res.status(403).json({ success: false, code: 'REFRESH_TOKEN_INVALID', message: 'Session revoked' });
+    }
     client = await pool.connect();
     await client.query('BEGIN');
     transactionOpen = true;
+
+    // Match issuance/revocation lock order before locking any refresh rows.
+    // This also serializes expiry cleanup against account-wide invalidation.
+    await client.query('SELECT id FROM users WHERE id = $1 FOR SHARE', [decoded.id]);
 
     const tokenHash = hashToken(refreshToken);
     const result = await client.query<RefreshTokenRecord>(
@@ -178,10 +193,11 @@ router.post('/', async (req, res) => {
          AND rt.user_id = $2
          AND rt.token_hash = $3
          AND rt.device_id = $4
+         AND rt.session_id = $5
          AND rt.expires_at > NOW()
          AND rt.is_revoked = FALSE
        FOR UPDATE OF rt`,
-      [decoded.jti, decoded.id, tokenHash, decoded.device_id],
+      [decoded.jti, decoded.id, tokenHash, decoded.device_id, decoded.sid],
     );
 
     if (result.rows.length === 0) {
@@ -193,12 +209,13 @@ router.post('/', async (req, res) => {
            AND rt.device_id = $2
            AND rt.previous_token_hash = $3
            AND rt.previous_jti = $4
+           AND rt.session_id = $5
            AND rt.previous_valid_until > clock_timestamp()
            AND rt.is_revoked = FALSE
            AND rt.expires_at > NOW()
            AND u.is_verified = TRUE
          FOR UPDATE OF rt`,
-        [decoded.id, decoded.device_id, tokenHash, decoded.jti],
+        [decoded.id, decoded.device_id, tokenHash, decoded.jti, decoded.sid],
       );
 
       if (predecessorResult.rows.length === 0) {
@@ -213,6 +230,7 @@ router.post('/', async (req, res) => {
       }
 
       const tokenRecord = predecessorResult.rows[0];
+      if (await sessionStore.isRevoked(tokenRecord.session_id)) throw Object.assign(new Error('Session revoked'), { name: 'SessionRevokedError' });
       const receipt = await getRefreshRotationReceipt({
         consumedTokenHash: tokenHash,
         consumedJti: decoded.jti,
@@ -248,6 +266,7 @@ router.post('/', async (req, res) => {
         id: decoded.id,
         profile_id: decoded.profile_id,
         device_id: decoded.device_id,
+        sid: tokenRecord.session_id,
       });
       const accessTokenDecoded = decodeAuthToken(accessToken);
 
@@ -269,12 +288,14 @@ router.post('/', async (req, res) => {
       syncRefreshGatewayBestEffort({
         userId: decoded.id,
         deviceId: decoded.device_id,
+        sessionId: tokenRecord.session_id,
         accessTokenExp: getDecodedExpiry(accessTokenDecoded),
       });
       return;
     }
 
     const tokenRecord = result.rows[0];
+    if (await sessionStore.isRevoked(tokenRecord.session_id)) throw Object.assign(new Error('Session revoked'), { name: 'SessionRevokedError' });
 
     if (tokenRecord.device_id !== decoded.device_id) {
       await client.query('ROLLBACK');
@@ -300,6 +321,7 @@ router.post('/', async (req, res) => {
       userId: decoded.id,
       profileId: decoded.profile_id,
       deviceId: decoded.device_id,
+      sessionId: tokenRecord.session_id,
     });
     const newAccessDecoded = decodeAuthToken(newTokens.accessToken);
     const sessionMetadata = getSessionMetadata(req, tokenRecord);
@@ -368,6 +390,7 @@ router.post('/', async (req, res) => {
     syncRefreshGatewayBestEffort({
       userId: decoded.id,
       deviceId: decoded.device_id,
+      sessionId: tokenRecord.session_id,
       accessTokenExp: getDecodedExpiry(newAccessDecoded),
     });
   } catch (error) {
@@ -384,12 +407,12 @@ router.post('/', async (req, res) => {
 
     if (
       error instanceof Error &&
-      (error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError')
+      (error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError' || error.name === 'SessionRevokedError')
     ) {
       clearAuthCookies(req, res);
       return res.status(403).json({
         success: false,
-        code: error.name === 'TokenExpiredError' ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID',
+        code: error.name === 'SessionRevokedError' ? 'REFRESH_TOKEN_INVALID' : error.name === 'TokenExpiredError' ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID',
         message: 'Session expired. Please login again.',
       });
     }

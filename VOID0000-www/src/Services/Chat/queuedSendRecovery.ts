@@ -110,6 +110,7 @@ function getTerminalFailureNotice(error: unknown): string {
 
 class QueuedSendRecovery {
   private activeUserId: string | null = null;
+  private operationController = new AbortController();
   private generation = 0;
   private retryAttempt = 0;
   private retryTimer: number | null = null;
@@ -139,6 +140,7 @@ class QueuedSendRecovery {
     }
 
     this.stop();
+    this.operationController = new AbortController();
     this.activeUserId = userId;
     this.generation += 1;
 
@@ -154,6 +156,7 @@ class QueuedSendRecovery {
 
   stop(expectedUserId?: string): void {
     if (expectedUserId && this.activeUserId !== expectedUserId) return;
+    this.operationController.abort();
 
     this.generation += 1;
     this.activeUserId = null;
@@ -291,6 +294,7 @@ class QueuedSendRecovery {
   }
 
   private async flushRecords(userId: string, generation: number): Promise<FlushResult> {
+    const signal = this.operationController.signal;
     const store = queuedSendStore;
     const queuedSends = (await store.getAll(userId))
       .filter((record) => record.sender_id === userId)
@@ -313,6 +317,7 @@ class QueuedSendRecovery {
 
       try {
         const options = {
+          signal,
           client_message_id: record.local_client_id,
           reply_to: record.reply_to_id || undefined,
           linkPreview: record.link_preview || null,

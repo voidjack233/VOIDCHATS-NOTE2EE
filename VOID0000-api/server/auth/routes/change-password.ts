@@ -24,7 +24,7 @@ import {
 import { reserveSensitiveTwoFactorActionAttempt } from '../services/authAttemptLimitService.js';
 import { handleSensitiveActionSecurityError, sendSensitiveActionRateLimit } from './twoFactor/actionSecurityResponses.js';
 import { createConfiguredLimiter } from '../../middleware/rateLimits/createLimiter.js';
-import { revokeCredentialRecords, invalidateCredentialSessions } from '../services/credentialInvalidation.js';
+import { revokeCredentialRecords } from '../services/credentialInvalidation.js';
 import { createLoginSessionRecord, activateLoginSession, setLoginSessionCookies } from '../services/loginSessionService.js';
 
 const router = Router();
@@ -193,7 +193,7 @@ router.post('/', sourceLimiter, authenticateUser, encryptedCSRFProtection, async
 
     if (!isValid) {
       await client.query('ROLLBACK');
-      await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGE_FAILED_WRONG_PASSWORD', userId);
+      await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGE_FAILED_WRONG_PASSWORD', userId, client);
       return res.status(401).json({
         success: false,
         message: 'Current password is incorrect'
@@ -210,8 +210,9 @@ router.post('/', sourceLimiter, authenticateUser, encryptedCSRFProtection, async
     await revokeCredentialRecords(client, userId);
     const replacement = await createLoginSessionRecord({ queryable: client, user, req, res });
     await client.query('COMMIT');
-    await invalidateCredentialSessions(userId);
-    if (!await activateLoginSession(replacement)) throw new Error('Replacement session unavailable');
+    if (!await activateLoginSession(replacement, client)) throw new Error('Replacement session unavailable');
+    client.release();
+    client = undefined;
     setLoginSessionCookies(req, res, replacement);
     await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGE_SUCCESS', userId);
 
@@ -223,6 +224,8 @@ router.post('/', sourceLimiter, authenticateUser, encryptedCSRFProtection, async
   } catch (err) {
     if (client) {
       await client.query('ROLLBACK').catch(() => {});
+      client.release();
+      client = undefined;
     }
     if (handleSensitiveActionSecurityError(res, err)) return;
     console.error('Change password error:', err);

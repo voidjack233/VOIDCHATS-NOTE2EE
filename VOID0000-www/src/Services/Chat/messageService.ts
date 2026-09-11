@@ -19,18 +19,23 @@ async function withRequestTimeout<T>(
   timeoutMs: number,
   label: string,
   operation: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (callerSignal?.aborted) abort();
+  else callerSignal?.addEventListener('abort', abort, { once: true });
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await operation(controller.signal);
   } catch (error) {
-    if ((error as { name?: string } | null)?.name === 'AbortError') {
-      throw new Error(`${label} timed out. Check your connection and retry.`);
+    if (!callerSignal?.aborted && (error as { name?: string } | null)?.name === 'AbortError') {
+      throw new Error(`${label} timed out. Check your connection and retry.`, { cause: error });
     }
     throw error;
   } finally {
     window.clearTimeout(timeoutId);
+    callerSignal?.removeEventListener('abort', abort);
   }
 }
 
@@ -51,6 +56,7 @@ function normalizeMessage(raw: Partial<Message>): Message {
 }
 
 interface SendOptions {
+  signal?: AbortSignal;
   client_message_id?: string;
   reply_to?: string;
   attachments?: string[];
@@ -81,7 +87,7 @@ export async function sendMessage(
       }),
     });
     return { response, data: await response.json() };
-  });
+  }, options?.signal);
   if (!response.ok || !data.success) {
     throw createApiError(data, {
       status: response.status,

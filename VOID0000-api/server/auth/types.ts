@@ -6,6 +6,7 @@ export interface AuthTokenIdentity {
   id: string;
   profile_id: string;
   device_id: string;
+  sid: string;
 }
 
 export interface AuthTokenClaims extends JwtPayload, AuthTokenIdentity {
@@ -16,6 +17,7 @@ export interface AuthTokenClaims extends JwtPayload, AuthTokenIdentity {
 export interface AuthenticatedRequestUser extends JwtPayload {
   id: string;
   device_id: string;
+  sid: string;
   profile_id?: string;
   jti?: string;
   type?: AuthTokenType;
@@ -25,6 +27,7 @@ export interface TokenPairInput {
   userId: string;
   profileId: string;
   deviceId: string;
+  sessionId: string;
 }
 
 export interface TokenPair {
@@ -45,6 +48,7 @@ export interface SessionMetadata {
 export interface SessionRecord {
   userId: string;
   deviceId: string;
+  sessionId: string;
   createdAt: number;
   lastSeenAt: number;
   ip: string;

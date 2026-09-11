@@ -1,11 +1,13 @@
 import { API_URL } from '../../config';
 import type { RefreshResult } from '../types';
 import { createSingleFlightValue } from './singleFlightValue';
+import { assertAuthOperation, AuthAccountChangedError, captureAuthOperation, linkAuthOperation, onAuthAccountChange, type AuthOperationScope } from './authOperationScope';
 
 const csrfTokenState = createSingleFlightValue<string>();
 let isLoggingOut = false;
 let refreshPromise: Promise<RefreshResult> | null = null;
 let sessionInvalidationDispatched = false;
+onAuthAccountChange(() => { csrfTokenState.clear(); refreshPromise = null; });
 
 export const AUTH_SESSION_INVALIDATED_EVENT = 'void:auth-session-invalidated';
 
@@ -48,8 +50,10 @@ async function waitBeforeRefreshRetry(milliseconds: number): Promise<void> {
   });
 }
 
-async function requestRefresh(refreshUrl: string): Promise<Response> {
+async function requestRefresh(refreshUrl: string, scope: AuthOperationScope): Promise<Response> {
+  assertAuthOperation(scope);
   const controller = new AbortController();
+  const linked = linkAuthOperation(scope, controller.signal);
   const timeoutId = window.setTimeout(() => {
     controller.abort();
   }, REFRESH_REQUEST_TIMEOUT_MS);
@@ -58,11 +62,12 @@ async function requestRefresh(refreshUrl: string): Promise<Response> {
     return await fetch(refreshUrl, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', ...(scope.accountId ? { 'X-VOID-Account-ID': scope.accountId } : {}) },
+      signal: linked.signal,
     });
   } finally {
     window.clearTimeout(timeoutId);
+    linked.dispose();
   }
 }
 
@@ -162,28 +167,38 @@ async function isLikelyCSRFError(response: Response): Promise<boolean> {
   }
 }
 
-export function requestCSRFToken(): Promise<string | null> {
+export function requestCSRFToken(scope: AuthOperationScope = captureAuthOperation()): Promise<string | null> {
+  assertAuthOperation(scope);
   return csrfTokenState.getOrLoad(async () => {
     try {
+      assertAuthOperation(scope);
       const response = await fetch(`${API_URL}/api/csrf/csrf-token`, {
         method: 'GET',
         credentials: 'include',
+        signal: scope.signal,
+        headers: scope.accountId ? { 'X-VOID-Account-ID': scope.accountId } : {},
       });
+      assertAuthOperation(scope);
+      if (response.status === 409) throw new AuthAccountChangedError();
       const data = await response.json();
+      assertAuthOperation(scope);
 
       if (data.success && typeof data.csrfToken === 'string' && data.csrfToken) {
         return data.csrfToken;
       }
       return null;
     } catch (error) {
+      assertAuthOperation(scope);
+      if (error instanceof AuthAccountChangedError) throw error;
       console.error('Failed to fetch CSRF token:', error);
       return null;
     }
   });
 }
 
-export async function ensureCSRFToken(): Promise<string | null> {
-  return csrfTokenState.getCached() ?? requestCSRFToken();
+export async function ensureCSRFToken(scope: AuthOperationScope = captureAuthOperation()): Promise<string | null> {
+  assertAuthOperation(scope);
+  return csrfTokenState.getCached() ?? requestCSRFToken(scope);
 }
 
 export function clearCSRFToken(): void {
@@ -212,19 +227,22 @@ function notifyAuthSessionInvalidated(result: RefreshResult): void {
   }));
 }
 
-export async function refreshAuthSession(): Promise<RefreshResult> {
+export async function refreshAuthSession(scope: AuthOperationScope = captureAuthOperation()): Promise<RefreshResult> {
+  assertAuthOperation(scope);
   if (refreshPromise) return refreshPromise;
 
-  refreshPromise = (async () => {
+  const request = (async (): Promise<RefreshResult> => {
     const refreshUrl = `${API_URL}/api/auth/refresh`;
 
     try {
       for (let attempt = 0; attempt <= REFRESH_MAX_RETRIES; attempt += 1) {
+        assertAuthOperation(scope);
         let response: Response;
 
         try {
-          response = await requestRefresh(refreshUrl);
+          response = await requestRefresh(refreshUrl, scope);
         } catch {
+          assertAuthOperation(scope);
           if (attempt < REFRESH_MAX_RETRIES) {
             await waitBeforeRefreshRetry(Math.min(
               250 * (2 ** attempt),
@@ -239,6 +257,8 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
           };
         }
 
+        assertAuthOperation(scope);
+        if (response.status === 409) throw new AuthAccountChangedError();
         if (response.ok) {
           clearCSRFToken();
           markAuthSessionEstablished();
@@ -246,6 +266,7 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
         }
 
         const payload = await readJsonSafely(response);
+        assertAuthOperation(scope);
         const code = typeof payload.code === 'string' ? payload.code : undefined;
         const shouldRetry = TRANSIENT_REFRESH_STATUSES.has(response.status);
 
@@ -276,17 +297,21 @@ export async function refreshAuthSession(): Promise<RefreshResult> {
         success: false,
         failureKind: 'unavailable',
       };
-    } catch {
+    } catch (error) {
+      assertAuthOperation(scope);
+      if (error instanceof AuthAccountChangedError) throw error;
       return {
         success: false,
         failureKind: 'unavailable',
       };
-    } finally {
-      refreshPromise = null;
     }
   })();
-
-  return refreshPromise;
+  refreshPromise = request;
+  try {
+    return await request;
+  } finally {
+    if (refreshPromise === request) refreshPromise = null;
+  }
 }
 
 export async function fetchWithAuth(
@@ -294,58 +319,89 @@ export async function fetchWithAuth(
   options: RequestInit = {},
   policy: { retryUnauthorized?: boolean } = {},
 ): Promise<Response> {
-  const fullUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
-  const method = options.method?.toUpperCase() || 'GET';
-  const needsCSRFToken = isMutationMethod(method);
-  const headers = new Headers(options.headers);
-  if (!headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  if (needsCSRFToken) {
-    const token = await ensureCSRFToken();
-    if (token) {
-      headers.set('X-CSRF-Token', token);
+  const scope = captureAuthOperation();
+  const linked = linkAuthOperation(scope, options.signal);
+  const check = () => {
+    assertAuthOperation(scope);
+    if (linked.signal.aborted) throw new DOMException('Operation cancelled', 'AbortError');
+  };
+  try {
+    check();
+    const fullUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
+    const method = options.method?.toUpperCase() || 'GET';
+    const needsCSRFToken = isMutationMethod(method);
+    const headers = new Headers(options.headers);
+    if (scope.accountId) headers.set('X-VOID-Account-ID', scope.accountId);
+    if (!headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
     }
-  }
 
-  const performRequest = () => fetch(fullUrl, {
-    ...options,
-    credentials: 'include',
-    headers,
-  });
-
-  let response = await performRequest();
-
-  if (response.status === 401 && !isLoggingOut && policy.retryUnauthorized !== false) {
-    const refreshResult = await refreshAuthSession();
-
-    if (refreshResult.success) {
-      if (needsCSRFToken) {
-        const newCsrfToken = await ensureCSRFToken();
-        if (newCsrfToken) {
-          headers.set('X-CSRF-Token', newCsrfToken);
-        }
+    if (needsCSRFToken) {
+      const token = await ensureCSRFToken(scope);
+      check();
+      if (token) {
+        headers.set('X-CSRF-Token', token);
       }
-
-      response = await performRequest();
-    } else if (refreshResult.failureKind === 'unavailable') {
-      throw new AuthSessionUnavailableError();
-    } else {
-      return response;
     }
-  }
 
-  // Some backends rotate CSRF secrets during membership/session transitions.
-  // If we detect CSRF validation, or any mutation returns 403, refresh once.
-  if (needsCSRFToken && ((await isLikelyCSRFError(response)) || response.status === 403)) {
-    clearCSRFToken();
-    const newCsrfToken = await requestCSRFToken();
-    if (newCsrfToken) {
-      headers.set('X-CSRF-Token', newCsrfToken);
-      response = await performRequest();
+    const performRequest = () => {
+      check();
+      return fetch(fullUrl, {
+        ...options,
+        credentials: 'include',
+        headers,
+        signal: linked.signal,
+      });
+    };
+
+    let response = await performRequest();
+    check();
+    if (response.status === 409 && (await readJsonSafely(response)).code === 'AUTH_ACCOUNT_CHANGED') {
+      throw new AuthAccountChangedError();
     }
-  }
 
-  return response;
+    if (response.status === 401 && !isLoggingOut && policy.retryUnauthorized !== false) {
+      check();
+      const refreshResult = await refreshAuthSession(scope);
+      check();
+
+      if (refreshResult.success) {
+        if (needsCSRFToken) {
+          const newCsrfToken = await ensureCSRFToken(scope);
+          check();
+          if (newCsrfToken) {
+            headers.set('X-CSRF-Token', newCsrfToken);
+          }
+        }
+
+        response = await performRequest();
+      } else if (refreshResult.failureKind === 'unavailable') {
+        throw new AuthSessionUnavailableError();
+      } else {
+        return response;
+      }
+    }
+
+    // Some backends rotate CSRF secrets during membership/session transitions.
+    // If we detect CSRF validation, or any mutation returns 403, refresh once.
+    if (needsCSRFToken && ((await isLikelyCSRFError(response)) || response.status === 403)) {
+      check();
+      clearCSRFToken();
+      const newCsrfToken = await requestCSRFToken(scope);
+      check();
+      if (newCsrfToken) {
+        headers.set('X-CSRF-Token', newCsrfToken);
+        response = await performRequest();
+      }
+    }
+
+    check();
+    if (response.status === 409 && (await readJsonSafely(response)).code === 'AUTH_ACCOUNT_CHANGED') {
+      throw new AuthAccountChangedError();
+    }
+    check();
+    return response;
+  } finally {
+    linked.dispose();
+  }
 }

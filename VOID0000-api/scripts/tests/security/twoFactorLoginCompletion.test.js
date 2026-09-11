@@ -238,7 +238,7 @@ function buildHandler(overrides = {}) {
   return createVerifyLoginHandler({
     databasePool,
     createSessionRecord: persistLoginSession,
-    activateSession: async () => {},
+    activateSession: async () => ({ active: true }),
     setSessionCookies: () => {},
     recordLoginSuccess: async () => {},
     recordLoginTrust: async () => {},

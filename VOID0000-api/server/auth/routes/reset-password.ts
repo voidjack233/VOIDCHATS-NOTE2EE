@@ -1,8 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import { IPSecurity } from '../../utils/securityUtils.js';
-import { sessionStore } from '../services/sessionService.js';
-import { disconnectLiveSession } from '../../gateway/control.js';
+import { revokeCredentialRecords } from '../services/credentialInvalidation.js';
 import { validateAccountPassword } from '../services/passwordPolicy.js';
 import { hashPassword } from '../services/credentialService.js';
 import { hashToken } from '../services/tokenService.js';
@@ -32,7 +31,7 @@ router.post('/', async (req, res) => {
        FROM password_resets
        WHERE token = $1
          AND expires_at > NOW()
-       FOR UPDATE`,
+       `,
       [hashedToken]
     );
 
@@ -42,15 +41,15 @@ router.post('/', async (req, res) => {
     }
 
     const user_id = resetResult.rows[0].user_id;
-
-    const sessionsResult = await client.query(
-      `SELECT DISTINCT device_id
-       FROM refresh_tokens
-       WHERE user_id = $1
-         AND device_id IS NOT NULL
-         AND is_revoked = FALSE`,
-      [user_id]
+    await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user_id]);
+    const lockedReset = await client.query(
+      'SELECT user_id FROM password_resets WHERE token = $1 AND user_id = $2 AND expires_at > NOW() FOR UPDATE',
+      [hashedToken, user_id],
     );
+    if (!lockedReset.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'Token is invalid or expired' });
+    }
 
     const hashed = await hashPassword(newPassword);
 
@@ -59,29 +58,12 @@ router.post('/', async (req, res) => {
       [hashed, user_id]
     );
 
-    await client.query(
-      `UPDATE refresh_tokens
-       SET is_revoked = TRUE,
-           revoked_at = NOW(),
-           revoked_by = $1,
-           previous_token_hash = NULL,
-           previous_jti = NULL,
-           previous_valid_until = NULL
-       WHERE user_id = $1
-         AND is_revoked = FALSE`,
-      [user_id]
-    );
-
-    await client.query('DELETE FROM password_resets WHERE user_id = $1', [user_id]);
+    await revokeCredentialRecords(client, user_id);
 
     await client.query('COMMIT');
 
-    await sessionStore.revokeAll(user_id);
-    await Promise.all(
-      sessionsResult.rows.map((row) =>
-        disconnectLiveSession(user_id, row.device_id, 4001, 'Password reset')
-      )
-    );
+    client.release();
+    client = undefined;
 
     await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGED', user_id);
 

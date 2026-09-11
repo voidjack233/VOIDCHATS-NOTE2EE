@@ -22,7 +22,7 @@ defmodule VoidGateway.ConnectionRegistryTest do
                }
              })
 
-    assert_receive {:disconnect, 4001, "revoked"}
+    assert_receive {:disconnect, 4001, "revoked", nil}
     ConnectionRegistry.unregister(user, "device", self())
   end
 

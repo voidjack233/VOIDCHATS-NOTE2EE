@@ -38,6 +38,7 @@ defmodule VoidGateway.GatewaySubscriber do
   @impl true
   def handle_info({:redix_pubsub, _pubsub, _ref, :subscribed, %{channel: ch}}, state) do
     Logger.info("[GatewaySubscriber] Subscribed to #{ch}")
+    Enum.each(VoidGateway.ConnectionRegistry.all_pids(), &send(&1, :revalidate_session))
     {:noreply, state}
   end
 
@@ -62,6 +63,12 @@ defmodule VoidGateway.GatewaySubscriber do
   @impl true
   def handle_info({:redix_pubsub, _pubsub, _ref, :disconnected, _info}, state) do
     Logger.warning("[GatewaySubscriber] Pub/sub disconnected — Redix will reconnect")
+    # Pub/sub has no replay. Fail closed rather than keep sockets that may have
+    # missed credential revocation; normal reconnect performs fresh validation.
+    Enum.each(VoidGateway.ConnectionRegistry.all_pids(), fn pid ->
+      send(pid, {:disconnect, 4001, "Session verification unavailable"})
+    end)
+
     {:noreply, state}
   end
 

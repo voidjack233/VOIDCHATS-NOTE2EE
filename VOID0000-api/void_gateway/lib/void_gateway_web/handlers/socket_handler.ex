@@ -140,14 +140,11 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   @impl WebSock
   def handle_in({data, [opcode: :text]}, state) do
     case Jason.decode(data) do
-      {:ok, %{"op" => op} = msg} when op in [@op_identify, @op_resume] ->
+      {:ok, msg} ->
         case SocketAuth.check_session_liveness(state) do
           :ok -> dispatch_opcode(msg, state)
           _ -> do_close(state, @close_unauthorized, "Session revoked")
         end
-
-      {:ok, msg} ->
-        dispatch_opcode(msg, state)
 
       {:error, _} ->
         do_close(state, @close_protocol_error, "Invalid JSON")
@@ -186,8 +183,14 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # Assigns the next sequence number, encodes the frame, buffers it in Valkey,
   # then pushes it to the client.
   def handle_info({:push_event, event, data}, %{status: :identified} = state) do
-    {payload, new_state} = push_event(event, data, state)
-    {:push, {:text, payload}, new_state}
+    case SocketAuth.check_session_liveness(state) do
+      :ok ->
+        {payload, new_state} = push_event(event, data, state)
+        {:push, {:text, payload}, new_state}
+
+      _ ->
+        do_close(state, @close_unauthorized, "Session revoked")
+    end
   end
 
   # Drop events for sockets that haven't completed IDENTIFY/RESUME yet
@@ -197,14 +200,11 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # Matches Node's setupTokenExpiryNotification() TOKEN_EXPIRING dispatch.
   # The client should use this to trigger a silent token refresh.
   def handle_info({:token_expiring_warning, expires_in}, %{status: :identified} = state) do
-    {payload, new_state} =
-      push_event(
-        "TOKEN_EXPIRING",
-        %{expires_in: expires_in, timestamp: System.system_time(:millisecond)},
-        state
-      )
-
-    {:push, {:text, payload}, new_state}
+    handle_info(
+      {:push_event, "TOKEN_EXPIRING",
+       %{expires_in: expires_in, timestamp: System.system_time(:millisecond)}},
+      state
+    )
   end
 
   # Token hard expiry — close the socket.
@@ -216,25 +216,41 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # Node issued a new token (refresh) and is syncing the expiry to live sockets.
   # Matches the updateTokenExpiry command dispatched by gateway/control.js syncLiveTokenExpiry().
   # Cancel old timers, update token_exp, reschedule.
-  def handle_info({:update_token_expiry, new_exp}, state) when is_integer(new_exp) do
-    new_state = %{state | token_exp: new_exp} |> setup_token_expiry()
-    {:ok, new_state}
+  def handle_info(
+        {:update_token_expiry, new_exp, generation},
+        %{session_generation: generation} = state
+      )
+      when is_integer(new_exp) do
+    candidate = %{state | token_exp: new_exp}
+
+    case SocketAuth.check_session_liveness(candidate) do
+      :ok -> {:ok, setup_token_expiry(candidate)}
+      _ -> do_close(state, @close_unauthorized, "Session revoked")
+    end
+  end
+
+  def handle_info({:update_token_expiry, _new_exp, _generation}, state), do: {:ok, state}
+
+  def handle_info(:revalidate_session, state) do
+    case SocketAuth.check_session_liveness(state) do
+      :ok -> {:ok, state}
+      _ -> do_close(state, @close_unauthorized, "Session revoked")
+    end
   end
 
   # The account service persists the mode first, then broadcasts this command
   # to every live socket. Recompute public presence and keep each client's UI in sync.
   def handle_info({:presence_mode_updated, mode}, %{status: :identified} = state)
       when mode in ["online", "idle", "dnd", "invisible"] do
-    sync_aggregate_presence(state.user_id, mode)
+    case SocketAuth.check_session_liveness(state) do
+      :ok ->
+        sync_aggregate_presence(state.user_id, mode)
+        {payload, new_state} = push_event("PRESENCE_MODE_UPDATE", %{mode: mode}, state)
+        {:push, {:text, payload}, new_state}
 
-    {payload, new_state} =
-      push_event(
-        "PRESENCE_MODE_UPDATE",
-        %{mode: mode},
-        state
-      )
-
-    {:push, {:text, payload}, new_state}
+      _ ->
+        do_close(state, @close_unauthorized, "Session revoked")
+    end
   end
 
   def handle_info({:presence_mode_updated, _mode}, state), do: {:ok, state}
@@ -246,8 +262,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # The frontend handler (gateway.ts) reads d.in as the reconnect delay,
   # marks the session resumable, and reconnects after the delay.
   def handle_info({:shutdown_event, delay_ms}, %{status: :identified} = state) do
-    {payload, new_state} = push_event("SHUTDOWN", %{in: delay_ms}, state)
-    {:push, {:text, payload}, new_state}
+    handle_info({:push_event, "SHUTDOWN", %{in: delay_ms}}, state)
   end
 
   def handle_info({:shutdown_event, _delay_ms}, state), do: {:ok, state}
@@ -255,6 +270,15 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   def handle_info({:disconnect, code, reason}, state) do
     do_close(state, code, reason)
   end
+
+  def handle_info(
+        {:disconnect, code, reason, generation},
+        %{session_generation: generation} = state
+      ) do
+    do_close(state, code, reason)
+  end
+
+  def handle_info({:disconnect, _code, _reason, _generation}, state), do: {:ok, state}
 
   def handle_info(msg, state) do
     Logger.debug("[SocketHandler] Unhandled info: #{inspect(msg)}")

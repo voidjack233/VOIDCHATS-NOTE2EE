@@ -88,7 +88,7 @@ interface VerifyLoginDependencies {
   releaseChallenge?: typeof releaseClaimedTwoFactorSession;
   createClaimOwnerId?: typeof createTwoFactorClaimOwnerId;
   createSessionRecord?: typeof createLoginSessionRecord;
-  activateSession?: (session: LoginSessionRecord) => Promise<unknown>;
+  activateSession?: (session: LoginSessionRecord, client?: PoolClient) => Promise<unknown>;
   setSessionCookies?: (
     req: Request,
     res: Response,
@@ -608,7 +608,9 @@ export function createVerifyLoginHandler({
       }
       claimOwned = false;
 
-      await activateSession(loginSession);
+      if (!await activateSession(loginSession, dbClient)) throw new Error('Session activation unavailable');
+      dbClient.release();
+      dbClient = null;
       await recordLoginSuccess(req, userId);
       await recordLoginTrust(req, res);
       setSessionCookies(req, res, loginSession);

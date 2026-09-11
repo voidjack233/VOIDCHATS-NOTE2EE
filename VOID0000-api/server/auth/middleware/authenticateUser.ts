@@ -6,6 +6,7 @@ import {
   verifyAccessToken,
 } from '../services/tokenService.js';
 import type { AuthenticatedRequestUser } from '../types.js';
+import { matchesRequestAccount, accountChangedResponse } from './requestAccount.js';
 
 const router = Router();
 
@@ -19,7 +20,7 @@ interface SessionRecoveryRow {
 interface VerificationFailure {
   ok: false;
   status: number;
-  body: { error: string };
+  body: { error: string; code?: string };
 }
 
 interface VerificationSuccess {
@@ -50,8 +51,11 @@ async function verifyRequestSession(req: Request): Promise<VerificationResult> {
     if (!isAuthenticatedRequestUser(decoded)) {
       return { ok: false, status: 401, body: { error: 'Token invalid or expired' } };
     }
+    if (!matchesRequestAccount(req, decoded.id)) {
+      return { ok: false, status: 409, body: accountChangedResponse };
+    }
 
-    let session = await sessionStore.validate(decoded.id, decoded.device_id);
+    let session = await sessionStore.validate(decoded.id, decoded.device_id, decoded.sid);
 
     if (!session) {
       const result = await pool.query<SessionRecoveryRow>(
@@ -61,9 +65,10 @@ async function verifyRequestSession(req: Request): Promise<VerificationResult> {
            AND device_id = $2
            AND is_revoked = FALSE
            AND expires_at > NOW()
+           AND session_id = $3
          ORDER BY last_used_at DESC NULLS LAST, created_at DESC
          LIMIT 1`,
-        [decoded.id, decoded.device_id]
+        [decoded.id, decoded.device_id, decoded.sid]
       );
 
       if (result.rows.length === 0) {
@@ -71,7 +76,7 @@ async function verifyRequestSession(req: Request): Promise<VerificationResult> {
       }
 
       const activeSession = result.rows[0];
-      session = await sessionStore.create(decoded.id, decoded.device_id, {
+      session = await sessionStore.create(decoded.id, decoded.device_id, decoded.sid, {
         ip: activeSession.ip_address || 'unknown',
         userAgent: activeSession.user_agent || 'unknown',
         deviceName: activeSession.device_name || 'Unknown',

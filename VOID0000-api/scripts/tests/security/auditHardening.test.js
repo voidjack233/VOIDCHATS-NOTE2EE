@@ -12,44 +12,39 @@ import { getClientIP } from '../../../server/utils/securityUtils.js';
 import { validatePushSubscription, withPushCapacity } from '../../../server/notifications/pushTransport.js';
 import changePassword from '../../../server/auth/routes/change-password.js';
 import { Client as MinioClient } from 'minio';
+import { setupLifecycleFixture, transaction, issue } from './sessionLifecycleFixture.js';
 
 // Requires an isolated test database/Valkey, never the configured application DB.
 if (process.env.PGPORT !== '15439' || process.env.VALKEY_PORT !== '16389') {
   throw new Error('Run with the isolated security-test PostgreSQL/Valkey ports (15439/16389)');
 }
-before(async () => {
-  await pool.query(`CREATE TABLE IF NOT EXISTS refresh_tokens (
-    user_id TEXT, device_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW(),
-    is_revoked BOOLEAN DEFAULT FALSE, expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '1 day',
-    revoked_at TIMESTAMPTZ, revoked_by TEXT, previous_token_hash TEXT, previous_jti TEXT,
-    previous_valid_until TIMESTAMPTZ, PRIMARY KEY(user_id, device_id));
-    CREATE TABLE IF NOT EXISTS password_resets(user_id TEXT)`);
-});
-after(async () => { await valkey.quit(); await pool.end(); });
+let fixture;
+before(async () => { fixture = await setupLifecycleFixture(); });
+after(async () => { await fixture?.close(); });
 
 test('atomic validate/touch do not recreate sessions after revoke or revoke-all', async () => {
-  const user = randomUUID(); const device = randomUUID();
-  await pool.query('INSERT INTO refresh_tokens(user_id,device_id) VALUES($1,$2)', [user, device]);
-  assert.ok(await sessionStore.create(user, device));
-  await Promise.all([sessionStore.validate(user, device), sessionStore.revoke(user, device)]);
-  assert.equal(await sessionStore.validate(user, device), null);
-  assert.equal(await sessionStore.touch(user, device), false);
+  const account = await fixture.user(); const user = account.id; const device = randomUUID();
+  const first = await issue(account, device);
+  await Promise.all([sessionStore.validate(user, device, first.sessionId), transaction(client=>sessionStore.revoke(user, device, client))]);
+  assert.equal(await sessionStore.validate(user, device, first.sessionId), null);
+  assert.equal(await sessionStore.touch(user, device, first.sessionId), false);
   assert.equal(await valkey.exists(`session:${user}:${device}`), 0);
-  assert.ok(await sessionStore.create(user, device));
-  await Promise.all([sessionStore.touch(user, device), sessionStore.revokeAll(user)]);
+  const second = await issue(account, device);
+  await Promise.all([sessionStore.touch(user, device, second.sessionId), transaction(client=>sessionStore.revokeAll(user, client))]);
   assert.equal(await valkey.exists(`session:${user}:${device}`), 0);
   assert.deepEqual(await valkey.smembers(`user_sessions:${user}`), []);
 });
 
 test('SQL-to-cache recovery waits for revocation and cannot resurrect its stale observation', async () => {
-  const user = randomUUID(); const device = randomUUID();
-  await pool.query('INSERT INTO refresh_tokens(user_id,device_id) VALUES($1,$2)', [user, device]);
+  const account = await fixture.user(); const user = account.id; const device = randomUUID();
+  const session = await issue(account, device);
   const revoke = await pool.connect();
   try {
     await revoke.query('BEGIN');
     await revoke.query('UPDATE refresh_tokens SET is_revoked=TRUE WHERE user_id=$1', [user]);
     let settled = false;
-    const recovery = sessionStore.create(user, device).then((result) => { settled = true; return result; });
+    await valkey.del(`session:${user}:${device}`);
+    const recovery = sessionStore.create(user, device, session.sessionId).then((result) => { settled = true; return result; });
     await delay(30);
     assert.equal(settled, false);
     await revoke.query('COMMIT');
@@ -59,10 +54,10 @@ test('SQL-to-cache recovery waits for revocation and cannot resurrect its stale 
 });
 
 test('credential replacement revokes every device and removes reset links atomically', async () => {
-  const user = randomUUID();
-  await pool.query('INSERT INTO refresh_tokens(user_id,device_id) VALUES($1,$2),($1,$3)', [user, 'a', 'b']);
+  const account = await fixture.user(); const user = account.id;
+  await issue(account, 'a'); await issue(account, 'b');
   await pool.query('INSERT INTO password_resets(user_id) VALUES($1)', [user]);
-  await revokeCredentialRecords(pool, user);
+  await transaction(client=>revokeCredentialRecords(client, user));
   const tokens = await pool.query('SELECT is_revoked FROM refresh_tokens WHERE user_id=$1', [user]);
   assert.ok(tokens.rows.every((row) => row.is_revoked));
   assert.equal((await pool.query('SELECT * FROM password_resets WHERE user_id=$1', [user])).rowCount, 0);

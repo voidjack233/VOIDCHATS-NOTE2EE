@@ -1,3 +1,5 @@
+import { setAuthOperationAccount } from '../Auth/client/authOperationScope';
+
 type AccountListener = (accountId: string | null) => void;
 let accountId: string | null = null;
 const listeners = new Set<AccountListener>();
@@ -13,6 +15,7 @@ export function onChatStorageAccountChange(listener: AccountListener): void {
 export function setChatStorageAccount(next: string | null): void {
   if (next === accountId) return;
   accountId = next;
+  setAuthOperationAccount(next);
   listeners.forEach((listener) => listener(next));
 }
 

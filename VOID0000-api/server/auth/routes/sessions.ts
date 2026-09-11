@@ -5,7 +5,6 @@ import {
   requireAuthenticatedUser,
 } from '../middleware/authenticateUser.js';
 import { sessionStore } from '../services/sessionService.js';
-import { disconnectLiveSession } from '../../gateway/control.js';
 
 const router = express.Router();
 const RECENT_DEVICE_ACTIVITY_MS = 5 * 60 * 1000;
@@ -102,7 +101,9 @@ router.delete('/:id', authenticateUser, async (req, res) => {
   const currentUser = requireAuthenticatedUser(req);
   const userId = currentUser.id;
   const deviceId = req.params.id;
+  if (typeof deviceId !== 'string') return res.status(400).json({ error: 'Invalid device' });
   const currentDeviceId = currentUser.device_id;
+  let client;
 
   try {
     const checkResult = await db.query(
@@ -124,28 +125,20 @@ router.delete('/:id', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Cannot revoke current session. Use logout instead.' });
     }
 
-    const revoked = await db.query(
-      `DELETE FROM refresh_tokens
-       WHERE user_id = $1
-         AND device_id = $2
-       RETURNING device_id`,
-      [userId, deviceId]
-    );
-
-    const revokedDeviceId = revoked.rows[0]?.device_id;
-    if (revokedDeviceId) {
-      await sessionStore.revoke(userId, revokedDeviceId);
-      await disconnectLiveSession(userId, revokedDeviceId);
-    }
+    client = await db.connect();
+    await client.query('BEGIN');
+    await sessionStore.revoke(userId, deviceId, client);
+    await client.query('COMMIT');
 
     res.json({
       success: true,
       message: 'Session revoked'
     });
   } catch (err) {
+    await client?.query('ROLLBACK').catch(() => {});
     console.error('Session DELETE error:', err);
     res.status(500).json({ error: 'Failed to revoke session' });
-  }
+  } finally { client?.release(); }
 });
 
 // DELETE /api/users/sessions - Revoke all sessions except current
@@ -153,30 +146,23 @@ router.delete('/', authenticateUser, async (req, res) => {
   const currentUser = requireAuthenticatedUser(req);
   const userId = currentUser.id;
   const currentDeviceId = currentUser.device_id;
+  let client;
 
   try {
-    const result = await db.query(
-      `DELETE FROM refresh_tokens
-       WHERE user_id = $1
-         AND device_id IS DISTINCT FROM $2
-       RETURNING id, device_id`,
-      [userId, currentDeviceId]
-    );
-
-    for (const row of result.rows) {
-      if (!row.device_id) continue;
-      await sessionStore.revoke(userId, row.device_id);
-      await disconnectLiveSession(userId, row.device_id);
-    }
+    client = await db.connect();
+    await client.query('BEGIN');
+    const revoked = await sessionStore.revokeAll(userId, client, currentDeviceId);
+    await client.query('COMMIT');
 
     res.json({
       success: true,
-      message: `${result.rowCount} session(s) revoked`
+      message: `${revoked.length} session(s) revoked`
     });
   } catch (err) {
+    await client?.query('ROLLBACK').catch(() => {});
     console.error('Sessions DELETE ALL error:', err);
     res.status(500).json({ error: 'Failed to revoke sessions' });
-  }
+  } finally { client?.release(); }
 });
 
 export default router;

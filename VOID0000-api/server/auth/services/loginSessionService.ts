@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
+import type { PoolClient } from 'pg';
+import { randomUUID } from 'node:crypto';
 
 import { DeviceManager, getClientIP } from '../../utils/securityUtils.js';
-import type { DatabaseQueryable } from '../../db/types.js';
 import {
   accessCookieOptions,
   refreshCookieOptions,
@@ -29,6 +30,7 @@ interface LoginUser {
 
 interface LoginSessionRecord extends TokenPair, LoginDeviceContext {
   userId: string;
+  sessionId: string;
 }
 
 interface LoginDeviceOptions {
@@ -37,7 +39,7 @@ interface LoginDeviceOptions {
 }
 
 interface CreateLoginSessionOptions extends LoginDeviceOptions {
-  queryable: DatabaseQueryable;
+  queryable: PoolClient;
   user: LoginUser;
   req: Request;
   res: Response;
@@ -94,20 +96,24 @@ export async function createLoginSessionRecord({
   deviceContext = createLoginDeviceContext(req, res, { userIp, userAgent }),
 }: CreateLoginSessionOptions): Promise<LoginSessionRecord> {
   const { deviceId, deviceInfo } = deviceContext;
+  const sessionId = randomUUID();
+  await sessionStore.revoke(user.id, deviceId, queryable);
   const tokens = createTokenPair({
     userId: user.id,
     profileId: user.profile_id,
     deviceId,
+    sessionId,
   });
 
   await queryable.query(
     `INSERT INTO refresh_tokens
-      (user_id, token_hash, jti, expires_at, ip_address, user_agent, device_id, device_name, device_type, last_used_at)
-     VALUES ($1, $2, $3, NOW() + INTERVAL '30 days', $4, $5, $6, $7, $8, NOW())
+      (user_id, token_hash, jti, expires_at, ip_address, user_agent, device_id, device_name, device_type, last_used_at, session_id)
+     VALUES ($1, $2, $3, NOW() + INTERVAL '30 days', $4, $5, $6, $7, $8, NOW(), $9)
      ON CONFLICT ON CONSTRAINT unique_user_device
      DO UPDATE SET
        token_hash = EXCLUDED.token_hash,
        jti = EXCLUDED.jti,
+       session_id = EXCLUDED.session_id,
        previous_token_hash = NULL,
        previous_jti = NULL,
        previous_valid_until = NULL,
@@ -130,11 +136,13 @@ export async function createLoginSessionRecord({
       deviceId,
       deviceInfo.deviceName,
       deviceInfo.deviceType,
+      sessionId,
     ],
   );
 
   return {
     userId: user.id,
+    sessionId,
     deviceId,
     deviceInfo,
     userIp: deviceContext.userIp,
@@ -145,13 +153,14 @@ export async function createLoginSessionRecord({
 
 export function activateLoginSession(
   session: LoginSessionRecord,
+  client?: PoolClient,
 ): Promise<SessionRecord | null> {
-  return sessionStore.create(session.userId, session.deviceId, {
+  return sessionStore.create(session.userId, session.deviceId, session.sessionId, {
     ip: session.userIp,
     userAgent: session.userAgent,
     deviceName: session.deviceInfo.deviceName,
     deviceType: session.deviceInfo.deviceType,
-  });
+  }, client);
 }
 
 export function setLoginSessionCookies(
