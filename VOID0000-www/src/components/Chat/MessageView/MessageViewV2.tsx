@@ -86,7 +86,7 @@ interface MessageViewProps {
   onEdit?: (message: Message) => void;
   messageEvents?: MessageStreamEvent[];
   userAvatar?: string;
-  gateway?: any;
+  gateway?: typeof import('../../../Services/Gateway/gateway').gateway;
   messageUpdate?: MessageUpdate | null;
   messageDelete?: MessageDelete | null;
   ownSendJumpRequest?: number;
@@ -104,7 +104,7 @@ const normalizeText = (value?: string | null) => {
 };
 
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
-const emptyReactions: Record<string, unknown> = Object.freeze({});
+const emptyReactions: NonNullable<Message['reactions']> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
 const JUMP_TO_PRESENT_REVEAL_DISTANCE = 180;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
@@ -229,8 +229,8 @@ const MessageViewV2 = memo(function MessageViewV2({
     setOlderRangeError(false);
     setNewerRangeError(false);
   }, []);
-  const initReactionsFromMessagesRef = useRef<(messages: Array<{ message_id: string; reactions?: any }>) => void>(() => {});
-  const handleInitReactionsFromMessages = useCallback((loadedMessages: Array<{ message_id: string; reactions?: any }>) => {
+  const initReactionsFromMessagesRef = useRef<(messages: Array<Pick<Message, 'message_id' | 'reactions'>>) => void>(() => {});
+  const handleInitReactionsFromMessages = useCallback((loadedMessages: Array<Pick<Message, 'message_id' | 'reactions'>>) => {
     initReactionsFromMessagesRef.current(loadedMessages);
   }, []);
 

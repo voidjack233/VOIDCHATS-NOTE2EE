@@ -1,13 +1,14 @@
 export const CHAT_API_PREFIX = '/api/conversations';
 export const CHAT_FORWARDED_MESSAGE_TYPE = 'forwarded';
 
-export function createApiError(data: any, meta?: Record<string, unknown>): Error & Record<string, any> {
+export function createApiError(data: unknown, meta?: Record<string, unknown>): Error & Record<string, unknown> {
+  const payload = data && typeof data === 'object' ? data as Record<string, unknown> : null;
   const message =
-    (typeof data?.error === 'string' && data.error.trim()) ||
-    (typeof data?.message === 'string' && data.message.trim()) ||
-    (typeof data?.code === 'string' && data.code.trim()) ||
+    (typeof payload?.error === 'string' && payload.error.trim()) ||
+    (typeof payload?.message === 'string' && payload.message.trim()) ||
+    (typeof payload?.code === 'string' && payload.code.trim()) ||
     'Request failed';
-  const error = new Error(message) as Error & Record<string, any>;
+  const error = new Error(message) as Error & Record<string, unknown>;
   if (data && typeof data === 'object') {
     Object.assign(error, data);
   }

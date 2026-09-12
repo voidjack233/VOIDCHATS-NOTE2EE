@@ -4,8 +4,8 @@ import { UserProfileHeaderProps } from './types';
 import UserAvatar from '../../common/UserAvatar';
 
 const UserProfileHeader: React.FC<UserProfileHeaderProps & { 
-  draftProfile?: any,
-  setDraftProfile?: (p: any) => void
+  draftProfile?: Partial<UserProfileHeaderProps['displayProfile']>,
+  setDraftProfile?: (p: Partial<UserProfileHeaderProps['displayProfile']>) => void
 }> = ({
   displayProfile,
   draftProfile,

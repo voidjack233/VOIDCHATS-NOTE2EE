@@ -76,7 +76,7 @@ const QUICK_REACTIONS = [
 function messageHasUserReaction(message: Message, emoji: string, currentUserId?: string) {
   if (!currentUserId) return false;
 
-  const reactionData = (message.reactions as Record<string, any> | undefined)?.[emoji];
+  const reactionData = message.reactions?.[emoji];
   if (!reactionData) return false;
 
   if (Array.isArray(reactionData)) {

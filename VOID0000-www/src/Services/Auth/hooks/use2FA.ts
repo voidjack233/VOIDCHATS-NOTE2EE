@@ -1,16 +1,18 @@
 import { useState, useRef, useCallback } from 'react';
 import { authService } from '../services/authService';
+import type { TwoFactorStatus } from '../types';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 type ModalView = 'status' | 'password-prompt' | 'setup-totp' | 'setup-email' | 'disable' | 'backup-codes';
 
 // Cache 2FA status to avoid redundant API calls on rapid open/close
-let statusCache: { data: any; timestamp: number } | null = null;
+let statusCache: { data: TwoFactorStatus; timestamp: number } | null = null;
 const CACHE_TTL = 30_000; // 30 seconds
 
 export function use2FA() {
   const [view, setView] = useState<ModalView>('status');
   const [isLoading, setIsLoading] = useState(true);
-  const [status, setStatus] = useState<any>(null);
+  const [status, setStatus] = useState<TwoFactorStatus | null>(null);
 
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -46,8 +48,8 @@ export function use2FA() {
         setStatus(res.twoFactor);
         statusCache = { data: res.twoFactor, timestamp: Date.now() };
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to fetch 2FA status.');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to fetch 2FA status.'));
     } finally {
       setIsLoading(false);
     }
@@ -124,8 +126,8 @@ export function use2FA() {
         setView('setup-email');
       }
       setPassword('');
-    } catch (err: any) {
-      setError(err.message || 'Setup failed.');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Setup failed.'));
     } finally {
       setIsLoading(false);
     }
@@ -152,8 +154,8 @@ export function use2FA() {
         setView('status');
       }
       setCode(['', '', '', '', '', '']);
-    } catch (err: any) {
-      setError(err.message || 'Invalid verification code.');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Invalid verification code.'));
     } finally {
       setIsLoading(false);
     }
@@ -181,8 +183,8 @@ export function use2FA() {
       invalidateCache();
       await fetchStatus(true);
       setView('status');
-    } catch (err: any) {
-      setError(err.message || 'Failed to disable 2FA.');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to disable 2FA.'));
     } finally {
       setIsLoading(false);
     }

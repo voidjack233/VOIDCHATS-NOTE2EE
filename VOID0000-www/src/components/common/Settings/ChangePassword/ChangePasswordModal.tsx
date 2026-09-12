@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { X, Eye, EyeOff } from 'lucide-react';
 import { useChangePassword } from '../../../../Services/hooks/Auth/useChangePassword';
 import { authService } from '../../../../Services/Auth/authServiceApi';
+import { getErrorMessage } from '../../../../Services/utils/errorMessage';
 
 interface ChangePasswordModalProps {
   onClose: () => void;
@@ -44,7 +45,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
         const enabledMethods: Array<'totp' | 'email' | 'backup'> = [];
         if (res?.twoFactor?.totp?.enabled) enabledMethods.push('totp');
         if (res?.twoFactor?.email?.enabled) enabledMethods.push('email');
-        if (res?.twoFactor?.backupCodesRemaining > 0) enabledMethods.push('backup');
+        if ((res?.twoFactor?.backupCodesRemaining ?? 0) > 0) enabledMethods.push('backup');
 
         setRequires2FA(enabledMethods.length > 0);
         setTwoFactorMethods(enabledMethods);
@@ -84,8 +85,8 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
           setEmailCooldown(result.retryAfterSeconds);
         }
       }
-    } catch (err: any) {
-      setValidationError(err?.message || 'Failed to send email code');
+    } catch (err) {
+      setValidationError(getErrorMessage(err, 'Failed to send email code'));
     } finally {
       setEmailSending(false);
     }

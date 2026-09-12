@@ -5,6 +5,7 @@ import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
 import { fetchAppBootstrap } from '../../bootstrap';
 import type { PresenceStatus } from '../../Presence/presenceStatus';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 const FRIENDS_RESYNC_MIN_GAP_MS = 60_000;
 
@@ -79,8 +80,8 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         setFriends(data.friends || []);
         hasFetched.current = true;
         lastFetchAtRef.current = Date.now();
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err) {
+        setError(getErrorMessage(err, ''));
       } finally {
         setLoading(false);
         fetchInFlightRef.current = null;
@@ -107,8 +108,8 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
 
       setFriends(prev => prev.filter(f => f.friendship_id !== friendshipId));
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err) {
+      return { success: false, error: getErrorMessage(err, '') };
     }
   };
 

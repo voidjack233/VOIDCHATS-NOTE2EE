@@ -29,7 +29,7 @@ export default function CaptchaModal({ isOpen, onVerified, onClose }: CaptchaMod
       } else {
         setError('Failed to load captcha');
       }
-    } catch (err) {
+    } catch {
       setError('Failed to load captcha');
     } finally {
       setLoading(false);

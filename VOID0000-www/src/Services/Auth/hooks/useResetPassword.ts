@@ -36,7 +36,7 @@ export const useResetPassword = () => {
         if (!data.success) {
           navigate('/auth?view=login');
         }
-      } catch (err) {
+      } catch {
         navigate('/auth?view=login');
       }
     };

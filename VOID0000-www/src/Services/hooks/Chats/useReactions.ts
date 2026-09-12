@@ -1,6 +1,8 @@
 // src/Services/hooks/Chats/useReactions.ts
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toggleReaction } from '../../Chat/chatService';
+import type { Message } from '../../Chat/chatTypes';
+import type { gateway as gatewayClient } from '../../Gateway/gateway';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../Chat/reactionLimits';
 
 export interface ReactionData {
@@ -79,7 +81,7 @@ const areReactionMapsEqual = (a?: ReactionMap, b?: ReactionMap): boolean => {
   });
 };
 
-const normalizeReactionMap = (rawReactions: any, currentUserId?: string): ReactionMap => {
+const normalizeReactionMap = (rawReactions: unknown, currentUserId?: string): ReactionMap => {
   if (!rawReactions || typeof rawReactions !== 'object') {
     return {};
   }
@@ -154,7 +156,7 @@ const setCurrentUserReactionState = (
 
 export const useReactions = (
   conversationId: string,
-  gateway: any,
+  gateway: typeof gatewayClient | undefined,
   currentUserId?: string,
   isAtPresent = true,
 ) => {
@@ -294,7 +296,7 @@ export const useReactions = (
    * after messages are fetched. Handles both old array format and new {count, me} format.
    */
   const initReactionsFromMessages = useCallback(
-    (messages: Array<{ message_id: string; reactions?: any }>) => {
+    (messages: Array<Pick<Message, 'message_id' | 'reactions'>>) => {
       const reactionsMap: Record<string, ReactionMap> = {};
       for (const msg of messages) {
         const normalized = normalizeReactionMap(msg.reactions, currentUserId);
@@ -433,7 +435,7 @@ export const useReactions = (
   );
 
   const getMessageReactions = useCallback(
-    (messageId: string, fallbackReactions?: any): ReactionMap => {
+    (messageId: string, fallbackReactions?: Message['reactions']): ReactionMap => {
       const hydrated = reactions[messageId];
       if (hydrated) {
         return hydrated;

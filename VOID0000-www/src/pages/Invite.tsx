@@ -8,6 +8,7 @@ import {
   requestJoinByInviteCode,
 } from '../Services/Chat/chatService';
 import { useUser } from '../Services/Auth/UserContext';
+import { getErrorMessage } from '../Services/utils/errorMessage';
 
 const PENDING_INVITE_PATH_KEY = 'void_pending_invite_path';
 
@@ -58,9 +59,9 @@ export default function InvitePage() {
           setStatus('none');
           setStatusConversationPublicId(null);
         }
-      } catch (err: any) {
+      } catch (err) {
         if (ignore) return;
-        setError(err.message || 'This invite is unavailable.');
+        setError(getErrorMessage(err, 'This invite is unavailable.'));
       } finally {
         if (!ignore) {
           setPageLoading(false);

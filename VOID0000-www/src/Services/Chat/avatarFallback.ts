@@ -9,11 +9,6 @@ export function isGeneratedFallbackAvatarUrl(avatarUrl?: string | null) {
 
 export function resolveAvatarUrl(
   avatarUrl?: string | null,
-  _options: {
-    displayName?: string | null;
-    username?: string | null;
-    seed?: string | null;
-  } = {}
 ) {
   if (!avatarUrl || isGeneratedFallbackAvatarUrl(avatarUrl)) {
     return null;

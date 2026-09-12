@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { isGeneratedFallbackAvatarUrl } from '../../Chat/avatarFallback';
 import { API_URL } from '../../config';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 export interface ProfileRecord {
   id: string;
@@ -125,12 +126,11 @@ export const useProfileRecord = (profileId: string) => {
         writeProfileCache(profileId, data);
         setProfile(data);
         setDraftProfile(data);
-      } catch (err: any) {
+      } catch (err) {
         if (cancelled) return;
-        setError(err.message || 'Failed to load profile');
+        setError(getErrorMessage(err, 'Failed to load profile'));
       } finally {
-        if (cancelled) return;
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -193,8 +193,8 @@ export const useProfileRecord = (profileId: string) => {
       setDraftProfile(newProfileData);
       setIsEditing(false);
       return newProfileData;
-    } catch (err: any) {
-      setError(err.message || 'Failed to save profile changes');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to save profile changes'));
       throw err;
     } finally {
       setSaving(false);

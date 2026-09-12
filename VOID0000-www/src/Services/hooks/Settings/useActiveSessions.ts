@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ensureCSRFToken } from '../../Auth/authServiceApi';
 
 import { API_URL } from '../../config';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface Session {
   id: string;
@@ -39,8 +40,8 @@ export const useActiveSessions = () => {
 
       const data = await res.json();
       setSessions(data.sessions);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load sessions');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to load sessions'));
     } finally {
       setLoading(false);
     }
@@ -68,8 +69,8 @@ export const useActiveSessions = () => {
 
       // Remove from local state
       setSessions(prev => prev.filter(s => s.id !== sessionId));
-    } catch (err: any) {
-      setError(err.message || 'Failed to revoke session');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to revoke session'));
     } finally {
       setRevoking(null);
     }
@@ -94,8 +95,8 @@ export const useActiveSessions = () => {
 
       // Keep only current session
       setSessions(prev => prev.filter(s => s.is_current));
-    } catch (err: any) {
-      setError(err.message || 'Failed to revoke sessions');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to revoke sessions'));
     } finally {
       setRevoking(null);
     }

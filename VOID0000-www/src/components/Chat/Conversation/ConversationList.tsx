@@ -35,7 +35,7 @@ interface ConversationListProps {
   onSelect: (conversation: Conversation) => void;
   onCreateGroup: () => void;
   filter: 'dm' | 'group';
-  friends: any[];
+  friends: Array<import('../../../Services/hooks/Friends/useFriends').Friend & { user_id?: string }>;
   refreshTrigger?: number;
   bumpConversationId?: string | null;
   currentUserId?: string | null;
@@ -291,7 +291,7 @@ const ConversationList = ({
   }, [activeId, conversations]);
 
   useEffect(() => {
-    const handleMessageCreate = (data: any) => {
+    const handleMessageCreate = (data: import('../../../Services/Chat/chatTypes').Message) => {
       const conversationId = data?.conversation_id;
       if (!conversationId) return;
 
@@ -340,7 +340,7 @@ const ConversationList = ({
 
     };
 
-    const handleConversationUpdate = (data: any) => {
+    const handleConversationUpdate = (data: { conversation?: Conversation }) => {
       const updated = data?.conversation as Conversation | undefined;
       if (!updated?.id) return;
 
@@ -355,7 +355,7 @@ const ConversationList = ({
       );
     };
 
-    const handleMessageUpdate = (data: any) => {
+    const handleMessageUpdate = (data: Parameters<typeof applyLiveMessageEditPreview>[0]) => {
       const conversationId = data?.conversation_id;
       if (!conversationId || !knownIdsRef.current.has(conversationId)) return;
 
@@ -364,7 +364,7 @@ const ConversationList = ({
       });
     };
 
-    const handleMessageDelete = (data: any) => {
+    const handleMessageDelete = (data: Parameters<typeof applyLiveMessageDeletePreview>[0]) => {
       const conversationId = data?.conversation_id;
       if (!conversationId || !knownIdsRef.current.has(conversationId)) return;
 
@@ -373,7 +373,7 @@ const ConversationList = ({
       });
     };
 
-    const handleMemberLeave = (data: any) => {
+    const handleMemberLeave = (data: { conversation_id?: string; user_id?: string; member_user_id?: string; target_user_id?: string }) => {
       const conversationId = data?.conversation_id;
       const userId = data?.user_id || data?.member_user_id || data?.target_user_id || null;
       if (!conversationId) return;
@@ -399,13 +399,13 @@ const ConversationList = ({
       void loadConversations();
     };
 
-    const handleDmHidden = (data: any) => {
+    const handleDmHidden = (data: { conversation_id?: string }) => {
       const conversationId = data?.conversation_id;
       if (!conversationId) return;
       commitConversations((prev) => prev.filter((c) => c.id !== conversationId));
     };
 
-    const handleMemberNicknameUpdate = (data: any) => {
+    const handleMemberNicknameUpdate = (data: { conversation_id?: string; conversation_public_id?: string | null; user_id?: string; nickname?: string | null }) => {
       const targetUserId = data?.user_id;
       const eventConversationId = data?.conversation_id;
       const eventConversationPublicId = data?.conversation_public_id || null;

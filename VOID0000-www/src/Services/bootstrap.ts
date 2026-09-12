@@ -1,17 +1,22 @@
 import { fetchWithAuth } from './Auth/authServiceApi';
 import { markStartupPerformance } from './Performance/startupPerformance';
+import type { User } from './Auth/types';
+import type { Friend } from './hooks/Friends/useFriends';
+import type { FriendRequest, OutgoingRequest } from './hooks/Friends/useFriendRequests';
+import type { Conversation } from './Chat/chatTypes';
+import type { ThemePreferences } from './hooks/Settings/useTheme';
 
 export interface AppBootstrap {
   success: true;
-  user: any;
-  account: any;
-  preferences: any | null;
-  friends: any[];
+  user: User;
+  account: Partial<User> | null;
+  preferences: (Partial<ThemePreferences> & Record<string, unknown>) | null;
+  friends: Friend[];
   friend_requests: {
-    incoming: any[];
-    outgoing: any[];
+    incoming: FriendRequest[];
+    outgoing: OutgoingRequest[];
   };
-  conversations: any[];
+  conversations: Conversation[];
 }
 
 export type AppBootstrapFetchResult =

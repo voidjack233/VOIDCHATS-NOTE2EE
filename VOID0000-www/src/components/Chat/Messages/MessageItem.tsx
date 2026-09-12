@@ -80,7 +80,7 @@ interface MessageItemProps {
   currentUserId?: string;
   replyParent: Message | null;
   replyParentLoading?: boolean;
-  messageReactions: Record<string, any>;
+  messageReactions: NonNullable<Message['reactions']>;
   formatTime: (dateStr: string) => string;
   getSenderName: (senderId: string) => string;
   getSenderUsername: (senderId: string) => string | null;
@@ -1462,7 +1462,7 @@ const MessageItem = memo(function MessageItem({
           {!message.is_deleted && Object.keys(messageReactions || {}).length > 0 && (
             <div className="pt-1">
               <ReactionBar
-                reactions={messageReactions as any}
+                reactions={messageReactions}
                 currentUserId={currentUserId || ''}
                 onToggle={handleToggleReactionWithBlur}
                 onAddReaction={handleOpenEmojiPickerFromReactionBar}

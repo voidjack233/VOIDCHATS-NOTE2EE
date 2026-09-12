@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { ensureCSRFToken } from '../../Auth/authServiceApi'; // CRITICAL FOR FIXING 403
 import { API_URL } from '../../config';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface UseProfileAvatarUploadReturn {
   uploadError: string | null;
@@ -33,7 +34,7 @@ export const useProfileAvatarUpload = (): UseProfileAvatarUploadReturn => {
 
   // 1. Validation Logic
   const validateFile = useCallback((file: File): string | null => {
-    if (!VALID_IMAGE_TYPES.includes(file.type as any)) {
+    if (!VALID_IMAGE_TYPES.some(type => type === file.type)) {
       return ERROR_MESSAGES.INVALID_FILE_TYPE;
     }
     if (file.size > MAX_FILE_SIZE) {
@@ -97,11 +98,11 @@ export const useProfileAvatarUpload = (): UseProfileAvatarUploadReturn => {
       const data = await response.json();
       return data.avatar_url;
 
-    } catch (error: any) {
+    } catch (error) {
       console.error("Avatar upload error:", error);
-      const msg = error.message || ERROR_MESSAGES.UPLOAD_FAILED;
+      const msg = getErrorMessage(error, ERROR_MESSAGES.UPLOAD_FAILED);
       setUploadError(msg);
-      throw new Error(msg);
+      throw new Error(msg, { cause: error });
     } finally {
       setIsUploading(false);
     }

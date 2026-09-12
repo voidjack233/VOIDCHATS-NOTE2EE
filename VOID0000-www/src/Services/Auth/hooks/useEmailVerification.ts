@@ -39,7 +39,7 @@ export function useEmailVerification() {
           setTokenValid(false);
           setError(response.message || 'Invalid or expired token');
         }
-      } catch (err) {
+      } catch {
         setTokenValid(false);
         setError('Failed to validate access');
       }

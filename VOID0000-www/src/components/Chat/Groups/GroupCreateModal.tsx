@@ -2,6 +2,7 @@
 import { useState, useRef } from 'react';
 import { X, Camera } from 'lucide-react';
 import { createGroup, uploadConversationIcon } from '../../../Services/Chat/chatService';
+import { getErrorMessage } from '../../../Services/utils/errorMessage';
 
 interface GroupCreateModalProps {
   onClose: () => void;
@@ -50,8 +51,8 @@ const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
 
       onCreated(conversation.id);
       onClose();
-    } catch (err: any) {
-      setError(err.message || 'Failed to create secure group');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to create secure group'));
     } finally {
       setCreating(false);
     }

@@ -39,7 +39,7 @@ export const useTypingIndicator = ({
   useEffect(() => {
     if (!user?.id) return;
 
-    const handleTypingStart = (data: any) => {
+    const handleTypingStart = (data: { conversation_id?: string; user_id?: string }) => {
       const conversationId = data?.conversation_id;
       const typingUserId = data?.user_id;
       if (!conversationId || !typingUserId || !activeConversation?.id) return;

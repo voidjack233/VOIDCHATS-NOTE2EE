@@ -406,7 +406,7 @@ class Gateway {
     });
   }
 
-  private send(data: any) {
+  private send(data: unknown) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
     }

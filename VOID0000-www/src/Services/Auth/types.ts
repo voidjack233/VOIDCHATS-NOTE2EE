@@ -4,13 +4,24 @@ export interface User {
   username: string;
   profile_id?: string;
   is_verified?: boolean;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface CaptchaData {
   captchaId: string;
   captchaAnswer: string;
 }
+
+export interface TwoFactorStatus {
+  totp: { enabled: boolean; enabledAt?: string | null };
+  email: { enabled: boolean; enabledAt?: string | null };
+  backupCodesRemaining: number;
+}
+
+export type ApiResult<T> = ApiResponse & (
+  | ({ success: true } & T)
+  | ({ success: false } & Partial<T>)
+);
 
 export interface ApiResponse {
   success: boolean;

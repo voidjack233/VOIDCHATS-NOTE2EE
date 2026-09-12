@@ -22,7 +22,7 @@ import { useMessageStream } from './useMessageStream';
 import { useConversationSync } from './useConversationSync';
 
 export const useChatManager = (
-  user: any,
+  user: { id: string } | null,
   initialConversation: Conversation | null = null,
 ) => {
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(
@@ -94,7 +94,7 @@ export const useChatManager = (
     const hasPatchChanges = (target: Conversation | null | undefined) =>
       !!target &&
       Object.entries(updatedConversation).some(
-        ([key, value]) => (target as any)[key] !== value
+        ([key, value]) => target[key as keyof Conversation] !== value
       );
 
     const updatedDetails = updatedConversation as ConversationDetails;
@@ -175,7 +175,7 @@ export const useChatManager = (
   ) => {
     const hasConversationChanges = (target: Conversation | null | undefined, nextConversation: Conversation) =>
       !!target &&
-      Object.entries(nextConversation).some(([key, value]) => (target as any)[key] !== value);
+      Object.entries(nextConversation).some(([key, value]) => target[key as keyof Conversation] !== value);
     const shouldReuseLoadedGroup = (
       !options?.forceReload &&
       activeGroup &&
@@ -266,7 +266,7 @@ export const useChatManager = (
     return conversation;
   };
 
-  const refreshActiveGroup = async (_preferredChannelId?: string | null) => {
+  const refreshActiveGroup = async () => {
     if (!activeGroup) return;
     try {
       await openGroupByIdentifier(

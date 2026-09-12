@@ -12,9 +12,11 @@ import {
 } from '../client/authClient';
 import type {
   ApiResponse,
+  ApiResult,
   AuthVerificationResult,
   CaptchaData,
   User,
+  TwoFactorStatus,
 } from '../types';
 
 export const authService = {
@@ -263,12 +265,12 @@ export const authService = {
     return result;
   },
 
-  async get2FAStatus(): Promise<any> {
+  async get2FAStatus(): Promise<ApiResult<{ twoFactor: TwoFactorStatus }>> {
     const response = await fetchWithAuth('/api/auth/2fa/status');
     return response.json();
   },
 
-  async setupTOTP(password: string): Promise<any> {
+  async setupTOTP(password: string): Promise<ApiResult<{ qrCode: string; secret: string }>> {
     const response = await fetchWithAuth('/api/auth/2fa/setup-totp', {
       method: 'POST',
       body: JSON.stringify({ password }),
@@ -276,7 +278,7 @@ export const authService = {
     return response.json();
   },
 
-  async setupEmail2FA(password: string): Promise<any> {
+  async setupEmail2FA(password: string): Promise<ApiResponse> {
     const response = await fetchWithAuth('/api/auth/2fa/setup-email', {
       method: 'POST',
       body: JSON.stringify({ password }),
@@ -284,7 +286,7 @@ export const authService = {
     return response.json();
   },
 
-  async verifySetup2FA(method: string, code: string): Promise<any> {
+  async verifySetup2FA(method: string, code: string): Promise<ApiResult<{ backupCodes: string[] | null }>> {
     const response = await fetchWithAuth('/api/auth/2fa/verify-setup', {
       method: 'POST',
       body: JSON.stringify({ method, code }),
@@ -310,7 +312,7 @@ export const authService = {
     return data;
   },
 
-  async send2FAEmailCode(twoFactorToken: string): Promise<any> {
+  async send2FAEmailCode(twoFactorToken: string): Promise<ApiResponse> {
     const response = await fetch(`${API_URL}/api/auth/2fa/verify-login/send-email`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -320,7 +322,7 @@ export const authService = {
     return response.json();
   },
 
-  async sendAuthenticated2FAEmailCode(action: 'change_password'): Promise<any> {
+  async sendAuthenticated2FAEmailCode(action: 'change_password'): Promise<ApiResponse> {
     const response = await fetchWithAuth('/api/auth/2fa/send-action-email', {
       method: 'POST',
       body: JSON.stringify({ action }),
@@ -328,7 +330,7 @@ export const authService = {
     return response.json();
   },
 
-  async disable2FA(method: string, password: string): Promise<any> {
+  async disable2FA(method: string, password: string): Promise<ApiResponse> {
     const response = await fetchWithAuth('/api/auth/2fa/disable', {
       method: 'POST',
       body: JSON.stringify({ method, password }),
@@ -336,7 +338,7 @@ export const authService = {
     return response.json();
   },
 
-  async regenerateBackupCodes(password: string): Promise<any> {
+  async regenerateBackupCodes(password: string): Promise<ApiResult<{ backupCodes: string[] }>> {
     const response = await fetchWithAuth('/api/auth/2fa/backup-codes/regenerate', {
       method: 'POST',
       body: JSON.stringify({ password }),

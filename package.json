@@ -1,0 +1,9 @@
+{
+  "name": "voidchats-note2ee",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "build": "npm run build:api",
+    "build:api": "npm --prefix VOID0000-api run build"
+  }
+}

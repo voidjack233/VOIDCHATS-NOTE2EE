@@ -28,7 +28,7 @@ export const useConversationSync = ({
 
   useEffect(() => {
     if (!user?.id) return;
-    const handleConversationUpdate = (data: any) => {
+    const handleConversationUpdate = (data: { conversation?: Conversation }) => {
       if (data?.conversation) onPatchConversationRef.current(data.conversation as Conversation);
     };
     gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
@@ -37,7 +37,14 @@ export const useConversationSync = ({
 
   useEffect(() => {
     if (!user?.id) return;
-    const handleMemberLeave = (data: any) => {
+    const handleMemberLeave = (data: {
+      conversation_id?: string;
+      conversation_public_id?: string | null;
+      user_id?: string;
+      member_user_id?: string;
+      target_user_id?: string;
+      removed_user_id?: string;
+    }) => {
       const conversationId = data?.conversation_id;
       if (!conversationId) return;
       const affectedUserId = data?.user_id || data?.member_user_id || data?.target_user_id || data?.removed_user_id;

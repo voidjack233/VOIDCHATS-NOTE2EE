@@ -1,5 +1,5 @@
 // src/components/Chat/Messages/ReactionBar.tsx
-import type { ReactionMap } from '../../../Services/hooks/Chats/useReactions';
+import type { ReactionMap } from '../../../Services/Chat/chatTypes';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../../Services/Chat/reactionLimits';
 import EmojiGlyph from './EmojiGlyph';
 

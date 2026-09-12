@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 
 import { API_URL } from '../../config';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface AccountData {
   id: string;
@@ -46,8 +47,8 @@ export const useAccountSettings = () => {
           setAccount(data.account);
           localStorage.setItem('void_user', JSON.stringify(data.account));
         }
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err) {
+        setError(getErrorMessage(err, ''));
       } finally {
         setLoading(false);
       }

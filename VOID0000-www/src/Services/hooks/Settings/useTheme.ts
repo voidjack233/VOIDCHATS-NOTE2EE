@@ -120,7 +120,7 @@ const applyColorsToDOM = (accent: string, bg: string, text: string, hover: strin
   root.style.setProperty('--scrollbar-thumb-hover', adjustColor(bg, 60));
 
   const matchingTheme = Object.entries(THEME_PRESETS).find(
-    ([_, colors]) => colors.accent === accent && colors.bg === bg && colors.text === text && colors.hover === hover
+    ([, colors]) => colors.accent === accent && colors.bg === bg && colors.text === text && colors.hover === hover
   );
 
   if (matchingTheme) {
@@ -344,7 +344,7 @@ export function useThemeProvider(remotePreferencesEnabled = false): ThemeContext
     applyColorsToDOM(accent, bg, text, hover);
 
     const match = Object.entries(THEME_PRESETS).find(
-      ([_, colors]) => colors.accent === accent && colors.bg === bg && colors.text === text && colors.hover === hover
+      ([, colors]) => colors.accent === accent && colors.bg === bg && colors.text === text && colors.hover === hover
     );
     if (match) {
       setCurrentTheme(match[0] as Theme);

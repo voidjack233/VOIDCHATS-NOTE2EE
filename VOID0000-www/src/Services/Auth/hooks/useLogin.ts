@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUser } from '../context/UserContext';
 import { authService } from '../services/authService';
+import { getErrorMessage } from '../../utils/errorMessage';
 
 interface LoginForm {
   identifier: string;
@@ -129,7 +130,7 @@ export function useLogin() {
     setTwoFactorData(null); // Reset 2FA state on new attempt
 
     try {
-      const payload: any = { ...formData };
+      const payload: Parameters<typeof authService.login>[0] = { ...formData };
       if (captchaId && captchaAnswer) {
         payload.captchaId = captchaId;
         payload.captchaAnswer = captchaAnswer;
@@ -221,9 +222,9 @@ export function useLogin() {
       setFormData(prev => ({ ...prev, password: '' }));
       navigate(getPostLoginDestination());
 
-    } catch (err: any) {
+    } catch (err) {
       console.error('2FA verification error:', err);
-      setErrorMessage(err.message || 'Invalid 2FA code. Please try again.');
+      setErrorMessage(getErrorMessage(err, 'Invalid 2FA code. Please try again.'));
     } finally {
       setIsLoading(false);
     }

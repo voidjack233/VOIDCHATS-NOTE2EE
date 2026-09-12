@@ -61,7 +61,7 @@ export default function Register() {
     setLoading(true);
 
     try {
-      const payload: any = {
+      const payload: Parameters<typeof authService.register>[0] = {
         username: formData.username,
         email: formData.email,
         password: formData.password,

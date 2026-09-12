@@ -10,7 +10,7 @@ interface UseMessageStreamParams {
   clearUserTyping: (userId: string) => void;
 }
 
-function normalizeLiveMessage(data: any): Message {
+function normalizeLiveMessage(data: Message): Message {
   return {
     ...data,
     content: data?.is_deleted ? '[deleted]' : String(data?.content || ''),
@@ -38,12 +38,12 @@ export const useMessageStream = ({
   useEffect(() => {
     if (!user?.id || !activeConversation?.id) return;
 
-    const handleCreate = (data: any) => {
+    const handleCreate = (data: Message) => {
       if (String(data?.conversation_id) !== String(activeConversation.id)) return;
       if (data?.sender_id) clearUserTyping(String(data.sender_id));
       pushMessageEvent(normalizeLiveMessage(data));
     };
-    const handleUpdate = (data: any) => {
+    const handleUpdate = (data: Partial<Message>) => {
       if (String(data?.conversation_id) !== String(activeConversation.id)) return;
       setMessageUpdate({
         message_id: String(data.message_id),
@@ -56,7 +56,7 @@ export const useMessageStream = ({
         link_preview: data.link_preview ?? undefined,
       });
     };
-    const handleDelete = (data: any) => {
+    const handleDelete = (data: Pick<Message, 'conversation_id' | 'message_id'>) => {
       if (String(data?.conversation_id) === String(activeConversation.id)) {
         setMessageDelete({ message_id: String(data.message_id) });
       }
