@@ -36,6 +36,7 @@ export interface Conversation {
   dm_user_id?: string;
   dm_username: string | null;
   dm_display_name: string | null;
+  dm_nickname?: string | null;
   dm_avatar_url: string | null;
   member_count: number;
   muted_until?: string | null;

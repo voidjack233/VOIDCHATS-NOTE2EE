@@ -98,7 +98,7 @@ export default function UserAvatar({
         {getAvatarInitial(displayName, username)}
       </span>
 
-      {normalizedSrc ? (
+      {normalizedSrc && !imageFailed ? (
         <img
           ref={imageRef}
           src={normalizedSrc}

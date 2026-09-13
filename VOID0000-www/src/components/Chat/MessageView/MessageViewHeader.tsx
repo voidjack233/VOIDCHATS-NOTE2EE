@@ -1,44 +1,8 @@
 import { memo } from 'react';
 import type { Conversation, ConversationMember } from '../../../Services/Chat/chatService';
 import type { Friend } from '../../../Services/hooks/Friends/useFriends';
+import { resolveDmIdentity } from '../../../Services/Chat/profileIdentity';
 import UserAvatar from '../../common/UserAvatar';
-
-const normalizeText = (value?: string | null) => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  return trimmed.length > 0 ? trimmed : null;
-};
-
-const findDmIntroMember = ({
-  conversation,
-  members,
-  currentUserId,
-}: {
-  conversation: Conversation;
-  members: Record<string, ConversationMember>;
-  currentUserId?: string;
-}) => {
-  if (conversation.type !== 'dm' || !currentUserId) {
-    return null;
-  }
-
-  const peerMembers = Object.values(members).filter((member) => member.user_id !== currentUserId);
-  if (peerMembers.length === 0) {
-    return null;
-  }
-
-  const peerUserId = normalizeText(conversation.dm_user_id);
-  const peerUsername = normalizeText(conversation.dm_username);
-
-  return (
-    (peerUserId
-      ? peerMembers.find((member) => member.user_id === peerUserId)
-      : null) ||
-    (peerUsername
-      ? peerMembers.find((member) => normalizeText(member.username) === peerUsername)
-      : null) ||
-    (!peerUserId && !peerUsername ? peerMembers[0] || null : null)
-  );
-};
 
 export interface MessageViewHeaderIdentity {
   label: string;
@@ -55,62 +19,17 @@ export function buildMessageViewHeaderIdentity(params: {
   currentUserId?: string;
 }): MessageViewHeaderIdentity {
   const { conversation, members, friends, currentUserId } = params;
-
-  const dmIntroFriend =
-    conversation.type === 'dm'
-      ? friends.find((friend) =>
-          friend.id === conversation.dm_user_id ||
-          normalizeText(friend.username) === normalizeText(conversation.dm_username),
-        ) || null
-      : null;
-
-  const dmIntroMember = findDmIntroMember({ conversation, members, currentUserId });
-
-  const label =
-    conversation.type === 'dm'
-      ? normalizeText(dmIntroMember?.nickname) ||
-        normalizeText(conversation.dm_display_name) ||
-        normalizeText(dmIntroMember?.display_name) ||
-        normalizeText(dmIntroFriend?.display_name) ||
-        normalizeText(dmIntroMember?.username) ||
-        normalizeText(dmIntroFriend?.username) ||
-        normalizeText(conversation.dm_username) ||
-        'Direct message'
-      : normalizeText(conversation.name) || 'this conversation';
-
-  const avatar =
-    dmIntroMember?.avatar_url ||
-    dmIntroFriend?.avatar_url ||
-    conversation.dm_avatar_url ||
-    null;
-
-  const username =
-    conversation.type === 'dm'
-      ? normalizeText(dmIntroMember?.username) ||
-        normalizeText(dmIntroFriend?.username) ||
-        normalizeText(conversation.dm_username) ||
-        null
-      : null;
-
-  const userId =
-    dmIntroMember?.user_id ||
-    dmIntroFriend?.id ||
-    conversation.dm_user_id ||
-    null;
-
-  const friendsSinceLabel = dmIntroFriend?.friends_since
-    ? new Date(dmIntroFriend.friends_since).toLocaleDateString([], {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      })
-    : null;
-
+  const identity = conversation.type === 'dm'
+    ? resolveDmIdentity(conversation, members, friends, currentUserId) : null;
+  const friendsSinceLabel = identity?.friend?.friends_since
+    ? new Date(identity.friend.friends_since).toLocaleDateString([], {
+        year: 'numeric', month: 'short', day: 'numeric',
+      }) : null;
   return {
-    label,
-    avatar,
-    username,
-    userId,
+    label: identity?.displayName || (conversation.type === 'dm' ? 'Direct message' : conversation.name || 'this conversation'),
+    avatar: identity?.avatarUrl || null,
+    username: identity?.username || null,
+    userId: identity?.userId || null,
     friendsSinceLabel,
   };
 }

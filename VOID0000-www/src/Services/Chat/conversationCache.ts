@@ -11,8 +11,30 @@
 // storeConversationDetails handles writing both keys.
 
 import type { Conversation, ConversationDetails } from './chatTypes';
+import { patchProfileFields, type ProfileUpdate } from './profileIdentity';
 
 const cache = new Map<string, ConversationDetails>();
+export function patchConversationProfiles(update: ProfileUpdate): void {
+  for (const entry of new Set(cache.values())) {
+    if (entry.dm_user_id !== update.user_id && !entry.members?.some((member) => member.user_id === update.user_id)) continue;
+    const members = entry.members?.map((member) => member.user_id === update.user_id
+      ? patchProfileFields(member, update) : member);
+    const peer = members?.find((member) => member.user_id === update.user_id);
+    const isPeer = entry.type === 'dm' && (entry.dm_user_id
+      ? entry.dm_user_id === update.user_id
+      : Boolean(peer && peer.username === entry.dm_username));
+    storeConversationDetails({
+      ...entry,
+      members,
+      ...(isPeer ? {
+        ...(update.display_name !== undefined ? {
+          dm_display_name: peer?.nickname || entry.dm_nickname || update.display_name,
+        } : {}),
+        ...(update.avatar_url !== undefined ? { dm_avatar_url: update.avatar_url } : {}),
+      } : {}),
+    });
+  }
+}
 const detailRequests = new Map<string, Promise<ConversationDetails>>();
 const detailRefreshedAt = new Map<string, number>();
 const DEFAULT_REQUEST_SCOPE = 'default';

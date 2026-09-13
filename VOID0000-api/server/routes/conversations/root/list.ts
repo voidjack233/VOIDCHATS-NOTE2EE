@@ -161,6 +161,10 @@ export async function getUserConversations(userId: string) {
            )
            ELSE NULL
          END AS dm_display_name,
+         CASE WHEN c.type = 'dm' THEN (
+           SELECT cm2.nickname FROM conversation_members cm2
+           WHERE cm2.conversation_id = c.id AND cm2.user_id != $1 LIMIT 1
+         ) ELSE NULL END AS dm_nickname,
          (SELECT COUNT(*) FROM conversation_members WHERE conversation_id = c.id) AS member_count
        FROM conversations c
        LEFT JOIN conversations parent ON parent.id = c.parent_conversation_id

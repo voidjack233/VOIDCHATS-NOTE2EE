@@ -98,11 +98,6 @@ type MessageListItem =
   | { kind: 'message'; message: Message }
   | { kind: 'typing'; id: 'typing-indicator' };
 
-const normalizeText = (value?: string | null) => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  return trimmed.length > 0 ? trimmed : null;
-};
-
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
 const emptyReactions: NonNullable<Message['reactions']> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
@@ -281,7 +276,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     useReactions(conversation.id, gateway, user?.id, isAtPresent);
   initReactionsFromMessagesRef.current = initReactionsFromMessages;
 
-  const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
+  const { formatTime, getSenderName: getSmartDisplayName, getSenderAvatarUrl, getSenderUsername: getSmartUsername } = useMessageDisplay(members, userAvatar, myProfile);
   const visualMessages = messages;
   if (isMessageGeometryDiagnosticsEnabled()) {
     messageGeometryTraitsRef.current = new Map(
@@ -651,53 +646,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [conversation.id, messageEvents, user?.id, visualMessages]);
 
   // ── Stable refs for callbacks ──
-  const friendsRef = useRef(friends);
-  friendsRef.current = friends;
-  const membersRef = useRef(members);
-  membersRef.current = members;
-  const myProfileRef = useRef(myProfile);
-  myProfileRef.current = myProfile;
-  const userRef = useRef(user);
-  userRef.current = user;
   const typingParticipantsRef = useRef(typingParticipants);
   typingParticipantsRef.current = typingParticipants;
-
-  const getSmartDisplayName = useCallback((senderId: string) => {
-    const member = membersRef.current[senderId];
-    const memberNickname = normalizeText(member?.nickname);
-    if (memberNickname) return memberNickname;
-
-    const memberDisplayName = normalizeText(member?.display_name);
-    if (memberDisplayName) return memberDisplayName;
-
-    const memberUsername = normalizeText(member?.username);
-    if (memberUsername) return memberUsername;
-
-    if (conversation.type !== 'dm') {
-      return getSenderName(senderId);
-    }
-
-    const currentUser = userRef.current;
-    if (senderId === currentUser?.id) {
-      return normalizeText(myProfileRef.current?.display_name) || normalizeText(currentUser?.username) || 'You';
-    }
-
-    const friend = friendsRef.current.find((entry) => entry.id === senderId);
-    const friendDisplayName = normalizeText(friend?.display_name);
-    if (friendDisplayName) return friendDisplayName;
-    const friendUsername = normalizeText(friend?.username);
-    if (friendUsername) return friendUsername;
-    return getSenderName(senderId);
-  }, [conversation.type, getSenderName]);
-
-  const getSmartUsername = useCallback((senderId: string) => {
-    const currentUser = userRef.current;
-    if (senderId === currentUser?.id) {
-      return normalizeText(currentUser?.username);
-    }
-    const friend = friendsRef.current.find((entry) => entry.id === senderId);
-    return normalizeText(friend?.username) || normalizeText(membersRef.current[senderId]?.username);
-  }, []);
 
   const headerIdentity = useMemo(
     () => buildMessageViewHeaderIdentity({ conversation, members, friends, currentUserId: user?.id }),

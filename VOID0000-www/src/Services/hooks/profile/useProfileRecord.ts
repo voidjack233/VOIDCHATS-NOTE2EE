@@ -3,6 +3,7 @@ import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { isGeneratedFallbackAvatarUrl } from '../../Chat/avatarFallback';
 import { API_URL } from '../../config';
 import { getErrorMessage } from '../../utils/errorMessage';
+import type { ProfileUpdate } from '../../Chat/profileIdentity';
 
 export interface ProfileRecord {
   id: string;
@@ -52,6 +53,17 @@ export const writeProfileCache = (profileId: string, data: ProfileRecord) => {
 export const clearProfileCache = (profileId: string) => {
   localStorage.removeItem(`${PROFILE_CACHE_KEY}_${profileId}`);
   notifyProfileCacheUpdate(profileId, null);
+};
+
+export const patchCachedProfile = (update: ProfileUpdate) => {
+  const cached = getCachedProfile(update.profile_id);
+  if (!cached) return;
+  writeProfileCache(update.profile_id, {
+    ...cached,
+    ...(update.display_name !== undefined ? { display_name: update.display_name || '' } : {}),
+    ...(update.avatar_url !== undefined ? { avatar_url: update.avatar_url || undefined } : {}),
+    ...(update.bio !== undefined ? { bio: update.bio || '' } : {}),
+  });
 };
 
 export const useProfileRecord = (profileId: string) => {

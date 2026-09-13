@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Conversation, ConversationMember } from '../../Chat/chatTypes';
 import { getConversationDetails } from '../../Chat/conversationCache';
 import { gateway } from '../../Gateway/gateway';
+import { useFriends } from '../Friends/useFriends';
+import { patchProfileFields, type ProfileUpdate } from '../../Chat/profileIdentity';
 
 interface UseConversationMembersProps {
   activeConversation: Conversation | null;
@@ -34,6 +36,7 @@ export function useConversationMembers({
   activeGroup,
   userId,
 }: UseConversationMembersProps) {
+  const { friends } = useFriends();
   const [refreshedMembers, setRefreshedMembers] = useState<ConversationMembersState>({
     identifier: null,
     members: {},
@@ -43,9 +46,13 @@ export function useConversationMembers({
   const cachedMembers = Object.fromEntries(
     (cachedDetails?.members || []).map((member) => [member.user_id, member]),
   );
-  const members = refreshedMembers.identifier === membershipIdentifier
+  const baseMembers = refreshedMembers.identifier === membershipIdentifier
     ? refreshedMembers.members
     : cachedMembers;
+  const members = Object.fromEntries(Object.entries(baseMembers).map(([id, member]) => {
+    const friend = friends.find((entry) => entry.id === id);
+    return [id, friend ? patchProfileFields(member, { ...friend, user_id: id }) : member];
+  }));
 
   useEffect(() => {
     if (!userId || !membershipIdentifier) return;
@@ -75,9 +82,21 @@ export function useConversationMembers({
       });
     };
 
+    const handleProfileUpdate = (data: ProfileUpdate) => {
+      setRefreshedMembers((current) => {
+        const member = current.members[data.user_id];
+        if (current.identifier !== membershipIdentifier || !member) return current;
+        return { ...current, members: {
+          ...current.members,
+          [data.user_id]: patchProfileFields(member, data),
+        } };
+      });
+    };
+    gateway.on('PROFILE_UPDATE', handleProfileUpdate);
     gateway.on('MEMBER_NICKNAME_UPDATE', handleNicknameUpdate);
     return () => {
       gateway.off('MEMBER_NICKNAME_UPDATE', handleNicknameUpdate);
+      gateway.off('PROFILE_UPDATE', handleProfileUpdate);
     };
   }, [membershipIdentifier, userId]);
 

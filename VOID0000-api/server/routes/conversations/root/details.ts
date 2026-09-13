@@ -73,6 +73,7 @@ router.get('/:conversationId', async (req, res) => {
       const peer = conversation.members.find((member) => member.user_id !== userId) || null;
       conversation.dm_user_id = peer?.user_id || null;
       conversation.dm_username = peer?.username || null;
+      conversation.dm_nickname = peer?.nickname || null;
       conversation.dm_display_name =
         peer?.nickname ||
         peer?.display_name ||

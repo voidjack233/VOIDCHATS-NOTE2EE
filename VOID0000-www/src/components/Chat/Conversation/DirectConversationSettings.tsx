@@ -6,6 +6,8 @@ import {
   X,
 } from 'lucide-react';
 import UserAvatar from '../../common/UserAvatar';
+import { useFriends } from '../../../Services/hooks/Friends/useFriends';
+import { patchProfileFields, resolveDmIdentity } from '../../../Services/Chat/profileIdentity';
 import {
   sendSystemEvent,
   updateConversationNickname,
@@ -36,6 +38,7 @@ export default function DirectConversationSettings({
   onConversationUpdated,
   onClose,
 }: DirectConversationSettingsProps) {
+  const { friends } = useFriends();
   const [nicknameEditorUserId, setNicknameEditorUserId] = useState<string | null>(null);
   const [nicknameInput, setNicknameInput] = useState('');
   const [nicknameBusyUserId, setNicknameBusyUserId] = useState<string | null>(null);
@@ -46,7 +49,8 @@ export default function DirectConversationSettings({
     const unique = new Map<string, ConversationMember>();
     members.forEach((member) => {
       if (!unique.has(member.user_id)) {
-        unique.set(member.user_id, member);
+        const friend = friends.find((entry) => entry.id === member.user_id);
+        unique.set(member.user_id, friend ? patchProfileFields(member, { ...friend, user_id: member.user_id }) : member);
       }
     });
 
@@ -55,7 +59,7 @@ export default function DirectConversationSettings({
       if (right.user_id === currentUserId) return 1;
       return getMemberDisplayName(left).localeCompare(getMemberDisplayName(right));
     });
-  }, [currentUserId, members]);
+  }, [currentUserId, friends, members]);
 
   const peerMember = useMemo(
     () => participantList.find((member) => member.user_id !== currentUserId) || null,
@@ -78,12 +82,10 @@ export default function DirectConversationSettings({
     [],
   );
 
-  const peerDisplayName =
-    (peerMember ? getEffectiveNickname(peerMember) : null) ||
-    conversation.dm_display_name ||
-    conversation.dm_username ||
-    getMemberDisplayName(peerMember) ||
-    'Direct Message';
+  const peerIdentity = resolveDmIdentity(conversation, Object.fromEntries(participantList.map((member) => [
+    member.user_id, { ...member, nickname: getEffectiveNickname(member) },
+  ])), friends, currentUserId);
+  const peerDisplayName = peerIdentity.displayName || 'Direct Message';
 
   const postNicknameSystemMessage = useCallback(
     async (text: string) => {
@@ -150,6 +152,7 @@ export default function DirectConversationSettings({
 
           await onConversationUpdated?.({
             ...conversation,
+            dm_nickname: result.nickname,
             dm_display_name: nextDmDisplayName,
           });
         }
@@ -220,7 +223,7 @@ export default function DirectConversationSettings({
               <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/50 p-4 md:p-5">
                 <div className="flex items-center gap-3">
                   <UserAvatar
-                    src={conversation.dm_avatar_url || peerMember?.avatar_url}
+                    src={peerIdentity.avatarUrl}
                     displayName={peerDisplayName}
                     username={conversation.dm_username || peerMember?.username}
                     className="h-12 w-12 rounded-full"

@@ -28,6 +28,7 @@ import PresenceDot from '../../common/PresenceDot';
 import { gateway } from '../../../Services/Gateway/gateway';
 import { ConversationItemSkeleton } from '../../common/Skeleton';
 import UserAvatar from '../../common/UserAvatar';
+import { resolveDmIdentity } from '../../../Services/Chat/profileIdentity';
 import MessagePreviewText from '../Messages/MessagePreviewText';
 
 interface ConversationListProps {
@@ -440,6 +441,7 @@ const ConversationList = ({
           const friend = friendsRef.current.find((entry) => entry.id === targetUserId) || null;
           return {
             ...conversation,
+            dm_nickname: nickname,
             dm_display_name:
               nickname ||
               friend?.display_name ||
@@ -479,7 +481,7 @@ const ConversationList = ({
   const searchFiltered = search.trim()
     ? tabFilteredConversations.filter((conversation) => {
         const name = conversation.type === 'dm'
-          ? (conversation.dm_display_name || conversation.dm_username || '')
+          ? (resolveDmIdentity(conversation, {}, friends).displayName || '')
           : (conversation.name || '');
         return name.toLowerCase().includes(search.toLowerCase());
       })
@@ -487,14 +489,14 @@ const ConversationList = ({
 
   const getDisplayName = (conversation: Conversation) => {
     if (conversation.type === 'dm') {
-      return conversation.dm_display_name || conversation.dm_username || 'Unknown';
+      return resolveDmIdentity(conversation, {}, friends).displayName || 'Unknown';
     }
     return conversation.name || 'Unnamed';
   };
 
   const getAvatar = (conversation: Conversation) => {
-    if (conversation.type === 'dm' && conversation.dm_avatar_url) {
-      return conversation.dm_avatar_url;
+    if (conversation.type === 'dm') {
+      return resolveDmIdentity(conversation, {}, friends).avatarUrl;
     }
     if (conversation.type === 'group' && conversation.icon_url) {
       return conversation.icon_url;
@@ -551,7 +553,8 @@ const ConversationList = ({
     }
   };
 
-  const ConvItem = ({ conv }: { conv: Conversation }) => {
+  // A render helper, not a new component type on each profile update: retain avatar state.
+  const renderConversationItem = (conv: Conversation) => {
     const isActive = activeId === conv.id;
     const avatar = getAvatar(conv);
     const preview = getPreview(conv);
@@ -588,7 +591,7 @@ const ConversationList = ({
           {conv.type === 'dm' ? (
             <UserAvatar
               src={avatar}
-              displayName={conv.dm_display_name}
+              displayName={getDisplayName(conv)}
               username={conv.dm_username}
               className="w-8 h-8 rounded-full shrink-0"
               fallbackClassName="text-xs"
@@ -700,7 +703,7 @@ const ConversationList = ({
             className="h-full"
             computeItemKey={(_index, conversation) => conversation.id}
             overscan={320}
-            itemContent={(_index, conv) => <ConvItem conv={conv} />}
+            itemContent={(_index, conv) => renderConversationItem(conv)}
           />
         )}
       </div>

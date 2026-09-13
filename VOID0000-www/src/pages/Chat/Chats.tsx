@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../Services/hooks/Auth/useAuth';
 import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
+import { resolveDmIdentity, resolveProfileIdentity } from '../../Services/Chat/profileIdentity';
 import { useChatManager } from '../../Services/hooks/Chats/useChatManager';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
 import ConversationList from '../../components/Chat/Conversation/ConversationList';
@@ -36,11 +37,6 @@ const ForwardMessageModal = lazy(() => import('../../components/Chat/Conversatio
 const GroupCreateModal = lazy(() => import('../../components/Chat/Groups/GroupCreateModal'));
 const SettingsModal = lazy(() => import('../../components/common/Settings/SettingsModal'));
 const UserProfileModal = lazy(() => import('../../components/common/Profile/UserProfileModal'));
-
-const normalizeText = (value?: string | null) => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  return trimmed.length > 0 ? trimmed : null;
-};
 
 const ChatDashboard = () => {
   const location = useLocation();
@@ -443,12 +439,8 @@ const ChatDashboard = () => {
     }
 
     const member = messageDisplayMembers[message.sender_id];
-    if (member) {
-      return member.nickname || member.display_name || member.username || 'Unknown';
-    }
-
     const friend = friends.find((entry) => entry.id === message.sender_id);
-    return friend?.display_name || friend?.username || 'Unknown';
+    return resolveProfileIdentity(friend, member).displayName || 'Unknown';
   }, [friends, messageDisplayMembers, myProfile?.display_name, user?.id, user?.username]);
 
   const handleForward = useCallback((message: Message) => {
@@ -498,46 +490,20 @@ const ChatDashboard = () => {
       .sort(([, a], [, b]) => b - a)
       .map(([typingUserId]) => {
         const member = messageDisplayMembers[typingUserId] || members[typingUserId];
+        const identity = resolveProfileIdentity(friends.find((entry) => entry.id === typingUserId), member);
         return {
           userId: typingUserId,
-          displayName: member?.nickname || member?.display_name || member?.username || 'Someone',
-          username: member?.username || null,
-          avatarUrl: member?.avatar_url || null,
+          displayName: identity.displayName || 'Someone',
+          username: identity.username,
+          avatarUrl: identity.avatarUrl,
         };
       });
-  }, [activeConversation?.id, members, messageDisplayMembers, typingUsers, user?.id]);
-  const dmPeerUserId = displayConversation?.type === 'dm' ? normalizeText(displayConversation.dm_user_id) : null;
-  const dmPeerUsername = displayConversation?.type === 'dm' ? normalizeText(displayConversation.dm_username) : null;
-  const dmPeer = displayConversation?.type === 'dm'
-    ? Object.values(members).find(
-        (member: { user_id: string; display_name?: string | null; username?: string; avatar_url?: string | null }) =>
-          member.user_id !== user?.id && (
-            (dmPeerUserId ? member.user_id === dmPeerUserId : false) ||
-            (dmPeerUsername ? normalizeText(member.username) === dmPeerUsername : false)
-          )
-      ) || (!dmPeerUserId && !dmPeerUsername
-        ? Object.values(members).find(
-            (member: { user_id: string; display_name?: string | null; username?: string; avatar_url?: string | null }) => member.user_id !== user?.id
-          ) || null
-        : null)
-    : null;
-  const dmFriend = displayConversation?.type === 'dm'
-    ? friends.find((friend) =>
-        (dmPeerUserId ? friend.id === dmPeerUserId : false) ||
-        (dmPeerUsername ? normalizeText(friend.username) === dmPeerUsername : false)
-      ) || null
-    : null;
-  const resolvedDmDisplayName =
-    dmPeer?.nickname ||
-    displayConversation?.dm_display_name ||
-    dmPeer?.display_name ||
-    dmFriend?.display_name ||
-    dmPeer?.username ||
-    dmFriend?.username ||
-    displayConversation?.dm_username ||
-    null;
-  const resolvedDmUsername = dmPeer?.username || dmFriend?.username || displayConversation?.dm_username || null;
-  const resolvedDmAvatarUrl = dmPeer?.avatar_url || dmFriend?.avatar_url || displayConversation?.dm_avatar_url || null;
+  }, [activeConversation?.id, friends, members, messageDisplayMembers, typingUsers, user?.id]);
+  const dmIdentity = displayConversation?.type === 'dm'
+    ? resolveDmIdentity(displayConversation, members, friends, user?.id) : null;
+  const resolvedDmDisplayName = dmIdentity?.displayName || null;
+  const resolvedDmUsername = dmIdentity?.username || null;
+  const resolvedDmAvatarUrl = dmIdentity?.avatarUrl || null;
   const resolvedGroupIconUrl = displayConversation?.type === 'group'
     ? displayConversation.icon_url || null
     : null;

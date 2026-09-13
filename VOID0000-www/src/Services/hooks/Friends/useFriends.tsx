@@ -6,6 +6,9 @@ import { gateway } from '../../Gateway/gateway';
 import { fetchAppBootstrap } from '../../bootstrap';
 import type { PresenceStatus } from '../../Presence/presenceStatus';
 import { getErrorMessage } from '../../utils/errorMessage';
+import { patchProfileFields, type ProfileUpdate } from '../../Chat/profileIdentity';
+import { patchConversationProfiles } from '../../Chat/conversationCache';
+import { patchCachedProfile } from '../profile/useProfileRecord';
 
 const FRIENDS_RESYNC_MIN_GAP_MS = 60_000;
 
@@ -41,6 +44,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const hasFetched = useRef(false);
   const lastFetchAtRef = useRef(0);
   const fetchInFlightRef = useRef<Promise<void> | null>(null);
+  const pendingProfilePatches = useRef(new Set<Map<string, ProfileUpdate>>());
 
   const fetchFriends = useCallback(async (force = false) => {
     const now = Date.now();
@@ -56,6 +60,13 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // An HTTP snapshot started before a profile event must not overwrite that event.
+    const patches = new Map<string, ProfileUpdate>();
+    pendingProfilePatches.current.add(patches);
+    const reconcileProfiles = (records: Friend[]) => records.map((friend) => {
+      const update = patches.get(friend.id);
+      return update ? patchProfileFields(friend, update) : friend;
+    });
     const task = (async () => {
       try {
         setLoading(true);
@@ -65,7 +76,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
           const bootstrap = await fetchAppBootstrap();
           const bootstrapFriends = bootstrap?.friends;
           if (bootstrap?.user?.id === user?.id && Array.isArray(bootstrapFriends)) {
-            setFriends(bootstrapFriends);
+            setFriends(reconcileProfiles(bootstrapFriends));
             hasFetched.current = true;
             lastFetchAtRef.current = Date.now();
             return;
@@ -77,12 +88,13 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         if (!res.ok) throw new Error('Failed to fetch friends');
 
         const data = await res.json();
-        setFriends(data.friends || []);
+        setFriends(reconcileProfiles(data.friends || []));
         hasFetched.current = true;
         lastFetchAtRef.current = Date.now();
       } catch (err) {
         setError(getErrorMessage(err, ''));
       } finally {
+        pendingProfilePatches.current.delete(patches);
         setLoading(false);
         fetchInFlightRef.current = null;
       }
@@ -127,22 +139,20 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     }
 
     // PROFILE_UPDATE: Update specific friend in cache
-    const handleProfileUpdate = (data: {
-      user_id: string;
-      profile_id: string;
-      display_name?: string;
-      avatar_url?: string;
-      bio?: string;
-    }) => {
+    const handleProfileUpdate = (data: ProfileUpdate) => {
+      pendingProfilePatches.current.forEach((patches) => {
+        patches.set(data.user_id, { ...patches.get(data.user_id), ...data });
+      });
+      patchConversationProfiles(data);
+      try {
+        patchCachedProfile(data);
+      } catch (error) {
+        console.warn('Could not persist profile cache update:', error);
+      }
       setFriends(prev =>
         prev.map(f =>
           f.id === data.user_id
-            ? {
-              ...f,
-              display_name: data.display_name ?? f.display_name,
-              avatar_url: data.avatar_url ?? f.avatar_url,
-              bio: data.bio ?? f.bio,
-            }
+            ? patchProfileFields(f, data)
             : f
         )
       );
