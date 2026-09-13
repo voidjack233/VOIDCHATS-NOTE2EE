@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { patchProfileFields, resolveDmIdentity, resolveProfileIdentity } from '../../../src/Services/Chat/profileIdentity';
+import { isResolvedProfileId, patchProfileFields, resolveDmIdentity, resolveProfileIdentity } from '../../../src/Services/Chat/profileIdentity';
 import { getConversationDetails, patchConversationProfiles, storeConversationDetails } from '../../../src/Services/Chat/conversationCache';
 import { buildMessageViewHeaderIdentity } from '../../../src/components/Chat/MessageView/MessageViewHeader';
 import { friend, conversation, update } from './profileFixtures';
+
+test('profile IDs retain exact BIGINT strings; missing, user UUID and numeric IDs are not resolvable', () => {
+  assert.equal(isResolvedProfileId('732434999193640961'), true);
+  for (const value of [null, undefined, '', '0', 'peer', '1d642512-adf1-4c2d-9aaa-66cbb0e374fe', Number('732434999193640961')]) {
+    assert.equal(isResolvedProfileId(value), false);
+  }
+});
 
 test('profile patch applies fields immediately; omitted fields survive and null clears', () => {
   assert.equal(patchProfileFields(friend, update).display_name, 'New Name');

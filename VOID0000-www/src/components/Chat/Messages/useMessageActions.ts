@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Attachment, Message, ConversationMember } from '../../../Services/Chat/chatService';
 import type { Friend } from '../../../Services/hooks/Friends/useFriends';
+import { isResolvedProfileId } from '../../../Services/Chat/profileIdentity';
 
 export interface ContextMenuState {
   msg: Message;
@@ -167,7 +168,7 @@ export function useMessageActions({
   }, []);
 
   const handleProfileClick = useCallback((senderId: string) => {
-    if (senderId === userIdRef.current && userProfileIdRef.current) {
+    if (senderId === userIdRef.current && isResolvedProfileId(userProfileIdRef.current)) {
       setSelectedProfileId(userProfileIdRef.current);
       return;
     }
@@ -179,12 +180,13 @@ export function useMessageActions({
     }
 
     const member = membersRef.current[senderId];
-    if (member?.profile_id) {
+    if (isResolvedProfileId(member?.profile_id)) {
       setSelectedProfileId(member.profile_id);
       return;
     }
 
-    setSelectedProfileId(senderId);
+    // A user UUID is not a profile ID. Missing/unhydrated identity must not issue a lookup.
+    setSelectedProfileId(null);
   }, []);
 
   const openEmojiPicker = useCallback((

@@ -20,6 +20,11 @@ import { useTypingIndicator } from './useTypingIndicator';
 import { useConversationMembers } from './useConversationMembers';
 import { useMessageStream } from './useMessageStream';
 import { useConversationSync } from './useConversationSync';
+import { isResolvedProfileId } from '../../Chat/profileIdentity';
+
+const hasHydratedMembers = (conversation: ConversationDetails | null): boolean =>
+  Boolean(conversation?.members?.length &&
+    conversation.members.every((member) => isResolvedProfileId(member.profile_id)));
 
 export const useChatManager = (
   user: { id: string } | null,
@@ -180,6 +185,7 @@ export const useChatManager = (
       !options?.forceReload &&
       activeGroup &&
       activeConversation?.type === 'group' &&
+      hasHydratedMembers(getCachedConversationDetails(groupIdentifier)) &&
       matchesConversationIdentifier(activeGroup, groupIdentifier) &&
       matchesConversationIdentifier(activeConversation, activeGroup.public_id || activeGroup.id)
     );
@@ -189,7 +195,9 @@ export const useChatManager = (
     }
 
     const cachedGroup = !options?.forceReload ? getCachedConversationDetails(groupIdentifier) : null;
-    const groupConversation = (cachedGroup || await fetchConversationByIdentifier(groupIdentifier)) as Conversation;
+    // List/bootstrap summaries are not member details; old numeric profile IDs also need rehydration.
+    const groupConversation = (hasHydratedMembers(cachedGroup)
+      ? cachedGroup : await fetchConversationByIdentifier(groupIdentifier)) as Conversation;
     if (groupConversation.type !== 'group') {
       throw new Error('Requested conversation is not a group');
     }

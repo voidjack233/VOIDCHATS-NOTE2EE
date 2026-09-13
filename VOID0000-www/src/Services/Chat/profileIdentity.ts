@@ -12,6 +12,11 @@ export interface ProfileUpdate extends ProfileFields {
   profile_id: string;
 }
 
+export function isResolvedProfileId(value: unknown): value is string {
+  // BIGINT IDs must arrive as strings: converting a JSON number cannot restore lost digits.
+  return typeof value === 'string' && /^[1-9]\d*$/.test(value);
+}
+
 export function patchProfileFields<T extends ProfileFields>(record: T, update: ProfileUpdate): T {
   const next = { ...record };
   for (const field of ['display_name', 'avatar_url', 'bio'] as const) {

@@ -2,8 +2,7 @@
 import express, { type RequestHandler } from 'express';
 import { pool as db } from '../../db.js';
 import sharp from 'sharp';
-import { EVENTS } from '../../gateway/protocol.js';
-import { broadcastLiveEventToFriends } from '../../gateway/client.js';
+import { broadcastProfileUpdate } from '../../gateway/client.js';
 import { profileCache } from '../../middleware/profileCache.js';
 import { avatarUploadLimiter } from '../../middleware/rate_limit.js';
 import { queueImageUpload, imageQueueEvents } from '../../queues/imageQueue.js';
@@ -138,8 +137,8 @@ router.put('/profile/avatar', avatarUploadLimiter, async (req, res) => {
     const updatedProfile = updatedResult.rows[0];
     updatedProfile.avatar_url = newAvatarUrl;
 
-    // 10. Broadcast to friends
-    broadcastLiveEventToFriends(userId, EVENTS.PROFILE_UPDATE, {
+    // 10. Notify accepted friends and current shared-conversation members.
+    void broadcastProfileUpdate(userId, {
       user_id: userId,
       profile_id: updatedProfile.profile_id,
       display_name: updatedProfile.display_name,
@@ -209,7 +208,7 @@ router.delete('/profile/avatar', async (req, res) => {
     await profileCache.invalidate(profile_id);
 
     // Broadcast
-    broadcastLiveEventToFriends(userId, EVENTS.PROFILE_UPDATE, {
+    void broadcastProfileUpdate(userId, {
       user_id: userId,
       profile_id: updatedProfile.profile_id,
       display_name: updatedProfile.display_name,

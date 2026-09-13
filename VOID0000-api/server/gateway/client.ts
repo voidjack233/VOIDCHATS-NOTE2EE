@@ -4,6 +4,7 @@ import {
   type PresenceSnapshot,
 } from './presenceMode.js';
 import type { QueryResultRow } from 'pg';
+import { EVENTS } from './protocol.js';
 
 const PRESENCE_KEY_PREFIX = 'presence:';
 const PRESENCE_COUNT_KEY_PREFIX = 'presence_count:';
@@ -164,6 +165,38 @@ export function broadcastLiveEventToFriends(
       console.error('Gateway friend broadcast error:', err);
     }
   })();
+}
+
+export async function broadcastProfileUpdate(
+  userId: string,
+  data: unknown,
+): Promise<void> {
+  try {
+    const { pool } = await import('../db.js');
+    const { publishToGateway } = await import('../valkey-pubsub.js');
+    // UNION deduplicates overlapping friendships, groups and DMs. Read current
+    // memberships for each update, never recipients retained by a profile cache.
+    const result = await pool.query<{ recipient_id: string }>(
+      `SELECT recipient_id FROM (
+         SELECT CASE WHEN requester_id = $1 THEN addressee_id
+                     ELSE requester_id END AS recipient_id
+         FROM friendships
+         WHERE (requester_id = $1 OR addressee_id = $1) AND status = 'accepted'
+         UNION
+         SELECT peer.user_id AS recipient_id
+         FROM conversation_members own
+         JOIN conversations c ON c.id = own.conversation_id AND c.type IN ('group', 'dm')
+         JOIN conversation_members peer ON peer.conversation_id = own.conversation_id
+         WHERE own.user_id = $1
+       ) recipients WHERE recipient_id <> $1`,
+      [userId],
+    );
+    for (const row of result.rows) {
+      publishToGateway(EVENTS.PROFILE_UPDATE, row.recipient_id, data);
+    }
+  } catch (err) {
+    console.error('Gateway profile broadcast error:', err);
+  }
 }
 
 export async function getLiveUserPresence(

@@ -46,7 +46,7 @@ router.get('/:conversationId', async (req, res) => {
                 'username', u.username,
                 'display_name', up.display_name,
                 'avatar_filename', up.avatar_filename,
-                'profile_id', u.profile_id
+                'profile_id', u.profile_id::text
               )) AS members
        FROM conversations c
        LEFT JOIN conversations parent ON parent.id = c.parent_conversation_id

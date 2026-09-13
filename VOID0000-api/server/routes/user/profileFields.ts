@@ -1,7 +1,6 @@
 import express, { type RequestHandler } from 'express';
 import { pool as db } from '../../db.js';
-import { EVENTS } from '../../gateway/protocol.js';
-import { broadcastLiveEventToFriends } from '../../gateway/client.js';
+import { broadcastProfileUpdate } from '../../gateway/client.js';
 import { profileUpdateLimiter } from '../../middleware/rate_limit.js';
 import { profileCache } from '../../middleware/profileCache.js';
 
@@ -50,8 +49,8 @@ router.put('/profile', profileUpdateLimiter, async (req, res) => {
 
     await profileCache.invalidate(profile_id);
 
-    // Broadcast profile update to all friends
-    broadcastLiveEventToFriends(userId, EVENTS.PROFILE_UPDATE, {
+    // Notify accepted friends and current shared-conversation members.
+    void broadcastProfileUpdate(userId, {
       user_id: userId,
       profile_id: result.rows[0].profile_id,
       display_name: result.rows[0].display_name,
