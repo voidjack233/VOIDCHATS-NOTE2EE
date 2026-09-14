@@ -23,8 +23,6 @@ Read the next few sections before trying to set it up. They explain the service 
   split Express services, PostgreSQL migrations, Scylla message storage, MinIO media routes, workers
 - `VOID0000-api/void_gateway`
   Phoenix realtime gateway for presence and chat fanout
-- `VOIDADMIN`
-  small internal admin panel for users and security logs
 - `docs`
   setup notes, flow map, backup notes, and deployment notes
 
@@ -50,7 +48,7 @@ You can use Docker. it work on my machine :)
 
 Commands:
 
-Run npm commands inside `VOID0000-api`, `VOID0000-www`, or `VOIDADMIN`. The
+Run npm commands inside `VOID0000-api` or `VOID0000-www`. The
 repository root intentionally has no Node package.
 
 ```bash
