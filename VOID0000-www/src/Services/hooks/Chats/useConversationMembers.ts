@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Conversation, ConversationMember } from '../../Chat/chatTypes';
-import { getConversationDetails } from '../../Chat/conversationCache';
+import { getConversationDetails, patchConversationProfiles } from '../../Chat/conversationCache';
 import { gateway } from '../../Gateway/gateway';
 import { useFriends } from '../Friends/useFriends';
 import { patchProfileFields, type ProfileUpdate } from '../../Chat/profileIdentity';
@@ -51,7 +51,10 @@ export function useConversationMembers({
     : cachedMembers;
   const members = Object.fromEntries(Object.entries(baseMembers).map(([id, member]) => {
     const friend = friends.find((entry) => entry.id === id);
-    return [id, friend ? patchProfileFields(member, { ...friend, user_id: id }) : member];
+    // Detail hydration may complete after an event initialized local member state.
+    const profileId = cachedMembers[id]?.profile_id ?? member.profile_id;
+    const identifiedMember = profileId === member.profile_id ? member : { ...member, profile_id: profileId };
+    return [id, friend ? patchProfileFields(identifiedMember, { ...friend, user_id: id }) : identifiedMember];
   }));
 
   useEffect(() => {
@@ -83,11 +86,20 @@ export function useConversationMembers({
     };
 
     const handleProfileUpdate = (data: ProfileUpdate) => {
+      patchConversationProfiles(data);
       setRefreshedMembers((current) => {
-        const member = current.members[data.user_id];
-        if (current.identifier !== membershipIdentifier || !member) return current;
-        return { ...current, members: {
-          ...current.members,
+        // Normal group members initially live only in the detail cache. An event
+        // must initialize React state too, without relying on a friends rerender.
+        const currentMembers = current.identifier === membershipIdentifier
+          ? current.members
+          : Object.fromEntries(
+              (getConversationDetails(membershipIdentifier)?.members || [])
+                .map((member) => [member.user_id, member]),
+            );
+        const member = currentMembers[data.user_id];
+        if (!member) return current;
+        return { identifier: membershipIdentifier, members: {
+          ...currentMembers,
           [data.user_id]: patchProfileFields(member, data),
         } };
       });

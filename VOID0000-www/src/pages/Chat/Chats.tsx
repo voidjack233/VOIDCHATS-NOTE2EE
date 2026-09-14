@@ -22,6 +22,7 @@ import {
   synchronizeDmRouteSelection,
 } from '../../Services/Chat/conversationSelectionPolicy';
 import { matchesConversationIdentifier } from '../../Services/Chat/utils/conversationUtils';
+import { getConversationDetails, hasHydratedConversationMembers } from '../../Services/Chat/conversationCache';
 import { useUser } from '../../Services/Auth/UserContext';
 import { ConversationPaneSkeleton } from '../../components/common/Skeleton';
 import { useConnectionStatus } from '../../Services/hooks/common/useConnectionStatus';
@@ -255,6 +256,8 @@ const ChatDashboard = () => {
     };
   }, []);
 
+  const groupMembersHydrated = hasHydratedConversationMembers(getConversationDetails(groupConversationId));
+
   useLayoutEffect(() => {
     let cancelled = false;
 
@@ -282,7 +285,8 @@ const ChatDashboard = () => {
 
         if (groupConversationId) {
           const groupMatchesRoute = matchesConversationIdentifier(activeGroup, groupConversationId);
-          if (groupMatchesRoute && activeConversation?.type === 'group') {
+          if (groupMatchesRoute && activeConversation?.type === 'group' &&
+              matchesConversationIdentifier(activeConversation, groupConversationId) && groupMembersHydrated) {
             return;
           }
 
@@ -322,6 +326,7 @@ const ChatDashboard = () => {
     user?.id,
     dmConversationId,
     groupConversationId,
+    groupMembersHydrated,
     location.pathname,
     navigate,
   ]);

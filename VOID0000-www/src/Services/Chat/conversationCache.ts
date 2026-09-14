@@ -11,7 +11,11 @@
 // storeConversationDetails handles writing both keys.
 
 import type { Conversation, ConversationDetails } from './chatTypes';
-import { patchProfileFields, type ProfileUpdate } from './profileIdentity';
+import { isResolvedProfileId, patchProfileFields, type ProfileUpdate } from './profileIdentity';
+
+export const hasHydratedConversationMembers = (conversation: ConversationDetails | null): boolean =>
+  Boolean(conversation?.members?.length &&
+    conversation.members.every((member) => isResolvedProfileId(member.profile_id)));
 
 const cache = new Map<string, ConversationDetails>();
 export function patchConversationProfiles(update: ProfileUpdate): void {
