@@ -220,6 +220,47 @@ services:
       <<: *node-healthcheck
       start_period: 30s
 
+  media-worker:
+    image: void-media:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+    build:
+      context: ./VOID0000-api
+      dockerfile: Dockerfile.media
+      args:
+        APP_VERSION: ${VOID_IMAGE_TAG}
+        VCS_REF: ${VOID_GIT_SHA}
+    env_file:
+      - ./deploy/.env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 64
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "/app/voidapp-media-worker", "healthcheck"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 12s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+
   account:
     <<: *api-common
     build:

@@ -4,6 +4,7 @@
 
 import { Router, type Response } from 'express';
 import type { BucketItemStat } from 'minio';
+import { parseByteRange } from '../../media/range.js';
 import {
   AttachmentLifecycleError,
   attachmentLifecycle,
@@ -35,6 +36,7 @@ import {
   createAttachmentBlobMetadata,
   createProtectedAttachmentResponseHeaders,
   createAttachmentStoragePolicy,
+  resolveStoredAttachmentPolicy,
 } from '../../utils/attachmentContentPolicy.js';
 
 const router = Router({ mergeParams: true });
@@ -139,12 +141,14 @@ async function resolveConversationForMember(
 async function findAttachmentObject(
   conversationId: string,
   attachmentId: string,
+  poster = false,
 ): Promise<AttachmentObjectRow | null> {
   const attachmentFlightKey = createSentinelKey(
     'postgres.attachment-objects.by-id',
     conversationId,
     attachmentId,
     ATTACH_BUCKET,
+    poster,
   );
   const result = await sentinel.guard(
     attachmentFlightKey,
@@ -152,7 +156,7 @@ async function findAttachmentObject(
       `SELECT blob.object_key, attachment.filename
        FROM attachment_objects AS attachment
        JOIN attachment_blobs AS blob
-         ON blob.id = attachment.blob_id
+         ON blob.id = ${poster ? 'attachment.poster_blob_id' : 'attachment.blob_id'}
        WHERE attachment.id = $1
          AND attachment.conversation_id = $2
          AND blob.bucket = $3
@@ -231,12 +235,36 @@ async function streamAttachmentObject(
   res: Response,
   objectKey: string,
   logicalFilename: string | null,
+  rangeHeader?: string,
 ) {
   let objectStat: BucketItemStat;
   try {
     objectStat = await statAttachmentObject(objectKey);
   } catch {
     return res.status(404).json({ error: 'Attachment not found' });
+  }
+
+  // Video/ranges bypass Sentinel's small-object buffering entirely.
+  if (rangeHeader !== undefined || resolveStoredAttachmentPolicy(objectStat, objectKey).contentType === 'video/mp4') {
+    let range;
+    res.setHeader('Accept-Ranges', 'bytes');
+    try { range = parseByteRange(rangeHeader, objectStat.size); } catch {
+      return res.status(416).setHeader('Content-Range', `bytes */${objectStat.size}`).end();
+    }
+    const stream = range
+      ? await minioClient.getPartialObject(ATTACH_BUCKET, objectKey, range.start, range.length)
+      : await minioClient.getObject(ATTACH_BUCKET, objectKey);
+    setAttachmentResponseHeaders(res, objectStat, objectKey, logicalFilename);
+    if (range) { res.status(206); res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${objectStat.size}`); res.setHeader('Content-Length', range.length); }
+    stream.on('error', () => {
+      if (res.headersSent) { res.destroy(); return; }
+      res.removeHeader('Content-Length');
+      res.removeHeader('Content-Range');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.status(503).end();
+    });
+    res.once('close', () => stream.destroy());
+    return stream.pipe(res);
   }
 
   if (
@@ -413,6 +441,18 @@ router.delete<{ conversationId: string; attachmentId: string }>('/:attachmentId'
   }
 });
 
+router.get<{ conversationId: string; attachmentId: string }>('/:attachmentId/poster', async (req, res) => {
+  if (!req.user?.id) return res.status(401).json({ error: 'Authentication required' });
+  if (!UUID_PATTERN.test(req.params.attachmentId)) return res.status(400).json({ error: 'Invalid attachment id' });
+  try {
+    const resolved = await resolveConversationForMember(req.params.conversationId, req.user.id);
+    if (!resolved.conversation) return res.status(resolved.status).json(resolved.body);
+    const object = await findAttachmentObject(resolved.conversation.id, req.params.attachmentId, true);
+    if (!object) return res.status(404).json({ error: 'Poster not found' });
+    return streamAttachmentObject(res, object.object_key, 'poster.webp', req.headers.range);
+  } catch { return res.status(503).json({ error: 'Poster unavailable' }); }
+});
+
 // GET /api/conversations/:conversationId/attachments/:attachmentId
 router.get<{ conversationId: string; attachmentId: string }>('/:attachmentId', async (req, res) => {
   const userId = req.user?.id;
@@ -441,6 +481,7 @@ router.get<{ conversationId: string; attachmentId: string }>('/:attachmentId', a
       res,
       attachmentObject.object_key,
       attachmentObject.filename,
+      req.headers.range,
     );
   } catch (err) {
     console.error('Attachment download error:', err);

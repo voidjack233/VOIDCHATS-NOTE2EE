@@ -16,6 +16,7 @@ import type { Density } from '../../../Services/hooks/Settings/useTheme';
 import ReactionBar from './ReactionBar';
 import AttachmentImage from '../Attachments/AttachmentImage';
 import AttachmentAudioPlayer, { isAudioAttachment } from '../Attachments/AttachmentAudioPlayer';
+import AttachmentVideoPlayer from '../Attachments/AttachmentVideoPlayer';
 import AttachmentFileCard from '../Attachments/AttachmentFileCard';
 import FormattedMessageText from './FormattedMessageText';
 import InviteEmbed from './InviteEmbed';
@@ -40,6 +41,7 @@ import {
 import {
   getSingleAttachmentReservedPresentation,
   looksLikeImageAttachment,
+  isVideoAttachmentLayout,
   MULTI_ATTACHMENT_MAX_WIDTH,
 } from '../Attachments/messageAttachmentLayout';
 
@@ -177,6 +179,7 @@ function isTextReplyAttachment(attachment: Attachment): boolean {
 }
 
 function getReplyAttachmentLabel(attachment: Attachment): string {
+  if (attachment.mime === 'video/mp4') return 'Video';
   if (looksLikeImageAttachment(attachment)) {
     return 'Photo';
   }
@@ -550,9 +553,10 @@ const MessageItem = memo(function MessageItem({
     [attachmentEntries],
   );
   const fileAttachmentEntries = useMemo(
-    () => attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment) && !isAudioAttachment(attachment)),
+    () => attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment) && !isAudioAttachment(attachment) && !isVideoAttachmentLayout(attachment)),
     [attachmentEntries],
   );
+  const videoAttachmentEntries = attachmentEntries.filter(({ attachment }) => isVideoAttachmentLayout(attachment));
   const singleImageEntry = imageAttachmentEntries.length === 1 ? imageAttachmentEntries[0] : null;
   const singleImagePresentation = singleImageEntry
     ? getSingleAttachmentReservedPresentation(singleImageEntry.attachment)
@@ -1375,7 +1379,14 @@ const MessageItem = memo(function MessageItem({
                 ))}
               </div>
             ) : null;
-            const hasRichAttachmentSection = Boolean(imageSection || audioSection);
+            const videoSection = videoAttachmentEntries.length > 0 ? (
+              <div className={`flex w-full flex-col gap-2 ${imageSection ? 'pt-2' : 'pt-1'}`}>
+                {videoAttachmentEntries.map(({ attachment, originalIndex }) => (
+                  <AttachmentVideoPlayer key={getAttachmentLayoutKey(attachment, originalIndex)} attachment={attachment} disabled={isPending} />
+                ))}
+              </div>
+            ) : null;
+            const hasRichAttachmentSection = Boolean(imageSection || audioSection || videoSection);
 
             const fileSection = fileEntries.length > 0 ? (
               <div className={`flex w-full flex-col gap-2 ${hasRichAttachmentSection ? 'pt-2' : 'pt-1'}`}>
@@ -1389,7 +1400,7 @@ const MessageItem = memo(function MessageItem({
               </div>
             ) : null;
 
-            if (!imageSection && !audioSection && !fileSection) {
+            if (!imageSection && !audioSection && !videoSection && !fileSection) {
               return null;
             }
 
@@ -1399,6 +1410,7 @@ const MessageItem = memo(function MessageItem({
                 className={`relative w-fit max-w-full ${isRightAligned ? 'self-end' : 'self-start'}`}
               >
                 {imageSection ? <div className="pt-1">{imageSection}</div> : null}
+                {videoSection}
                 {audioSection}
                 {fileSection}
               </div>

@@ -234,7 +234,7 @@ func (app App) up(ctx context.Context) error {
 
 	// Build one image at a time so TypeScript, Go, and Elixir compilers cannot
 	// contend for the host's memory during a production deployment.
-	for _, service := range []string{"account", "vmd", "gateway", "edge"} {
+	for _, service := range []string{"account", "vmd", "media-worker", "gateway", "edge"} {
 		fmt.Fprintf(app.Stdout, "building production image: %s\n", service)
 		if err := app.composeInteractive(ctx, runtime, "build", service); err != nil {
 			return fmt.Errorf("production image build failed for %s: %w", service, err)

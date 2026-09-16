@@ -193,16 +193,16 @@ func TestUpBuildsProductionImagesSequentiallyBeforeStarting(t *testing.T) {
 	if err := app.Run(context.Background(), []string{"up"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(executor.interactive) != 5 {
-		t.Fatalf("interactive commands = %d, want 5", len(executor.interactive))
+	if len(executor.interactive) != 6 {
+		t.Fatalf("interactive commands = %d, want 6", len(executor.interactive))
 	}
-	for index, service := range []string{"account", "vmd", "gateway", "edge"} {
+	for index, service := range []string{"account", "vmd", "media-worker", "gateway", "edge"} {
 		command := strings.Join(executor.interactive[index], " ")
 		if !strings.HasSuffix(command, " build "+service) {
 			t.Fatalf("build %d = %s, want only %s", index, command, service)
 		}
 	}
-	startCommand := strings.Join(executor.interactive[4], " ")
+	startCommand := strings.Join(executor.interactive[5], " ")
 	if !strings.HasSuffix(startCommand, " up --detach --remove-orphans") {
 		t.Fatalf("start command = %s", startCommand)
 	}
@@ -217,7 +217,7 @@ func healthyContainers() []voidctl.ContainerState {
 	}
 	for _, service := range []string{
 		"postgres", "scylla", "valkey", "minio", "worker", "account", "message",
-		"social", "conversation", "vmd", "gateway", "edge",
+		"social", "conversation", "vmd", "media-worker", "gateway", "edge",
 	} {
 		containers = append(containers, voidctl.ContainerState{
 			Service: service, State: "running", Health: "healthy",

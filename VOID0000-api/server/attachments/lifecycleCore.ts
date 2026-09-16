@@ -535,9 +535,12 @@ async function readStagedUsage(
   const result = await queryable.query(
     `SELECT COUNT(*)::int AS staged_count,
             COALESCE(SUM(size_bytes), 0)::bigint AS staged_bytes
-     FROM attachment_objects
-     WHERE uploader_id = $1
-       AND status = 'staged'`,
+     FROM (
+       SELECT size_bytes FROM attachment_objects WHERE uploader_id=$1 AND status='staged'
+       UNION ALL
+       SELECT reserved_bytes AS size_bytes FROM media_ingests WHERE uploader_id=$1
+         AND status IN ('uploading','queued','probing','processing','finalizing')
+     ) AS pending_uploads`,
     [userId],
   );
   return {
@@ -1188,7 +1191,7 @@ export function createAttachmentLifecycle({
             `SELECT EXISTS (
                SELECT 1
                FROM attachment_objects
-               WHERE blob_id = $1
+               WHERE blob_id = $1 OR poster_blob_id = $1
              ) AS has_references`,
             [candidate.id],
           );
@@ -1198,7 +1201,7 @@ export function createAttachmentLifecycle({
                SET ref_count = (
                      SELECT COUNT(*)::bigint
                      FROM attachment_objects
-                     WHERE blob_id = $1
+                     WHERE blob_id = $1 OR poster_blob_id = $1
                    ),
                    orphaned_at = NULL,
                    status = 'ready',
@@ -1217,7 +1220,7 @@ export function createAttachmentLifecycle({
                WHERE id = $1
                  AND status = 'ready'
                  AND NOT EXISTS (
-                   SELECT 1 FROM attachment_objects WHERE blob_id = $1
+                   SELECT 1 FROM attachment_objects WHERE blob_id = $1 OR poster_blob_id = $1
                  )
                RETURNING id`,
               [candidate.id],
@@ -1247,7 +1250,7 @@ export function createAttachmentLifecycle({
              WHERE id = $1
                AND status = 'deleting'
                AND NOT EXISTS (
-                 SELECT 1 FROM attachment_objects WHERE blob_id = $1
+                 SELECT 1 FROM attachment_objects WHERE blob_id = $1 OR poster_blob_id = $1
                )`,
             [activeBlob.id],
           )

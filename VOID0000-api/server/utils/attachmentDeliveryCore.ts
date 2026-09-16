@@ -10,6 +10,8 @@ const TRANSIENT_ATTACHMENT_FIELDS = new Set([
   'display_url_expires_at',
   'display_variants',
   'inline',
+  'video_trusted',
+  'poster',
 ]);
 const VMD_IMAGE_MIME_TYPES = new Set([
   'image/avif',
@@ -295,7 +297,7 @@ export function createAttachmentDeliveryMapper({
           if (
             imageAttachmentIds.has(attachmentId) &&
             createImageDelivery &&
-            originalDelivery.inline === true
+            originalDelivery.inline === true && originalDelivery.content_type !== 'video/mp4'
           ) {
             try {
               imageDelivery = await createImageDelivery(attachmentId);
@@ -326,6 +328,9 @@ export function createAttachmentDeliveryMapper({
 
           const deliveredDescriptor: AttachmentDescriptor = {
             ...entry.descriptor,
+            video_trusted: false,
+            poster: undefined,
+            ...(delivery.originalDelivery.video && typeof delivery.originalDelivery.video === 'object' ? delivery.originalDelivery.video : {}),
             id: entry.attachmentId,
             url: delivery.originalDelivery.url,
             fallback_url: entry.stableUrl,

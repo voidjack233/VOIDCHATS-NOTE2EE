@@ -41,6 +41,7 @@ export interface PendingAttachment {
   spoiler: boolean;
   blurhash?: string;
   uploading: boolean;
+  processingLabel?: string;
   error?: string;
   file?: File;
 }
@@ -75,7 +76,7 @@ interface AttachmentAlertState {
 }
 
 const MAX_ATTACHMENTS = 5;
-const IMAGE_ACCEPT_TYPES = 'image/jpeg,image/png,image/gif,image/webp';
+const MEDIA_ACCEPT_TYPES = 'image/jpeg,image/png,image/gif,image/webp,video/mp4,.mp4';
 const DEFAULT_ATTACHMENT_PERMISSION = 'everyone';
 
 function getSendErrorNotice(error: any): string {
@@ -141,6 +142,11 @@ export const useMessageInput = ({
   const lastTypingSentAtRef = useRef(0);
   const removedUploadingAttachmentIdsRef = useRef<Set<string>>(new Set());
   const attachmentsRef = useRef<PendingAttachment[]>([]);
+  useEffect(() => () => {
+    for (const attachment of attachmentsRef.current) {
+      if (attachment.uploading) removedUploadingAttachmentIdsRef.current.add(attachment.id);
+    }
+  }, []);
   const conversationIdRef = useRef(conversation.id);
   const editingMessageRef = useRef(editingMessage);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -274,7 +280,11 @@ export const useMessageInput = ({
     }
 
     try {
-      const [url] = await uploadAttachments(conversation.id, [file]);
+      const [url] = await uploadAttachments(conversation.id, [file], {
+        shouldCancel: () => Boolean(editingMessageRef.current) || removedUploadingAttachmentIdsRef.current.has(id),
+        onVideoStatus: processingLabel => setAttachments(previous => previous.map(attachment =>
+          attachment.id === id ? { ...attachment, processingLabel } : attachment)),
+      });
       const activeEdit = editingMessageRef.current as Message | null | undefined;
       const discarded = await discardCompletedComposerUpload({
         attachmentId: id,
@@ -398,7 +408,7 @@ export const useMessageInput = ({
       hasStoredEditAttachments ||
       attachments.some((attachment) => attachment.url)
     ) &&
-    !attachments.some((attachment) => attachment.uploading);
+    !attachments.some((attachment) => attachment.uploading || attachment.error || !attachment.url);
 
   useEffect(() => {
     if (slowmodeRemaining <= 0) return;
@@ -624,7 +634,7 @@ export const useMessageInput = ({
     inputRef,
     mediaInputRef,
     fileInputRef,
-    imageAccept: IMAGE_ACCEPT_TYPES,
+    mediaAccept: MEDIA_ACCEPT_TYPES,
     getPlaceholder,
     handleSend,
     handleKeyDown,

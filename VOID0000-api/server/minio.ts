@@ -129,4 +129,5 @@ export {
   GROUP_AVATAR_BUCKET,
   ATTACH_BUCKET,
   PUBLIC_IMAGE_CACHE_CONTROL,
+  ensurePrivateBucket,
 };

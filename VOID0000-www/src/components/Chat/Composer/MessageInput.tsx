@@ -108,7 +108,7 @@ const MessageInput = (props: MessageInputProps) => {
     inputRef,
     mediaInputRef,
     fileInputRef,
-    imageAccept,
+    mediaAccept,
     getPlaceholder,
     handleSend,
     handleKeyDown,
@@ -424,8 +424,9 @@ const MessageInput = (props: MessageInputProps) => {
                 </>
               )}
               {a.uploading && (
-                <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                <div className="absolute inset-0 bg-black/50 flex flex-col gap-1 items-center justify-center" role="status">
                   <Loader2 className="w-4 h-4 text-white animate-spin" />
+                  {a.processingLabel && <span className="text-[10px] text-white">{a.processingLabel}</span>}
                 </div>
               )}
               {a.error && (
@@ -483,7 +484,7 @@ const MessageInput = (props: MessageInputProps) => {
         <input
           ref={mediaInputRef}
           type="file"
-          accept={imageAccept}
+          accept={mediaAccept}
           multiple
           disabled={!attachmentsEnabled}
           className="hidden"

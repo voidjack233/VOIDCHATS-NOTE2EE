@@ -67,6 +67,9 @@ export interface Attachment {
   mime?: string;
   name?: string;
   size?: number;
+  duration_ms?: number;
+  video_trusted?: boolean;
+  poster?: { url: string; url_expires_at?: number; width?: number; height?: number };
 }
 
 export interface ReactionMap {

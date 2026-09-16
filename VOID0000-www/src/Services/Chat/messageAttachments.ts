@@ -25,6 +25,8 @@ export function serializeAttachment(attachment: Attachment): string {
     display_url_expires_at: _displayUrlExpiresAt,
     display_variants: _displayVariants,
     inline: _inline,
+    video_trusted: _videoTrusted,
+    poster: _poster,
     ...stableAttachment
   } = attachment;
   void _urlExpiresAt;
@@ -32,6 +34,8 @@ export function serializeAttachment(attachment: Attachment): string {
   void _displayUrlExpiresAt;
   void _displayVariants;
   void _inline;
+  void _videoTrusted;
+  void _poster;
   stableAttachment.url = fallbackUrl?.trim() || attachment.url;
 
   const normalizedEntries = Object.entries(stableAttachment)

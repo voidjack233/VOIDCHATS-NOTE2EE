@@ -21,7 +21,7 @@ const (
 
 var longLivedServices = []string{
 	"postgres", "scylla", "valkey", "minio", "worker", "account", "message",
-	"social", "conversation", "vmd", "gateway", "edge",
+	"social", "conversation", "vmd", "media-worker", "gateway", "edge",
 }
 
 var oneShotServices = []string{"volume-init", "minio-init", "migrate"}

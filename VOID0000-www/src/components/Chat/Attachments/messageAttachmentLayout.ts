@@ -52,6 +52,7 @@ const getAttachmentExtension = (attachment: Pick<Attachment, 'url' | 'name'>): s
 };
 
 export function looksLikeImageAttachment(attachment: Attachment): boolean {
+  if (attachment.mime?.startsWith('video/')) return false;
   if (attachment.mime?.startsWith('image/')) {
     return true;
   }
@@ -61,6 +62,12 @@ export function looksLikeImageAttachment(attachment: Attachment): boolean {
   }
 
   return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(getAttachmentPathname(attachment));
+}
+
+// Geometry is independent of delivery availability; this never grants playback trust.
+export function isVideoAttachmentLayout(attachment: Attachment): boolean {
+  return attachment.mime === 'video/mp4' && Number.isFinite(attachment.width) && Number.isFinite(attachment.height) &&
+    Number(attachment.width) > 0 && Number(attachment.height) > 0;
 }
 
 export function isAudioAttachmentLayout(attachment: Attachment): boolean {
@@ -128,11 +135,12 @@ export function estimateAttachmentLayoutHeight(attachments: Attachment[]): numbe
   }
 
   const imageAttachments = attachments.filter(looksLikeImageAttachment);
+  const videoAttachments = attachments.filter(isVideoAttachmentLayout);
   const audioAttachments = attachments.filter(
     (attachment) => !looksLikeImageAttachment(attachment) && isAudioAttachmentLayout(attachment),
   );
   const fileAttachments = attachments.filter(
-    (attachment) => !looksLikeImageAttachment(attachment) && !isAudioAttachmentLayout(attachment),
+    (attachment) => !looksLikeImageAttachment(attachment) && !isAudioAttachmentLayout(attachment) && !videoAttachments.includes(attachment),
   );
 
   let totalHeight = 0;
@@ -148,6 +156,13 @@ export function estimateAttachmentLayoutHeight(attachments: Attachment[]): numbe
     const heroHeight = MULTI_ATTACHMENT_MAX_WIDTH * (9 / 16);
     const tileHeight = (MULTI_ATTACHMENT_MAX_WIDTH - ATTACHMENT_GRID_GAP) / 2;
     totalHeight += heroHeight + ATTACHMENT_GRID_GAP + tileHeight;
+    hasSection = true;
+  }
+
+  if (videoAttachments.length > 0) {
+    totalHeight += (hasSection ? ATTACHMENT_STACK_GAP : ATTACHMENT_SECTION_PADDING) +
+      videoAttachments.reduce((height, attachment) => height + getSingleAttachmentReservedPresentation(attachment).height, 0) +
+      Math.max(0, videoAttachments.length - 1) * ATTACHMENT_STACK_GAP;
     hasSection = true;
   }
 

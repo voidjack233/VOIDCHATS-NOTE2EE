@@ -9,6 +9,8 @@ import type {
   MessageMentionMetadata,
 } from './chatTypes';
 import { CHAT_API_PREFIX, createApiError, getRetryAfterMsFromResponse } from './chatUtils';
+import { isMp4Candidate, uploadVideo, type VideoUploadOptions } from './videoUploadService';
+import { assertAuthOperation, captureAuthOperation } from '../Auth/client/authOperationScope';
 
 export { parseAttachment, parseAttachments } from './messageAttachments';
 
@@ -179,12 +181,18 @@ async function readAttachmentUploadResponse(response: Response): Promise<Record<
   }
 }
 
-export async function uploadAttachments(conversationId: string, files: File[]): Promise<string[]> {
-  const prepared = await Promise.all(files.map(prepareAttachmentFile));
+export async function uploadAttachments(conversationId: string, files: File[], options: VideoUploadOptions = {}): Promise<string[]> {
+  const scope = captureAuthOperation();
+  const prepared = await Promise.all(files.map(file => isMp4Candidate(file) ? { file, attachment: { name: file.name } } : prepareAttachmentFile(file)));
 
   const uploadedAttachments: string[] = [];
   for (const preparedAttachment of prepared) {
+    assertAuthOperation(scope);
     const { file, attachment } = preparedAttachment;
+    if (isMp4Candidate(file)) {
+      uploadedAttachments.push(serializeAttachment(await uploadVideo(conversationId, file, options)));
+      continue;
+    }
     const { response, data } = await withRequestTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS, 'Attachment upload', async (signal) => {
       const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
         method: 'POST',

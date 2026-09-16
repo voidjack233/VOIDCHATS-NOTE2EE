@@ -131,6 +131,9 @@ export function getAttachmentUploadErrorLabel(error: unknown): string {
   const code = typeof payload.code === 'string' ? payload.code : '';
   const status = Number(payload.status ?? payload.statusCode);
   const message = typeof payload.message === 'string' ? payload.message.toLowerCase() : '';
+  if (['MEDIA_SOURCE_SIZE_INVALID', 'MEDIA_SOURCE_TOO_LARGE', 'MEDIA_OUTPUT_SIZE_EXCEEDED'].includes(code)) return 'Video must fit within 10 MiB';
+  if (code === 'MEDIA_PROCESS_TIMEOUT') return 'Video processing timed out. Try a smaller file.';
+  if (code.startsWith('MEDIA_')) return 'Video could not be processed. Remove it or retry.';
 
   if (code === 'ATTACHMENT_HEIC_UNSUPPORTED') {
     return 'HEIC/HEIF images are not supported here. Choose the photo through Media or convert it to JPEG/PNG.';

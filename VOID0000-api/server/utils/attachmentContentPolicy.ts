@@ -146,8 +146,9 @@ export function resolveStoredAttachmentPolicy(
   ]);
   const fallbackFilename = String(objectKey || '').split('/').pop();
 
-  const inline = inlineMarker === '1' &&
-    isInlineAttachmentImageContentType(storedContentType);
+  const videoMarker = getMetadataValue(metadata, ['void-sanitized-video', 'x-amz-meta-void-sanitized-video']);
+  const inline = (inlineMarker === '1' && isInlineAttachmentImageContentType(storedContentType)) ||
+    (videoMarker === '1' && normalizeContentType(storedContentType) === 'video/mp4');
   const filename = sanitizeAttachmentFilename(
     logicalFilename || storedFilename || fallbackFilename,
   );

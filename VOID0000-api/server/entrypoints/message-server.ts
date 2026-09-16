@@ -22,6 +22,7 @@ const { default: valkey } = await import('../valkey.js');
 const { default: scyllaClient } = await import('../scylla.js');
 const { minioClient, ATTACH_BUCKET } = await import('../minio.js');
 const { default: attachmentsRouter } = await import('../routes/conversations/attachments.js');
+const { default: mediaIngestRouter } = await import('../media/ingestRoutes.js');
 const { default: batchReactionsRouter } = await import('../routes/conversations/batchReactions.js');
 const { default: messagesRouter } = await import('../routes/conversations/messages.js');
 const { default: reactionsRouter } = await import('../routes/conversations/reactions.js');
@@ -43,6 +44,9 @@ await assertAttachmentBlobSchemaCompatible({
   dbPool: pool,
   serviceName: 'voidapp-message-service',
 });
+// Fail startup rather than accepting uploads against a partially rolled-out schema.
+await pool.query('SELECT source_bytes,reserved_bytes FROM media_ingests LIMIT 0');
+await pool.query('SELECT video_metadata,poster_blob_id FROM attachment_objects LIMIT 0');
 
 const allowedOrigins = [
   FRONT_URL,
@@ -59,7 +63,13 @@ app.use(
   })
 );
 securityMiddleware(allowedOrigins).forEach((mw) => app.use(mw));
-app.use(express.json({ limit: '25mb' }));
+const parseJsonBody = express.json({ limit: '25mb' });
+app.use((req, res, next) => {
+  // A hostile JSON Content-Type must not turn a video upload into a buffered request.
+  // Match Express's case-insensitive literal route matching as well.
+  if (/\/attachments\/video-ingests\/?(?:\?|$)/i.test(req.url)) { next(); return; }
+  parseJsonBody(req, res, next);
+});
 app.use(cookieParser());
 
 initPublisher();
@@ -87,6 +97,7 @@ app.get('/ready', createReadinessHandler({
 }));
 
 app.use(encryptedCSRFProtection);
+app.use('/api/conversations/:conversationId/attachments/video-ingests', noCache, authenticateUser, mediaIngestRouter);
 app.use(
   '/api/conversations/:conversationId/messages/:messageId/reactions',
   noCache,

@@ -6,6 +6,7 @@ dist/
 .env
 .runtime/
 /bin/voidapp-vmd
+/bin/voidapp-media-worker
 
 # Elixir / Phoenix (void_gateway)
 void_gateway/_build/
