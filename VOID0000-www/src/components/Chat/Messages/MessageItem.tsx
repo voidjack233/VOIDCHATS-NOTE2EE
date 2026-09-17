@@ -1342,7 +1342,7 @@ const MessageItem = memo(function MessageItem({
                               alt="attachment"
                               className="w-full h-full object-cover hover:opacity-90"
                               onLoad={onAttachmentLoad}
-                              canLoad={canLoadAttachments && !isPending}
+                              canLoad={canLoadAttachments && !isPending && !isSpoilerCovered}
                             />
                             {isSpoilerCovered ? (
                               <div className="absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-void-bg-main">
@@ -1382,7 +1382,7 @@ const MessageItem = memo(function MessageItem({
             const videoSection = videoAttachmentEntries.length > 0 ? (
               <div className={`flex w-full flex-col gap-2 ${imageSection ? 'pt-2' : 'pt-1'}`}>
                 {videoAttachmentEntries.map(({ attachment, originalIndex }) => (
-                  <AttachmentVideoPlayer key={getAttachmentLayoutKey(attachment, originalIndex)} attachment={attachment} disabled={isPending} />
+                  <AttachmentVideoPlayer key={getAttachmentLayoutKey(attachment, originalIndex)} attachment={attachment} disabled={isPending} canLoad={canLoadAttachments} />
                 ))}
               </div>
             ) : null;

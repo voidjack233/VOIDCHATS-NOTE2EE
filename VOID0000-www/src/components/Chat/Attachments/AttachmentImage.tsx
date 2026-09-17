@@ -6,6 +6,7 @@ import {
   getAttachmentRenderSources,
 } from '../../../Services/Chat/attachmentService';
 import BlurImage, { BlurhashPlaceholder } from '../../common/BlurImage';
+import { useMediaViewport } from './useMediaViewport';
 import {
   createAttachmentImageAttemptState,
   recordAttachmentImageFailure,
@@ -28,8 +29,9 @@ export default function AttachmentImage({
   onLoad,
   canLoad = true,
 }: AttachmentImageProps) {
+  const { ref: frameRef, canLoad: mediaCanLoad, loading, fetchPriority } = useMediaViewport(canLoad);
   const attachmentIdentity = getAttachmentRenderIdentity(attachment);
-  const availableSources = canLoad ? getAttachmentRenderSources(attachment) : [];
+  const availableSources = mediaCanLoad ? getAttachmentRenderSources(attachment) : [];
   const [attemptState, setAttemptState] = useState(() => (
     createAttachmentImageAttemptState(attachmentIdentity)
   ));
@@ -38,10 +40,11 @@ export default function AttachmentImage({
     attachmentIdentity,
     availableSources,
   );
-  const failed = canLoad && !source;
+  const failed = mediaCanLoad && !source;
 
-  if (source) {
-    return (
+  return (
+    <div ref={frameRef} className="absolute inset-0">
+    {source ? (
       <BlurImage
         key={source.url}
         src={source.url}
@@ -65,12 +68,10 @@ export default function AttachmentImage({
             source,
           ));
         }}
-        loading="eager"
+        loading={loading}
+        fetchPriority={fetchPriority}
       />
-    );
-  }
-
-  return (
+    ) : (
     <div className={`relative overflow-hidden bg-void-bg-main/50 ${className}`}>
       {!failed && attachment.blurhash ? (
         <BlurhashPlaceholder
@@ -86,6 +87,8 @@ export default function AttachmentImage({
           <Loader2 className="h-5 w-5 animate-spin text-void-text-muted" />
         )}
       </div>
+    </div>
+    )}
     </div>
   );
 }

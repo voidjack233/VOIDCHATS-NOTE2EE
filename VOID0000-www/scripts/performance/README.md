@@ -39,3 +39,52 @@ Historical scroll state belongs to the live conversation runtime and is not
 persisted across F5. Therefore the historical scenarios use a genuine
 user-initiated SPA route-away and route-back restore. The latest-page scenario
 also records a separate hard reload for standard page-load LCP.
+
+## Media Rendering Checks
+
+Run from `VOID0000-www`. The media tests need Chromium from Playwright and
+`ffmpeg` on PATH to generate small, real JPEG/MP4 fixtures.
+
+```bash
+# Local rendering: reserved geometry, loading priority, fallback, spoilers,
+# mixed attachments, and poster-to-native-video playback.
+node --test --test-concurrency=1 scripts/tests/attachments/mediaPerformance.test.mjs scripts/tests/attachments/video.test.mjs
+
+# Public deployed JS/CSS with intercepted API, WebSocket, and media fixtures.
+# No login or production data writes; this is a functional deployment smoke.
+MEDIA_TEST_DEPLOYED_URL=https://void0000.online node --test scripts/tests/attachments/mediaTimeline.test.mjs
+
+# Real authenticated production requests, three reloads per viewport by default.
+# First log in with perf:chat:auth and select an accessible conversation.
+CHAT_PERF_CONVERSATION_ROUTE=/chats/@me/<public-id> CHAT_PERF_RUNS=3 CHAT_PERF_PLAY=1 node scripts/performance/media-startup.mjs
+```
+
+The production measurement disables the browser HTTP cache and records CLS,
+LCP candidates, resource eligibility, JavaScript errors, and playback attempts
+at 1280x900 and 390x844. It focuses the composer and scrolls without sending
+messages; `CHAT_PERF_PLAY=1` additionally clicks a video poster if one exists.
+It preserves rotated login cookies in the ignored authentication file.
+Do not run competing processes against that same authentication file.
+
+JSON reports are written to ignored `performance-results/media-*.json` files.
+`interactionMaxMs` is the maximum observed Event Timing duration for the small
+scripted interaction sample, not a field INP measurement. A missing video is
+reported as `playback.attempted=false`, not a successful playback check.
+
+The deployed fixture deliberately delays media; its LCP values are not real
+network performance measurements. Compare production runs only with matching
+conversation content, viewport, cache policy, and similar system/network load.
+In particular, a text LCP candidate does not reproduce a reported video LCP.
+
+### First-Pass Findings
+
+The original renderer eagerly loaded eligible images and mounted native video
+elements immediately. Those behaviors are replaced with per-frame viewport
+priority and poster-first playback. Existing deterministic frame dimensions,
+display variants, retry handling, and the timeline architecture are retained.
+
+The representative mixed-media tests measured zero media-load CLS both before
+and after the change. The available authenticated DM had a text LCP candidate
+and no videos in its latest window. Consequently, neither that DM nor the
+fixture reproduces the reported 0.60 CLS incident. These checks establish
+geometry stability in the covered scenarios, not resolution of that incident.

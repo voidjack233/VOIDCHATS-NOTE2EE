@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
+import { execFileSync } from 'node:child_process';
 
 test('browser video drafts use independent binary ingests, preserve failures and reject account-switch work', { timeout: 90000 }, async () => {
   const server = await createServer({ configFile: false, root: process.cwd(), appType: 'custom', plugins: [react()],
@@ -88,7 +89,9 @@ test('browser video drafts use independent binary ingests, preserve failures and
   } finally { await browser?.close(); await server.close(); }
 });
 
-test('native video element keeps geometry, has no autoplay, and falls back once without render Fetch', { timeout: 90000 }, async () => {
+test('poster-first video keeps geometry and falls back once without render Fetch', { timeout: 90000 }, async () => {
+  const movie = execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=10',
+    '-t', '2', '-c:v', 'libx264', '-threads', '1', '-pix_fmt', 'yuv420p', '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1']);
   const server = await createServer({ configFile: false, root: process.cwd(), appType: 'custom', plugins: [react(), {
     name: 'video-component-fixture',
     resolveId(id) { if (id === '/media-harness.tsx') return '\0media-harness'; },
@@ -112,15 +115,20 @@ test('native video element keeps geometry, has no autoplay, and falls back once 
     await page.route('**/*', route => {
       if (!route.request().url().startsWith(origin)) return route.abort();
       if (/\/(test-media|api\/conversations)/.test(new URL(route.request().url()).pathname)) {
-        renderRequests.push(route.request().resourceType()); return route.fulfill({status:404});
+        renderRequests.push(route.request().resourceType()); return route.fulfill({contentType:'video/mp4',body:movie});
       }
       return route.continue();
     });
     await page.goto(origin);await page.waitForFunction(()=>Boolean(window.renderVideo));
     const attachment={id:'video',url:`${origin}test-media/source.mp4`,fallback_url:'/api/conversations/c/attachments/video',mime:'video/mp4',video_trusted:true,inline:true,width:640,height:360};
-    await page.evaluate(a=>window.renderVideo(a),attachment);const video=page.locator('video');await video.waitFor();
-    assert.equal(await video.getAttribute('preload'),'none');assert.equal(await video.getAttribute('autoplay'),null);assert.notEqual(await video.getAttribute('controls'),null);
+    await page.evaluate(a=>window.renderVideo(a),attachment);const video=page.locator('video');
+    await page.getByRole('button',{name:/^Play video:/}).waitFor();
+    assert.equal(await video.count(),0);assert.equal(renderRequests.length,0);
     const wrapper=page.locator('#root > div');const before=await wrapper.boundingBox();
+    await page.getByRole('button',{name:/^Play video:/}).click();await video.waitFor();
+    await page.waitForFunction(()=>document.querySelector('video')?.currentTime > 0);
+    assert.equal(await video.getAttribute('preload'),'none');assert.equal(await video.getAttribute('autoplay'),null);assert.notEqual(await video.getAttribute('controls'),null);
+    assert.deepEqual(await wrapper.boundingBox(),before);
     await video.evaluate(node=>node.dispatchEvent(new Event('error')));
     await page.waitForFunction(()=>document.querySelector('video')?.getAttribute('src')?.includes('/api/conversations'));
     await video.evaluate(node=>node.dispatchEvent(new Event('error')));await page.getByText('Video unavailable').waitFor();

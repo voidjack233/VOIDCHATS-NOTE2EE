@@ -14,6 +14,7 @@ interface BlurImageProps {
   onLoad?: (image: HTMLImageElement) => void;
   onError?: (image: HTMLImageElement) => void;
   loading?: 'eager' | 'lazy';
+  fetchPriority?: 'high' | 'low' | 'auto';
 }
 
 const THUMB = 32; // decode resolution — small for perf, upscaled via CSS
@@ -67,6 +68,7 @@ const BlurImage = ({
   onLoad,
   onError,
   loading = 'lazy',
+  fetchPriority = 'auto',
 }: BlurImageProps) => {
   const imageRef = useRef<HTMLImageElement>(null);
   const reportedLoadedSrcRef = useRef<string | null>(null);
@@ -100,6 +102,7 @@ const BlurImage = ({
         sizes={sizes}
         alt={alt}
         loading={loading}
+        fetchPriority={fetchPriority}
         decoding="async"
         style={{ visibility: loaded ? 'visible' : 'hidden' }}
         onLoad={(event) => {
