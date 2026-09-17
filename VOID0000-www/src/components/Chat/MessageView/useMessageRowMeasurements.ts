@@ -46,9 +46,7 @@ export function useMessageRowMeasurements({
 
     const elements = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'));
     const pendingMeasurements = new Map<string, number>();
-    let measurementFrame: number | null = null;
     const flushMeasurements = () => {
-      measurementFrame = null;
       if (pendingMeasurements.size === 0) {
         return;
       }
@@ -58,12 +56,6 @@ export function useMessageRowMeasurements({
       );
       pendingMeasurements.clear();
     };
-    const scheduleMeasurementFlush = () => {
-      if (measurementFrame !== null) {
-        return;
-      }
-      measurementFrame = window.requestAnimationFrame(flushMeasurements);
-    };
     const measureElement = (element: HTMLElement, source: 'initial' | 'resize') => {
       const messageId = element.dataset.messageId;
       if (!messageId) return false;
@@ -72,7 +64,7 @@ export function useMessageRowMeasurements({
       if (Number.isFinite(measuredHeight) && measuredHeight > 0) {
         const normalizedMessageId = String(messageId);
         const previousHeight = messageHeightCacheRef.current.get(normalizedMessageId);
-        if (typeof previousHeight === 'number' && Math.abs(previousHeight - measuredHeight) <= 0.5) {
+        if (previousHeight === measuredHeight) {
           return false;
         }
 
@@ -86,7 +78,6 @@ export function useMessageRowMeasurements({
           messageHeightCacheRef.current.delete(oldestMessageId);
         }
         pendingMeasurements.set(normalizedMessageId, measuredHeight);
-        scheduleMeasurementFlush();
         recordMessageGeometryEvent(
           typeof previousHeight === 'number' ? 'message_row_resize' : 'message_row_measure_initial',
           () => ({
@@ -103,20 +94,21 @@ export function useMessageRowMeasurements({
             }),
           }),
         );
-        return true;
+        // Keep the existing scroll-correction tolerance, but never discard
+        // subpixel changes from the height accounting above.
+        return typeof previousHeight !== 'number' || Math.abs(previousHeight - measuredHeight) > 0.5;
       }
 
       return false;
     };
 
     elements.forEach((element) => measureElement(element, 'initial'));
+    // Publish before another window commit can tear down this observer. Deferring
+    // to rAF left the view cache updated while silently losing the runtime batch.
+    flushMeasurements();
 
     if (typeof ResizeObserver === 'undefined') {
-      return () => {
-        if (measurementFrame !== null) {
-          window.cancelAnimationFrame(measurementFrame);
-        }
-      };
+      return undefined;
     }
 
     const observer = new ResizeObserver((entries) => {
@@ -126,6 +118,8 @@ export function useMessageRowMeasurements({
           rowHeightChanged = measureElement(entry.target, 'resize') || rowHeightChanged;
         }
       });
+      // ResizeObserver already batches rows; keep both height owners in sync.
+      flushMeasurements();
 
       if (rowHeightChanged) {
         const beforeCorrection = isMessageGeometryDiagnosticsEnabled()
@@ -167,9 +161,6 @@ export function useMessageRowMeasurements({
     elements.forEach((element) => observer.observe(element));
     return () => {
       observer.disconnect();
-      if (measurementFrame !== null) {
-        window.cancelAnimationFrame(measurementFrame);
-      }
     };
   }, [
     atBottomRef,

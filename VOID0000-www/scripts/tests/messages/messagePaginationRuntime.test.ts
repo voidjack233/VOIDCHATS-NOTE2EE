@@ -13,7 +13,9 @@ Object.defineProperty(globalThis, 'indexedDB', {
 const {
   commitRuntimePaginationBoundary,
   getSavedConversationRuntime,
+  recordMeasuredMessageHeights,
   resetRuntime,
+  sumMessageHeights,
 } = await import('../../../src/Services/hooks/Chats/MessageList/messageListRuntime');
 const { resolveInitialMessageRuntime } = await import(
   '../../../src/Services/hooks/Chats/MessageList/messageListInitialRuntime'
@@ -120,4 +122,23 @@ test('an open pagination boundary preserves its existing logical spacer', () => 
   assert.equal(newerOpen.runtime.bottomSpacerHeight, 220);
   assert.equal(newerOpen.hasOlder, newerOpen.runtime.hasOlder);
   assert.equal(newerOpen.hasNewer, newerOpen.runtime.hasNewer);
+});
+
+test('subpixel DOM measurements remain exact in active and saved trim accounting', () => {
+  const rows = Array.from({ length: 40 }, (_, i) => makeMessage('fractional-heights', `row-${i}`));
+  let runtime = resetRuntime('fractional-heights', rows);
+  runtime = recordMeasuredMessageHeights(runtime, rows.map(row => ({ messageId: row.message_id, height: 72.375 })));
+  runtime = recordMeasuredMessageHeights(runtime, rows.map(row => ({ messageId: row.message_id, height: 72.625 })));
+  assert.equal(sumMessageHeights(runtime, rows), 2905);
+  assert.equal(sumMessageHeights(getSavedConversationRuntime('fractional-heights')!, rows), 2905);
+});
+
+test('a heuristic height cannot populate the authoritative DOM height cache', () => {
+  const row = makeMessage('estimated-heights', 'unmeasured');
+  const runtime = resetRuntime('estimated-heights', [row]);
+  assert.equal(sumMessageHeights(runtime, [row], () => 208), 208);
+  assert.equal(runtime.heightByMessageId.has(row.message_id), false);
+  assert.equal(sumMessageHeights(runtime, [row], () => 213.625), 213.625);
+  const measured = recordMeasuredMessageHeights(runtime, [{ messageId: row.message_id, height: 213.625 }]);
+  assert.equal(sumMessageHeights(measured, [row], () => 208), 213.625);
 });

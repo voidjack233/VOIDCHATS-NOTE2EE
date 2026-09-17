@@ -88,3 +88,40 @@ and after the change. The available authenticated DM had a text LCP candidate
 and no videos in its latest window. Consequently, neither that DM nor the
 fixture reproduces the reported 0.60 CLS incident. These checks establish
 geometry stability in the covered scenarios, not resolution of that incident.
+
+## Trim Geometry Regression
+
+```bash
+# Real DOM, both densities and viewport widths, 220 mixed-height messages.
+node --test scripts/tests/messages/trimGeometry.test.mjs
+
+# Reproduce the measurement race using the two old owners from 273c88f.
+# A test-only Vite loader reads Git; it does not alter the working tree.
+TRIM_BASELINE=1 node --test scripts/tests/messages/trimGeometry.test.mjs
+
+# Same routed regression using the actual deployed JS/CSS, with fixture data.
+TRIM_DEPLOYED_URL=https://void0000.online node --test scripts/tests/messages/trimGeometry.test.mjs
+
+# Existing authenticated conversation, actual production history responses.
+# Requires enough messages to cross the >80 trigger; does not create messages.
+CHAT_PERF_CONVERSATION_ROUTE=/chats/@me/<public-id> node scripts/performance/trim-scroll.mjs
+```
+
+Reports in ignored `performance-results/trim-*.json` include removed DOM heights,
+cached/runtime/estimated heights where available, spacer totals, boundary row
+traits, visible anchor offsets, and opt-in geometry/CLS events around each commit.
+The production smoke keeps rotated authentication state in the ignored login
+file. Do not run two processes with the same authentication file concurrently.
+
+The measurement handoff case applies two real window commits before the next
+animation frame. Previously, cleanup cancelled the pending height publication:
+the view cache changed but runtime measurements stayed stale. A 0.625px change
+across 20 measured rows produced a 12.5px trim-accounting deficit. Measurements
+are now published in their layout/ResizeObserver batch, retain fractional
+precision, and estimates no longer populate the authoritative measured cache.
+
+Ordinary mixed-history runs already had <=0.5px anchor displacement and no trim
+CLS before this correction. Do not describe the accounting regression as a
+measured 12.5px production viewport jump. The existing anchor restoration can
+hide a spacer error. No pagination, grouping, physical spacer limits, or scroll
+compensation mechanisms were changed by this correction.

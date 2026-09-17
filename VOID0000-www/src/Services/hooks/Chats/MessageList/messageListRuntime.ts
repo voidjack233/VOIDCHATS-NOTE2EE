@@ -114,7 +114,8 @@ const getMessageHeight = (
 
   const resolvedHeight = resolveHeight?.(message);
   if (typeof resolvedHeight === 'number' && Number.isFinite(resolvedHeight) && resolvedHeight > 0) {
-    runtime.heightByMessageId.set(id, resolvedHeight);
+    // The resolver may return a heuristic. Only DOM measurement commits own
+    // heightByMessageId; an estimate must not shadow a later measured resolver.
     return resolvedHeight;
   }
 
@@ -249,7 +250,7 @@ const recordMeasuredMessageHeights = (
     }
 
     const currentHeight = currentRuntime.heightByMessageId.get(String(messageId));
-    return typeof currentHeight !== 'number' || Math.abs(currentHeight - height) > 0.5;
+    return currentHeight !== height;
   });
 
   if (changedMeasurements.length === 0) {
