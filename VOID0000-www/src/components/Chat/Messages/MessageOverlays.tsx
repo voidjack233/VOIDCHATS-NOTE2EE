@@ -1,9 +1,12 @@
 import {
   Suspense,
   lazy,
+  useCallback,
   useEffect,
+  useRef,
   useState,
 } from 'react';
+import type { PointerEvent, SyntheticEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft,
@@ -12,6 +15,8 @@ import {
   Download,
   Forward,
   ImageOff,
+  LoaderCircle,
+  Maximize,
   Plus,
   Pencil,
   RefreshCcw,
@@ -19,6 +24,8 @@ import {
   Smile,
   Trash2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type { Message } from '../../../Services/Chat/chatService';
 import {
@@ -121,6 +128,12 @@ function ImageViewerOverlay({
   onSelectIndex,
 }: ImageViewerOverlayProps) {
   const [failedUrls, setFailedUrls] = useState<Set<string>>(() => new Set());
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [fitScale, setFitScale] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const imageRef = useRef<HTMLImageElement>(null);
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; panX: number; panY: number } | null>(null);
   const urls = imageViewer.urls;
   const currentIndex = imageViewer.index;
   const currentAttachment = imageViewer.attachments[currentIndex];
@@ -148,6 +161,60 @@ function ImageViewerOverlay({
     ? currentAttachment.url
     : null;
   const downloadUrl = originalDownloadUrl || currentAttachment?.fallback_url?.trim() || null;
+  const scale = fitScale * zoom;
+
+  const getPanBounds = useCallback((nextScale = scale) => {
+    const image = imageRef.current;
+    if (!image) return { x: 0, y: 0 };
+
+    const padding = 72;
+    return {
+      x: Math.max(0, (image.naturalWidth * nextScale - (window.innerWidth - padding)) / 2 + 24),
+      y: Math.max(0, (image.naturalHeight * nextScale - (window.innerHeight - padding)) / 2 + 24),
+    };
+  }, [scale]);
+
+  const clampPan = useCallback((nextPan: { x: number; y: number }, nextScale = scale) => {
+    const bounds = getPanBounds(nextScale);
+    return {
+      x: Math.max(-bounds.x, Math.min(bounds.x, nextPan.x)),
+      y: Math.max(-bounds.y, Math.min(bounds.y, nextPan.y)),
+    };
+  }, [getPanBounds, scale]);
+
+  const resetView = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  const updateZoom = useCallback((nextZoom: number, anchor?: { x: number; y: number }) => {
+    const boundedZoom = Math.max(0.5, Math.min(6, nextZoom));
+    const nextScale = fitScale * boundedZoom;
+    setZoom(boundedZoom);
+    setPan((current) => clampPan(anchor
+      ? {
+          x: current.x - (anchor.x - window.innerWidth / 2) * (boundedZoom / zoom - 1),
+          y: current.y - (anchor.y - window.innerHeight / 2) * (boundedZoom / zoom - 1),
+        }
+      : current, nextScale));
+  }, [clampPan, fitScale, zoom]);
+
+  useEffect(() => {
+    resetView();
+    setLoadState(currentUrl ? 'loading' : 'error');
+  }, [currentIndex, currentUrl, resetView]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
+
+  useEffect(() => {
+    const keepPanInBounds = () => setPan((current) => clampPan(current));
+    window.addEventListener('resize', keepPanInBounds);
+    return () => window.removeEventListener('resize', keepPanInBounds);
+  }, [clampPan]);
 
   const handleMediaError = () => {
     if (!currentUrl) return;
@@ -157,6 +224,37 @@ function ImageViewerOverlay({
       next.add(currentUrl);
       return next;
     });
+  };
+
+  const handleImageLoad = (event: SyntheticEvent<HTMLImageElement>) => {
+    const image = event.currentTarget;
+    const viewportWidth = Math.max(1, window.innerWidth - 112);
+    const viewportHeight = Math.max(1, window.innerHeight - 112);
+    setFitScale(Math.min(1, viewportWidth / image.naturalWidth, viewportHeight / image.naturalHeight));
+    setLoadState('ready');
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLImageElement>) => {
+    if (zoom <= 1 || loadState !== 'ready') return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: pan.x,
+      panY: pan.y,
+    };
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLImageElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setPan(clampPan({ x: drag.panX + event.clientX - drag.startX, y: drag.panY + event.clientY - drag.startY }));
+  };
+
+  const endDrag = (event: PointerEvent<HTMLImageElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
   };
 
   const handleDownload = () => {
@@ -171,18 +269,21 @@ function ImageViewerOverlay({
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 backdrop-blur-sm"
+      className="fixed inset-0 z-[200] flex items-center justify-center overflow-hidden bg-[#07090e]/95 text-void-text backdrop-blur-md"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image viewer"
     >
       <div
-        className="absolute top-4 right-4 flex items-center gap-2 z-10"
+        className="absolute right-4 top-4 z-20 flex items-center gap-2 sm:right-6 sm:top-6"
         onClick={(event) => event.stopPropagation()}
       >
         {downloadUrl ? (
           <button
             type="button"
             onClick={handleDownload}
-            className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+            className="rounded-xl border border-white/10 bg-void-bg-sec/85 p-2.5 text-void-text shadow-lg transition-colors hover:bg-void-bg-hover focus:outline-none focus:ring-2 focus:ring-void-accent"
             title="Download"
           >
             <Download className="w-5 h-5" />
@@ -190,64 +291,87 @@ function ImageViewerOverlay({
         ) : null}
         <button
           onClick={onClose}
-          className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+          className="rounded-xl border border-white/10 bg-void-bg-sec/85 p-2.5 text-void-text shadow-lg transition-colors hover:bg-void-bg-hover focus:outline-none focus:ring-2 focus:ring-void-accent"
           title="Close"
         >
           <X className="w-5 h-5" />
         </button>
       </div>
 
-      {currentIndex > 0 && (
+      {urls.length > 1 && currentIndex > 0 && (
         <button
           onClick={(event) => {
             event.stopPropagation();
             onPrevious();
           }}
-          className="absolute left-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
+          className="absolute left-3 z-20 rounded-xl border border-white/10 bg-void-bg-sec/85 p-3 text-void-text shadow-lg transition-colors hover:bg-void-bg-hover focus:outline-none focus:ring-2 focus:ring-void-accent sm:left-6"
+          aria-label="Previous image"
         >
           <ChevronLeft className="w-6 h-6" />
         </button>
       )}
 
-      {!currentUrl ? (
-        <div className="flex flex-col items-center gap-2 text-white/70">
+      {!currentUrl || loadState === 'error' ? (
+        <div className="z-10 flex max-w-xs flex-col items-center gap-3 rounded-2xl border border-white/10 bg-void-bg-sec/90 px-7 py-6 text-center shadow-2xl" onClick={(event) => event.stopPropagation()}>
           <ImageOff className="h-8 w-8" />
-          <span className="text-sm">Attachment unavailable</span>
+          <span className="text-sm text-void-text-muted">This image could not be loaded.</span>
+          <button type="button" onClick={() => { setFailedUrls(new Set()); setLoadState('loading'); }} className="rounded-lg bg-void-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:brightness-110">Try again</button>
         </div>
       ) : (
-        <img
-          src={currentUrl}
-          srcSet={currentSource?.srcSet}
-          sizes={currentSource?.sizes}
-          alt="attachment"
-          className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
-          onClick={(event) => event.stopPropagation()}
-          onError={handleMediaError}
-        />
+        <>
+          {loadState === 'loading' && <div className="absolute z-10 flex items-center gap-2 rounded-xl border border-white/10 bg-void-bg-sec/90 px-4 py-3 text-sm text-void-text-muted"><LoaderCircle className="h-4 w-4 animate-spin text-void-accent" /> Loading image</div>}
+          <img
+            ref={imageRef}
+            src={currentUrl}
+            srcSet={currentSource?.srcSet}
+            sizes={currentSource?.sizes}
+            alt={currentAttachment?.name || 'Chat attachment'}
+            draggable={false}
+            className={`max-h-none max-w-none select-none rounded-lg shadow-2xl transition-opacity duration-150 ${loadState === 'ready' ? 'opacity-100' : 'opacity-0'} ${zoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'}`}
+            style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${scale})` }}
+            onClick={(event) => event.stopPropagation()}
+            onLoad={handleImageLoad}
+            onError={handleMediaError}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            onWheel={(event) => { event.preventDefault(); updateZoom(zoom * (event.deltaY < 0 ? 1.14 : 0.88), { x: event.clientX, y: event.clientY }); }}
+          />
+        </>
       )}
 
-      {currentIndex < urls.length - 1 && (
+      {urls.length > 1 && currentIndex < urls.length - 1 && (
         <button
           onClick={(event) => {
             event.stopPropagation();
             onNext();
           }}
-          className="absolute right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
+          className="absolute right-3 z-20 rounded-xl border border-white/10 bg-void-bg-sec/85 p-3 text-void-text shadow-lg transition-colors hover:bg-void-bg-hover focus:outline-none focus:ring-2 focus:ring-void-accent sm:right-6"
+          aria-label="Next image"
         >
           <ChevronRight className="w-6 h-6" />
         </button>
       )}
 
+      <div className="absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-white/10 bg-void-bg-sec/90 p-1.5 shadow-xl" onClick={(event) => event.stopPropagation()}>
+        <button type="button" onClick={() => updateZoom(zoom / 1.25)} disabled={loadState !== 'ready' || zoom <= 0.5} className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text disabled:cursor-not-allowed disabled:opacity-40" aria-label="Zoom out"><ZoomOut className="h-4 w-4" /></button>
+        <button type="button" onClick={resetView} disabled={loadState !== 'ready'} className="min-w-20 rounded-lg px-2 py-2 text-xs font-semibold text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text disabled:opacity-40" aria-label="Fit image to screen"><Maximize className="mr-1 inline h-3.5 w-3.5" />Fit</button>
+        <button type="button" onClick={() => updateZoom(zoom * 1.25)} disabled={loadState !== 'ready' || zoom >= 6} className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text disabled:cursor-not-allowed disabled:opacity-40" aria-label="Zoom in"><ZoomIn className="h-4 w-4" /></button>
+      </div>
+
       {urls.length > 1 && (
         <div
-          className="absolute bottom-4 flex items-center gap-1.5"
+          className="absolute bottom-20 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-void-bg-sec/80 px-3 py-1.5 text-xs font-medium text-void-text-muted shadow-lg"
           onClick={(event) => event.stopPropagation()}
         >
+          <span>{currentIndex + 1} / {urls.length}</span>
           {urls.map((_, index) => (
             <button
               key={index}
               onClick={() => onSelectIndex(index)}
-              className={`w-2 h-2 rounded-full transition-all ${index === currentIndex ? 'bg-white scale-125' : 'bg-white/40 hover:bg-white/70'}`}
+              className={`h-1.5 w-1.5 rounded-full transition-all ${index === currentIndex ? 'bg-void-accent scale-125' : 'bg-white/30 hover:bg-white/70'}`}
+              aria-label={`View image ${index + 1}`}
             />
           ))}
         </div>

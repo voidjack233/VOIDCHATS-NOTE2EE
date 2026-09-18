@@ -124,14 +124,25 @@ test('poster-first video keeps geometry and falls back once without render Fetch
     await page.evaluate(a=>window.renderVideo(a),attachment);const video=page.locator('video');
     await page.getByRole('button',{name:/^Play video:/}).waitFor();
     assert.equal(await video.count(),0);assert.equal(renderRequests.length,0);
+    assert.equal(await page.locator('[data-video-controls]').count(),0, 'idle poster has no playback bar');
     const wrapper=page.locator('#root > div');const before=await wrapper.boundingBox();
     await page.getByRole('button',{name:/^Play video:/}).click();await video.waitFor();
     await page.waitForFunction(()=>document.querySelector('video')?.currentTime > 0);
-    assert.equal(await video.getAttribute('preload'),'none');assert.equal(await video.getAttribute('autoplay'),null);assert.notEqual(await video.getAttribute('controls'),null);
+    assert.equal(await video.getAttribute('preload'),'none');assert.equal(await video.getAttribute('autoplay'),null);assert.equal(await video.getAttribute('controls'),null);
+    await page.getByRole('button',{name:'Pause video'}).waitFor();
+    assert.equal(await page.locator('[data-video-controls]').innerText().then(text => text.includes('/')), false, 'embedded player omits duration text');
+    assert.match(await page.getByRole('slider',{name:'Video volume'}).evaluate(node => node.parentElement.className), /max-w-0/);
+    await page.getByRole('slider',{name:'Video playback position'}).evaluate((node) => {
+      node.value = '1'; node.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.getByRole('button',{name:'Mute video'}).click();
+    await page.getByRole('button',{name:'Unmute video'}).waitFor();
+    assert.match(await page.getByRole('slider',{name:'Video playback position'}).getAttribute('style'), /--video-played/);
     assert.deepEqual(await wrapper.boundingBox(),before);
     await video.evaluate(node=>node.dispatchEvent(new Event('error')));
     await page.waitForFunction(()=>document.querySelector('video')?.getAttribute('src')?.includes('/api/conversations'));
-    await video.evaluate(node=>node.dispatchEvent(new Event('error')));await page.getByText('Video unavailable').waitFor();
+    await video.evaluate(node=>node.dispatchEvent(new Event('error')));await page.getByText('Video playback is unavailable.').waitFor();
+    await page.getByRole('button',{name:'Retry'}).waitFor();
     assert.deepEqual(await wrapper.boundingBox(),before);
     await page.evaluate(a=>window.renderVideo({...a,name:'updated.mp4'}),attachment);assert.equal(await page.locator('video').count(),0);
     await page.evaluate(a=>window.renderVideo({...a,url:a.url+'?new-capability'}),attachment);await video.waitFor();

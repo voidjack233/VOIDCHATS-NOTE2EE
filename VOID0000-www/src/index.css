@@ -131,6 +131,51 @@
   display: none;
 }
 
+/* Chat video controls use the live theme accent variable, so theme changes are
+   reflected without remounting a player. */
+.void-video-progress {
+  --video-track: color-mix(in srgb, white 22%, transparent);
+  --video-buffer: color-mix(in srgb, white 52%, transparent);
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 var(--video-played),
+    var(--video-buffer) var(--video-played) var(--video-buffered),
+    var(--video-track) var(--video-buffered) 100%
+  );
+  border-radius: 999px;
+}
+
+.void-video-progress::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.void-video-progress::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  appearance: none;
+  border: 2px solid var(--bg-sec);
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 45%);
+}
+
+.void-video-progress::-moz-range-track {
+  height: 4px;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.void-video-progress::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--bg-sec);
+  border-radius: 999px;
+  background: var(--accent);
+}
+
 /* Skeleton shimmer animation */
 @keyframes skeleton-shimmer {
   0% { background-position: 200% 0; }
