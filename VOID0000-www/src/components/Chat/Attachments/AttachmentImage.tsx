@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ImageOff, Loader2 } from 'lucide-react';
 import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
@@ -20,6 +20,7 @@ interface AttachmentImageProps {
   className?: string;
   onLoad?: () => void;
   canLoad?: boolean;
+  onRefreshDelivery?: () => Promise<unknown>;
 }
 
 export default function AttachmentImage({
@@ -28,6 +29,7 @@ export default function AttachmentImage({
   className = '',
   onLoad,
   canLoad = true,
+  onRefreshDelivery,
 }: AttachmentImageProps) {
   const { ref: frameRef, canLoad: mediaCanLoad, loading, fetchPriority } = useMediaViewport(canLoad);
   const attachmentIdentity = getAttachmentRenderIdentity(attachment);
@@ -35,12 +37,23 @@ export default function AttachmentImage({
   const [attemptState, setAttemptState] = useState(() => (
     createAttachmentImageAttemptState(attachmentIdentity)
   ));
+  const refreshAttemptedRef = useRef<string | null>(null);
   const source = selectAttachmentImageSource(
     attemptState,
     attachmentIdentity,
     availableSources,
   );
   const failed = mediaCanLoad && !source;
+
+  const refreshDeliveryOnce = useCallback(() => {
+    if (!onRefreshDelivery || refreshAttemptedRef.current === attachmentIdentity) return;
+    refreshAttemptedRef.current = attachmentIdentity;
+    void onRefreshDelivery();
+  }, [attachmentIdentity, onRefreshDelivery]);
+
+  useEffect(() => {
+    if (mediaCanLoad && availableSources.length === 0) refreshDeliveryOnce();
+  }, [availableSources.length, mediaCanLoad, refreshDeliveryOnce]);
 
   return (
     <div ref={frameRef} className="absolute inset-0">
@@ -67,6 +80,7 @@ export default function AttachmentImage({
             attachmentIdentity,
             source,
           ));
+          refreshDeliveryOnce();
         }}
         loading={loading}
         fetchPriority={fetchPriority}

@@ -5,7 +5,10 @@ import { useReactions } from '../../../Services/hooks/Chats/useReactions';
 import {
   sendImageOnlyMessage,
   sendMessage,
+  getMessageById,
 } from '../../../Services/Chat/chatService';
+import { parseAttachments } from '../../../Services/Chat/messageAttachments';
+import { getAttachmentRenderIdentity } from '../../../Services/Chat/attachmentService';
 import { type Conversation, type ConversationMember, type Message } from '../../../Services/Chat/chatService';
 import { useUser } from '../../../Services/Auth/UserContext';
 import { debugLog } from '../../../Services/utils/debugLog';
@@ -75,6 +78,18 @@ import {
   recordMessageGeometryEvent,
   type MessageGeometryTraits,
 } from './messageGeometryDiagnostics';
+
+function mergeAttachmentDelivery(message: Message, refreshed: Message): Message {
+  const freshByIdentity = new Map(
+    parseAttachments(refreshed.attachments).map((attachment) => [getAttachmentRenderIdentity(attachment), attachment]),
+  );
+  const attachments = (message.attachments || []).map((raw) => {
+    const current = parseAttachments([raw])[0];
+    const fresh = current ? freshByIdentity.get(getAttachmentRenderIdentity(current)) : undefined;
+    return fresh && current ? JSON.stringify({ ...current, ...fresh }) : raw;
+  });
+  return { ...message, attachments };
+}
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -173,6 +188,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const messageHighlightTimeoutRef = useRef<number | null>(null);
   const messageJumpNoticeTimeoutRef = useRef<number | null>(null);
   const messageJumpFallbackTimeoutRef = useRef<number | null>(null);
+  const attachmentDeliveryRefreshesRef = useRef<Map<string, Promise<Message | null>>>(new Map());
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const [showJumpToPresent, setShowJumpToPresent] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -278,6 +294,22 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName: getSmartDisplayName, getSenderAvatarUrl, getSenderUsername: getSmartUsername } = useMessageDisplay(members, userAvatar, myProfile);
   const visualMessages = messages;
+  const refreshAttachmentDelivery = useCallback((message: Message) => {
+    const key = `${conversation.id}:${message.message_id}`;
+    const active = attachmentDeliveryRefreshesRef.current.get(key);
+    if (active) return active;
+
+    const request = getMessageById(conversation.id, message.message_id).then((refreshed) => {
+      if (!refreshed) return null;
+      const merged = mergeAttachmentDelivery(message, refreshed);
+      mergeVisibleMessages({ incoming: [merged], currentUserId: user?.id });
+      return merged;
+    }).finally(() => {
+      attachmentDeliveryRefreshesRef.current.delete(key);
+    });
+    attachmentDeliveryRefreshesRef.current.set(key, request);
+    return request;
+  }, [conversation.id, mergeVisibleMessages, user?.id]);
   if (isMessageGeometryDiagnosticsEnabled()) {
     messageGeometryTraitsRef.current = new Map(
       visualMessages.map((message) => [
@@ -1367,6 +1399,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         onDelete={handleDelete}
         onToggleReaction={handleToggleReaction}
         onOpenImageViewer={openImageViewer}
+        onRefreshAttachmentDelivery={refreshAttachmentDelivery}
         canLoadAttachments={nearViewportMessageIds.has(message.message_id)}
         onOpenLink={handleOpenMessageLink}
       />
@@ -1399,6 +1432,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     openContextMenuAtPosition,
     openEmojiPicker,
     openImageViewer,
+    refreshAttachmentDelivery,
     reactions,
     replyFontSize,
     bubbleFontSize,

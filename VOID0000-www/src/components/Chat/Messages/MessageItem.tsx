@@ -111,6 +111,7 @@ interface MessageItemProps {
     index: number,
   ) => void;
   onAttachmentLoad?: () => void;
+  onRefreshAttachmentDelivery?: (message: Message) => Promise<Message | null>;
   canLoadAttachments?: boolean;
   onOpenLink?: (url: string) => void;
   isHighlighted?: boolean;
@@ -436,7 +437,8 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
   prev.isHighlighted === next.isHighlighted &&
   prev.animateArrival === next.animateArrival &&
   prev.canLoadAttachments === next.canLoadAttachments &&
-  prev.onAttachmentLoad === next.onAttachmentLoad
+  prev.onAttachmentLoad === next.onAttachmentLoad &&
+  prev.onRefreshAttachmentDelivery === next.onRefreshAttachmentDelivery
 );
 
 const MessageItem = memo(function MessageItem({
@@ -469,6 +471,7 @@ const MessageItem = memo(function MessageItem({
   onToggleReaction,
   onOpenImageViewer,
   onAttachmentLoad,
+  onRefreshAttachmentDelivery,
   canLoadAttachments = true,
   onOpenLink,
   isHighlighted = false,
@@ -631,13 +634,17 @@ const MessageItem = memo(function MessageItem({
     }
   }, []);
 
-  const handleOpenAttachmentViewer = useCallback((attachmentUrls: string[], index: number) => {
+  const handleOpenAttachmentViewer = useCallback(async (attachmentUrls: string[], index: number) => {
     if (isPending) return;
 
-    const attachments = parseAttachments(attachmentUrls);
+    let attachments = parseAttachments(attachmentUrls);
+    if (attachments.some((attachment) => !getAttachmentViewerUrl(attachment)) && onRefreshAttachmentDelivery) {
+      const refreshed = await onRefreshAttachmentDelivery(message);
+      if (refreshed) attachments = parseAttachments(refreshed.attachments).filter(looksLikeImageAttachment);
+    }
     const initialUrls = attachments.map(getAttachmentViewerUrl);
     onOpenImageViewer(attachments, initialUrls, index);
-  }, [isPending, onOpenImageViewer]);
+  }, [isPending, message, onOpenImageViewer, onRefreshAttachmentDelivery]);
   const showSenderMeta = startsGroup;
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
   const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
@@ -1343,6 +1350,7 @@ const MessageItem = memo(function MessageItem({
                               className="w-full h-full object-cover hover:opacity-90"
                               onLoad={onAttachmentLoad}
                               canLoad={canLoadAttachments && !isPending && !isSpoilerCovered}
+                              onRefreshDelivery={onRefreshAttachmentDelivery ? () => onRefreshAttachmentDelivery(message) : undefined}
                             />
                             {isSpoilerCovered ? (
                               <div className="absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-void-bg-main">
