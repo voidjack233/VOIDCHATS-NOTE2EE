@@ -15,6 +15,7 @@ interface BlurImageProps {
   onError?: (image: HTMLImageElement) => void;
   loading?: 'eager' | 'lazy';
   fetchPriority?: 'high' | 'low' | 'auto';
+  retainLoadedOnError?: boolean;
 }
 
 const THUMB = 32; // decode resolution — small for perf, upscaled via CSS
@@ -69,6 +70,7 @@ const BlurImage = ({
   onError,
   loading = 'lazy',
   fetchPriority = 'auto',
+  retainLoadedOnError = false,
 }: BlurImageProps) => {
   const imageRef = useRef<HTMLImageElement>(null);
   const reportedLoadedSrcRef = useRef<string | null>(null);
@@ -113,7 +115,9 @@ const BlurImage = ({
           }
         }}
         onError={(event) => {
-          setLoadedSrc((current) => (current === sourceIdentity ? null : current));
+          if (!retainLoadedOnError) {
+            setLoadedSrc((current) => (current === sourceIdentity ? null : current));
+          }
           onError?.(event.currentTarget);
         }}
         className={`${className} transition-opacity duration-150 ${loaded ? 'opacity-100' : 'opacity-0'}`}

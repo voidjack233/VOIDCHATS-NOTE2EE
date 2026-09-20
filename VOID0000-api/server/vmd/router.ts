@@ -9,6 +9,7 @@ import { VmdMediaError } from './imageVariants.js';
 import type { VmdRenderedImage } from './storage.js';
 
 const ALLOWED_QUERY_KEYS = new Set(['exp', 'sig']);
+const BROWSER_STALE_GRACE_SECONDS = 30;
 
 function getSingleQueryValue(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
@@ -30,12 +31,12 @@ function setMediaCacheHeaders(
     'no-transform',
   ];
   const browserDirectives = [
-    ...sharedDirectives,
-    `s-maxage=${remainingSeconds}`,
-    'proxy-revalidate',
+    'private',
+    `max-age=${remainingSeconds}`,
+    `stale-while-revalidate=${BROWSER_STALE_GRACE_SECONDS}`,
+    'no-transform',
   ];
   if (remainingSeconds > 0) {
-    browserDirectives.push('immutable');
     sharedDirectives.push('immutable');
   }
 

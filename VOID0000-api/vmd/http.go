@@ -109,6 +109,7 @@ func mediaETag(image Image) string {
 }
 
 func setMediaCacheHeaders(headers http.Header, expiresAt int64, now time.Time, image Image) string {
+	const browserStaleGraceSeconds int64 = 30
 	remainingSeconds := expiresAt - now.Unix()
 	if remainingSeconds < 0 {
 		remainingSeconds = 0
@@ -120,14 +121,15 @@ func setMediaCacheHeaders(headers http.Header, expiresAt int64, now time.Time, i
 		"must-revalidate",
 		"no-transform",
 	}
-	browser := append([]string{}, shared...)
-	browser = append(
-		browser,
-		"s-maxage="+strconv.FormatInt(remainingSeconds, 10),
-		"proxy-revalidate",
-	)
+	// The browser may keep an already-authorized private copy briefly while the
+	// client obtains a fresh signed descriptor. Shared caches remain strict below.
+	browser := []string{
+		"private",
+		"max-age=" + strconv.FormatInt(remainingSeconds, 10),
+		"stale-while-revalidate=" + strconv.FormatInt(browserStaleGraceSeconds, 10),
+		"no-transform",
+	}
 	if remainingSeconds > 0 {
-		browser = append(browser, "immutable")
 		shared = append(shared, "immutable")
 	}
 

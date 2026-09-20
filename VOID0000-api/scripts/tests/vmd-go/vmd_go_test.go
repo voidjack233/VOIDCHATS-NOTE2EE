@@ -236,6 +236,19 @@ func TestHTTPImageSuccessAndConditionalCache(t *testing.T) {
 	if response.Header().Get("Cloudflare-CDN-Cache-Control") == "" {
 		t.Fatal("missing Cloudflare cache policy")
 	}
+	browserCache := response.Header().Get("Cache-Control")
+	if !strings.Contains(browserCache, "private") || !strings.Contains(browserCache, "stale-while-revalidate=30") {
+		t.Fatalf("browser cache policy must be private with stale grace: %s", browserCache)
+	}
+	if strings.Contains(browserCache, "must-revalidate") {
+		t.Fatalf("browser cache policy must not force revalidation: %s", browserCache)
+	}
+	for _, header := range []string{"CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"} {
+		sharedCache := response.Header().Get(header)
+		if !strings.Contains(sharedCache, "must-revalidate") || strings.Contains(sharedCache, "stale-while-revalidate") {
+			t.Fatalf("%s must remain strict shared cache policy: %s", header, sharedCache)
+		}
+	}
 
 	conditional := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, signedPath("small", expiresAt), nil)

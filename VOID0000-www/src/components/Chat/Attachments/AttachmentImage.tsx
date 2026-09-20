@@ -37,13 +37,23 @@ export default function AttachmentImage({
   const [attemptState, setAttemptState] = useState(() => (
     createAttachmentImageAttemptState(attachmentIdentity)
   ));
+  const [displayedSource, setDisplayedSource] = useState<{
+    attachmentIdentity: string;
+    source: NonNullable<ReturnType<typeof selectAttachmentImageSource>>;
+  } | null>(null);
   const refreshAttemptedGenerationRef = useRef<string | null>(null);
   const source = selectAttachmentImageSource(
     attemptState,
     attachmentIdentity,
     availableSources,
   );
-  const failed = mediaCanLoad && !source;
+  const displayed = displayedSource?.attachmentIdentity === attachmentIdentity
+    ? displayedSource.source
+    : null;
+  const isLoadingReplacement = Boolean(source && displayed && source.url !== displayed.url);
+  // Expired metadata is a refresh state, not a failed image. Only show ImageOff
+  // after an actual usable source has exhausted its bounded attempts.
+  const failed = mediaCanLoad && !source && !displayed && attemptState.failures.length > 0;
   const deliveryGeneration = availableSources.map((candidate) => candidate.url).join('|') || [
     attachment.display_url,
     attachment.display_url_expires_at,
@@ -64,7 +74,25 @@ export default function AttachmentImage({
 
   return (
     <div ref={frameRef} className="absolute inset-0">
-    {source ? (
+    {displayed ? (
+      <BlurImage
+        key={displayed.url}
+        src={displayed.url}
+        srcSet={displayed.srcSet}
+        sizes={displayed.sizes}
+        blurhash={attachment.blurhash}
+        alt={alt}
+        className={className}
+        retainLoadedOnError
+        onError={() => {
+          // A tab-return revalidation can fail after this image was decoded.
+          // Keep its display layer intact and use the generation-bounded refresh.
+          refreshDeliveryOnce(displayed.url);
+        }}
+        loading={loading}
+        fetchPriority={fetchPriority}
+      />
+    ) : source ? (
       <BlurImage
         key={source.url}
         src={source.url}
@@ -74,6 +102,7 @@ export default function AttachmentImage({
         alt={alt}
         className={className}
         onLoad={() => {
+          setDisplayedSource({ attachmentIdentity, source });
           setAttemptState((current) => recordAttachmentImageSuccess(
             current,
             attachmentIdentity,
@@ -110,6 +139,28 @@ export default function AttachmentImage({
       </div>
     </div>
     )}
+    {isLoadingReplacement && source ? (
+      <BlurImage
+        key={`replacement:${source.url}`}
+        src={source.url}
+        srcSet={source.srcSet}
+        sizes={source.sizes}
+        blurhash={attachment.blurhash}
+        alt=""
+        className="absolute inset-0 opacity-0 pointer-events-none"
+        onLoad={() => {
+          setDisplayedSource({ attachmentIdentity, source });
+          setAttemptState((current) => recordAttachmentImageSuccess(current, attachmentIdentity, source));
+          onLoad?.();
+        }}
+        onError={() => {
+          setAttemptState((current) => recordAttachmentImageFailure(current, attachmentIdentity, source));
+          refreshDeliveryOnce(source.url);
+        }}
+        loading={loading}
+        fetchPriority={fetchPriority}
+      />
+    ) : null}
     </div>
   );
 }
