@@ -441,6 +441,7 @@ services:
       - /var/cache/nginx:rw,noexec,nosuid,uid=101,gid=101,mode=0755,size=16m
     volumes:
       - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./VOID0000-www/docker/nginx/security-headers.conf:/etc/nginx/void-security-headers.conf:ro
     ports:
       - "${VOID_EDGE_BIND:-127.0.0.1}:${VOID_EDGE_PORT:-8080}:8080"
     healthcheck:
