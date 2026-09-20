@@ -8,6 +8,7 @@ import {
 } from '../../../src/Services/hooks/Chats/MessageList/messageListRuntime';
 import {
   advanceMessageWindowGeneration,
+  clearMessageWindowLoadingIfOwned,
   getMessageWindowResetKey,
   isCurrentMessageWindowGeneration,
   synchronizeMessageWindowRef,
@@ -44,6 +45,12 @@ const makeMessage = (
 const latestPage = Array.from({ length: 20 }, (_, index) => (
   makeMessage(`latest-${index + 81}`, index + 81)
 ));
+
+const createDeferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => { resolve = complete; });
+  return { promise, resolve };
+};
 
 test('Jump to Present replaces a historical runtime with only the contiguous latest page', () => {
   const oldHistory = Array.from({ length: 20 }, (_, index) => makeMessage(`old-${index + 1}`, index));
@@ -116,6 +123,82 @@ test('a pagination response from before Jump to Present is stale and cannot muta
   }
 
   assert.deepEqual(runtime.renderedIds, latestPage.map(message => message.message_id));
+});
+
+test('stale loadNewer cleanup cannot release Jump-to-Present loading ownership', async () => {
+  const generationRef = { current: 0 };
+  const olderPagination = createDeferred<Message[]>();
+  const jumpToPresent = createDeferred<Message[]>();
+  let loadingNewer = true;
+  let appliedPagination = false;
+  let appliedPresent = false;
+  let newerPaginationStarts = 1;
+  const paginationGeneration = generationRef.current;
+
+  const paginationCompletion = olderPagination.promise.then((messages) => {
+    if (isCurrentMessageWindowGeneration(generationRef, paginationGeneration)) {
+      appliedPagination = messages.length > 0;
+    }
+  }).finally(() => {
+    clearMessageWindowLoadingIfOwned(generationRef, paginationGeneration, () => {
+      loadingNewer = false;
+    });
+  });
+
+  const jumpGeneration = advanceMessageWindowGeneration(generationRef);
+  loadingNewer = true;
+  const jumpCompletion = jumpToPresent.promise.then((messages) => {
+    if (isCurrentMessageWindowGeneration(generationRef, jumpGeneration)) {
+      appliedPresent = messages.length === latestPage.length;
+    }
+  }).finally(() => {
+    clearMessageWindowLoadingIfOwned(generationRef, jumpGeneration, () => {
+      loadingNewer = false;
+    });
+  });
+
+  olderPagination.resolve([makeMessage('stale-newer-page', 1)]);
+  await paginationCompletion;
+
+  const staleDemandStartedAnotherRequest = (() => {
+    if (loadingNewer) return false;
+    newerPaginationStarts += 1;
+    return true;
+  })();
+  assert.equal(appliedPagination, false);
+  assert.equal(loadingNewer, true);
+  assert.equal(staleDemandStartedAnotherRequest, false);
+  assert.equal(newerPaginationStarts, 1);
+
+  jumpToPresent.resolve(latestPage);
+  await jumpCompletion;
+  assert.equal(appliedPresent, true);
+  assert.equal(loadingNewer, false);
+});
+
+test('stale loadOlder cleanup cannot mutate loading state owned by a newer generation', async () => {
+  const generationRef = { current: 4 };
+  const loadOlder = createDeferred<void>();
+  const olderGeneration = generationRef.current;
+  let loadingOlder = true;
+  let staleCleanupCalls = 0;
+  const completion = loadOlder.promise.finally(() => {
+    clearMessageWindowLoadingIfOwned(generationRef, olderGeneration, () => {
+      staleCleanupCalls += 1;
+      loadingOlder = false;
+    });
+  });
+
+  const currentGeneration = advanceMessageWindowGeneration(generationRef);
+  loadOlder.resolve();
+  await completion;
+
+  assert.equal(staleCleanupCalls, 0);
+  assert.equal(loadingOlder, true);
+  assert.equal(clearMessageWindowLoadingIfOwned(generationRef, currentGeneration, () => {
+    loadingOlder = false;
+  }), true);
+  assert.equal(loadingOlder, false);
 });
 
 test('the synchronous message ref sees the present page before a replacement dispatch can render', () => {

@@ -29,6 +29,7 @@ import {
 } from './messageListPersistence';
 import {
   advanceMessageWindowGeneration,
+  clearMessageWindowLoadingIfOwned,
   isCurrentMessageWindowGeneration,
 } from './messageListWindowBoundary';
 
@@ -541,7 +542,11 @@ const useMessageListPagination = ({
       console.error('Failed to load older messages:', error);
       return false;
     } finally {
-      setLoadingOlder(false);
+      clearMessageWindowLoadingIfOwned(
+        windowRequestGenerationRef,
+        requestGeneration,
+        () => setLoadingOlder(false),
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -654,7 +659,11 @@ const useMessageListPagination = ({
       console.error('Failed to load newer messages:', error);
       return false;
     } finally {
-      setLoadingNewer(false);
+      clearMessageWindowLoadingIfOwned(
+        windowRequestGenerationRef,
+        requestGeneration,
+        () => setLoadingNewer(false),
+      );
     }
   }, [
     applyNewerMessages,
@@ -814,6 +823,7 @@ const useMessageListPagination = ({
   const jumpToPresent = useCallback(async () => {
     const storage = messageStore;
     const requestGeneration = advanceMessageWindowGeneration(windowRequestGenerationRef);
+    setLoadingOlder(false);
     setLoadingNewer(true);
 
     try {
@@ -846,7 +856,11 @@ const useMessageListPagination = ({
       notifyHistoryRateLimit(error);
       console.error('Failed to jump to present:', error);
     } finally {
-      setLoadingNewer(false);
+      clearMessageWindowLoadingIfOwned(
+        windowRequestGenerationRef,
+        requestGeneration,
+        () => setLoadingNewer(false),
+      );
     }
   }, [
     conversationId,
@@ -855,6 +869,7 @@ const useMessageListPagination = ({
     notifyHistoryRateLimit,
     onMessagesLoaded,
     replaceWindow,
+    setLoadingOlder,
     setLoadingNewer,
     windowRequestGenerationRef,
   ]);

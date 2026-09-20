@@ -46,6 +46,7 @@ import { useMessageListReplies } from './MessageList/useMessageListReplies';
 import { getRetryAfterMsFromError, isRateLimitError } from '../../Chat/chatUtils';
 import {
   advanceMessageWindowGeneration,
+  clearMessageWindowLoadingIfOwned,
   isCurrentMessageWindowGeneration,
   synchronizeMessageWindowRef,
 } from './MessageList/messageListWindowBoundary';
@@ -772,6 +773,8 @@ export const useMessageList = (
   const loadMessageContext = useCallback(async (targetMessageId: string) => {
     const storage = messageStore;
     const requestGeneration = advanceMessageWindowGeneration(windowRequestGenerationRef);
+    setLoadingOlder(false);
+    setLoadingNewer(true);
     try {
       const context = await getMessageContext(
         conversationId,
@@ -822,6 +825,12 @@ export const useMessageList = (
       }
       console.error('Failed to load message context:', error);
       return false;
+    } finally {
+      clearMessageWindowLoadingIfOwned(
+        windowRequestGenerationRef,
+        requestGeneration,
+        () => setLoadingNewer(false),
+      );
     }
   }, [
     conversationId,
@@ -830,6 +839,8 @@ export const useMessageList = (
     onMessagesLoaded,
     onHistoryRateLimited,
     replaceWindow,
+    setLoadingNewer,
+    setLoadingOlder,
     windowRequestGenerationRef,
   ]);
 

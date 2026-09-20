@@ -11,6 +11,19 @@ const isCurrentMessageWindowGeneration = (
   generation: number,
 ) => generationRef.current === generation;
 
+const clearMessageWindowLoadingIfOwned = (
+  generationRef: MutableRefObject<number>,
+  generation: number,
+  clearLoading: () => void,
+) => {
+  if (!isCurrentMessageWindowGeneration(generationRef, generation)) {
+    return false;
+  }
+
+  clearLoading();
+  return true;
+};
+
 const synchronizeMessageWindowRef = (
   messagesRef: MutableRefObject<Message[]>,
   messages: Message[],
@@ -24,6 +37,7 @@ const getMessageWindowResetKey = (conversationId: string, windowRevision: number
 
 export {
   advanceMessageWindowGeneration,
+  clearMessageWindowLoadingIfOwned,
   getMessageWindowResetKey,
   isCurrentMessageWindowGeneration,
   synchronizeMessageWindowRef,
