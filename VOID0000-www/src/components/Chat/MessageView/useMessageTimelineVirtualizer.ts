@@ -3,6 +3,35 @@ import type { HistoryRangeStatus } from './useMessageScrollGeometry';
 
 type HistoryLoadDirection = 'older' | 'newer';
 type HistoryScrollSignal = { direction: HistoryLoadDirection; at: number };
+type MutableValue<T> = { current: T };
+
+interface HistoryLoadDemandRefs {
+  historyLoadInFlightRef: MutableValue<HistoryLoadDirection | null>;
+  lastHistoryLoadAtRef: MutableValue<number>;
+  lastScrollTopRef: MutableValue<number | null>;
+  lastScrollDirectionSignalRef: MutableValue<HistoryScrollSignal | null>;
+  retainedScrollSignalRef: MutableValue<HistoryScrollSignal | null>;
+  historyLoadRetryDirectionRef: MutableValue<HistoryLoadDirection | null>;
+  consumedScrollSignalAtRef: MutableValue<Record<HistoryLoadDirection, number>>;
+  historyLoadRetryTimeoutRef: MutableValue<ReturnType<typeof setTimeout> | null>;
+}
+
+export const resetHistoryLoadDemand = (
+  refs: HistoryLoadDemandRefs,
+  scrollTop: number | null,
+) => {
+  refs.historyLoadInFlightRef.current = null;
+  refs.lastHistoryLoadAtRef.current = 0;
+  refs.lastScrollTopRef.current = scrollTop;
+  refs.lastScrollDirectionSignalRef.current = null;
+  refs.retainedScrollSignalRef.current = null;
+  refs.historyLoadRetryDirectionRef.current = null;
+  refs.consumedScrollSignalAtRef.current = { older: 0, newer: 0 };
+  if (refs.historyLoadRetryTimeoutRef.current) {
+    clearTimeout(refs.historyLoadRetryTimeoutRef.current);
+    refs.historyLoadRetryTimeoutRef.current = null;
+  }
+};
 
 export const getEffectiveHistoryLoadThreshold = ({
   configuredThreshold,
@@ -114,6 +143,19 @@ export const useMessageTimelineVirtualizer = ({
   const historyLoadRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyLoadRetryDirectionRef = useRef<HistoryLoadDirection | null>(null);
 
+  const resetHistoryDemand = useCallback(() => {
+    resetHistoryLoadDemand({
+      historyLoadInFlightRef,
+      lastHistoryLoadAtRef,
+      lastScrollTopRef,
+      lastScrollDirectionSignalRef,
+      retainedScrollSignalRef,
+      historyLoadRetryDirectionRef,
+      consumedScrollSignalAtRef,
+      historyLoadRetryTimeoutRef,
+    }, scrollerRef.current?.scrollTop ?? null);
+  }, [scrollerRef]);
+
   const scheduleHistoryLoadRetry = useCallback((delayMs: number, preferredDirection?: HistoryLoadDirection) => {
     if (historyLoadRetryTimeoutRef.current) {
       clearTimeout(historyLoadRetryTimeoutRef.current);
@@ -131,21 +173,8 @@ export const useMessageTimelineVirtualizer = ({
   }, []);
 
   useEffect(() => {
-    historyLoadInFlightRef.current = null;
-    lastHistoryLoadAtRef.current = 0;
-    lastScrollTopRef.current = scrollerRef.current?.scrollTop ?? null;
-    lastScrollDirectionSignalRef.current = null;
-    retainedScrollSignalRef.current = null;
-    historyLoadRetryDirectionRef.current = null;
-    consumedScrollSignalAtRef.current = {
-      older: 0,
-      newer: 0,
-    };
-    if (historyLoadRetryTimeoutRef.current) {
-      clearTimeout(historyLoadRetryTimeoutRef.current);
-      historyLoadRetryTimeoutRef.current = null;
-    }
-  }, [resetKey, scrollerRef]);
+    resetHistoryDemand();
+  }, [resetHistoryDemand, resetKey]);
 
   const startHistoryLoad = useCallback((direction: HistoryLoadDirection, signalAt: number) => {
     historyLoadInFlightRef.current = direction;
@@ -398,6 +427,7 @@ export const useMessageTimelineVirtualizer = ({
   return {
     handleScroll,
     maybeStartBestHistoryLoad,
+    resetHistoryDemand,
   };
 };
 

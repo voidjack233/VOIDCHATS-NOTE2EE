@@ -359,6 +359,32 @@ const applyRenderedUpdate = (
   updater: (messages: Message[]) => Message[],
 ) => setRenderedMessages(currentRuntime, updater(getRenderedMessages(currentRuntime)));
 
+const patchRenderedMessageIfPresent = (
+  currentRuntime: ConversationRuntime,
+  messageId: string,
+  updater: (message: Message) => Message,
+) => {
+  const normalizedId = String(messageId);
+  if (!currentRuntime.renderedIds.includes(normalizedId)) {
+    return currentRuntime;
+  }
+
+  const currentMessage = currentRuntime.messageById.get(normalizedId);
+  if (!currentMessage) {
+    return currentRuntime;
+  }
+
+  const nextMessage = updater(currentMessage);
+  if (String(nextMessage.message_id) !== normalizedId) {
+    return currentRuntime;
+  }
+
+  const runtime = cloneRuntime(currentRuntime);
+  runtime.messageById.set(normalizedId, nextMessage);
+  saveConversationRuntime(runtime);
+  return runtime;
+};
+
 const mergeIntoRenderedWindow = (
   currentRuntime: ConversationRuntime,
   incoming: Message[],
@@ -549,6 +575,7 @@ export {
   getRuntimeStats,
   getSavedConversationRuntime,
   mergeIntoRenderedWindow,
+  patchRenderedMessageIfPresent,
   queueLiveMessages,
   recordMeasuredMessageHeights,
   recordRuntimePage,

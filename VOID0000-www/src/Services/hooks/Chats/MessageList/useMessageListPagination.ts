@@ -2,7 +2,6 @@ import { messageStore } from '../../../Chat/chatStore';
 import {
   useCallback,
   useEffect,
-  useRef,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -28,6 +27,10 @@ import {
   sortMessages,
   toUIMessage,
 } from './messageListPersistence';
+import {
+  advanceMessageWindowGeneration,
+  isCurrentMessageWindowGeneration,
+} from './messageListWindowBoundary';
 
 interface UseMessageListPaginationParams {
   conversationId: string;
@@ -107,6 +110,7 @@ interface UseMessageListPaginationParams {
   onMessagesLoaded?: (messages: Message[]) => void;
   onHistoryRateLimited?: (retryAfterMs?: number) => void;
   messageListBaseIndex: number;
+  windowRequestGenerationRef: MutableRefObject<number>;
 }
 
 const FETCH_SIZE = MESSAGE_PAGE_SIZE;
@@ -202,11 +206,8 @@ const useMessageListPagination = ({
   onMessagesLoaded,
   onHistoryRateLimited,
   messageListBaseIndex,
+  windowRequestGenerationRef,
 }: UseMessageListPaginationParams) => {
-  const firstItemIndexRef = useRef(firstItemIndex);
-  firstItemIndexRef.current = firstItemIndex;
-  const historyRequestGenerationRef = useRef(0);
-
   const notifyHistoryRateLimit = useCallback((error: unknown) => {
     if (!isRateLimitError(error)) {
       return false;
@@ -217,7 +218,7 @@ const useMessageListPagination = ({
   }, [onHistoryRateLimited]);
 
   useEffect(() => {
-    historyRequestGenerationRef.current += 1;
+    advanceMessageWindowGeneration(windowRequestGenerationRef);
     replaceWindow({
       messages: [],
       firstItemIndex: messageListBaseIndex,
@@ -228,13 +229,13 @@ const useMessageListPagination = ({
       hasNewer: false,
       isAtPresent: true,
     });
-  }, [conversationId, messageListBaseIndex, replaceWindow]);
+  }, [conversationId, messageListBaseIndex, replaceWindow, windowRequestGenerationRef]);
 
   const applyOlderMessages = useCallback((olderMessages: Message[], seamBreakBeforeId: string) => {
     if (olderMessages.length === 0) return null;
 
     const prevCount = messagesRef.current.length;
-    const prevFirstItemIndex = firstItemIndexRef.current;
+    const prevFirstItemIndex = firstItemIndex;
     const existingIds = new Set(messagesRef.current.map((message) => message.message_id));
     const prependedMessages = olderMessages.filter((message) => !existingIds.has(message.message_id));
     const prependedCount = prependedMessages.length;
@@ -302,6 +303,7 @@ const useMessageListPagination = ({
   }, [
     applyPrependedWindow,
     conversationId,
+    firstItemIndex,
     getMessageHeight,
     messagesRef,
     onMessagesLoaded,
@@ -317,7 +319,7 @@ const useMessageListPagination = ({
     },
   ) => {
     const prevCount = messagesRef.current.length;
-    const prevFirstItemIndex = firstItemIndexRef.current;
+    const prevFirstItemIndex = firstItemIndex;
     const existingIds = new Set(messagesRef.current.map((message) => message.message_id));
     const appendedMessages = newerMessages.filter((message) => !existingIds.has(message.message_id));
     const appendedCount = appendedMessages.length;
@@ -364,6 +366,7 @@ const useMessageListPagination = ({
     };
   }, [
     applyAppendedWindow,
+    firstItemIndex,
     getMessageHeight,
     messagesRef,
     onMessagesLoaded,
@@ -462,12 +465,12 @@ const useMessageListPagination = ({
       conversationId,
       oldestMessageId: messagesRef.current[0]?.message_id || null,
       currentCount: messagesRef.current.length,
-      firstItemIndex: firstItemIndexRef.current,
+      firstItemIndex,
       hasOlder,
       loadingOlder,
     });
     setLoadingOlder(true);
-    const requestGeneration = historyRequestGenerationRef.current;
+    const requestGeneration = windowRequestGenerationRef.current;
 
     try {
       const oldestMessage = messagesRef.current[0];
@@ -475,12 +478,12 @@ const useMessageListPagination = ({
 
       const seamBreakBeforeId = oldestMessage.message_id;
       const { olderUI, hasMore, debug } = await fetchOlderMessages(oldestMessage.message_id);
-      if (requestGeneration !== historyRequestGenerationRef.current) {
+      if (!isCurrentMessageWindowGeneration(windowRequestGenerationRef, requestGeneration)) {
         debugMessageList('older_fetch_stale_skip', {
           conversationId,
           oldestMessageId: oldestMessage.message_id,
           requestGeneration,
-          currentGeneration: historyRequestGenerationRef.current,
+          currentGeneration: windowRequestGenerationRef.current,
         });
         return false;
       }
@@ -496,7 +499,7 @@ const useMessageListPagination = ({
           fetchedCount: olderUI.length,
           hasMore,
           seamBreakBeforeId,
-          firstItemIndex: firstItemIndexRef.current,
+          firstItemIndex,
         });
       } else if (!debug.usedLocalFallback) {
         setHasOlder(false);
@@ -544,6 +547,7 @@ const useMessageListPagination = ({
   }, [
     applyOlderMessages,
     fetchOlderMessages,
+    firstItemIndex,
     hasOlder,
     loadingOlder,
     messagesRef,
@@ -560,7 +564,7 @@ const useMessageListPagination = ({
     if (loadingNewer || !hasNewer || messages.length === 0) return false;
 
     setLoadingNewer(true);
-    const requestGeneration = historyRequestGenerationRef.current;
+    const requestGeneration = windowRequestGenerationRef.current;
 
     try {
       const newestMessage = getNewestServerBackedMessage(messages);
@@ -605,12 +609,12 @@ const useMessageListPagination = ({
 
       const visibleNewerMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);
       const newerUI = sortMessages(visibleNewerMessages.map(toUIMessage));
-      if (requestGeneration !== historyRequestGenerationRef.current) {
+      if (!isCurrentMessageWindowGeneration(windowRequestGenerationRef, requestGeneration)) {
         debugMessageList('newer_fetch_stale_skip', {
           conversationId,
           newestMessageId: newestMessage.message_id,
           requestGeneration,
-          currentGeneration: historyRequestGenerationRef.current,
+          currentGeneration: windowRequestGenerationRef.current,
         });
         return false;
       }
@@ -664,13 +668,14 @@ const useMessageListPagination = ({
     notifyHistoryRateLimit,
     queueNewerMessages,
     setLoadingNewer,
-    userId,
+    windowRequestGenerationRef,
   ]);
 
   type RecentReconcileSource = 'gateway_ready' | 'gateway_resumed';
 
   const reconcileRecentMessages = useCallback(async (source: RecentReconcileSource) => {
     const storage = messageStore;
+    const requestGeneration = windowRequestGenerationRef.current;
     const newestMessage = getNewestServerBackedMessage(messagesRef.current);
     if (!newestMessage) return;
 
@@ -688,6 +693,8 @@ const useMessageListPagination = ({
       const visibleLatestMessages = filterMessagesByHistoryFence(latestLocalMessages, historyAccessFence);
       const latestUI = sortMessages(visibleLatestMessages.map(toUIMessage));
 
+      if (!isCurrentMessageWindowGeneration(windowRequestGenerationRef, requestGeneration)) return;
+
       if (latestUI.length > 0 && !hasNewer) {
         mergeVisibleMessages({
           incoming: latestUI,
@@ -703,6 +710,7 @@ const useMessageListPagination = ({
         after: newestMessage.message_id,
         limit: FETCH_SIZE,
       });
+      if (!isCurrentMessageWindowGeneration(windowRequestGenerationRef, requestGeneration)) return;
 
       if (serverResult.messages.length === 0) {
         clearNewerHistoryRange();
@@ -752,6 +760,7 @@ const useMessageListPagination = ({
     setHasNewer,
     setIsAtPresent,
     userId,
+    windowRequestGenerationRef,
   ]);
 
   useEffect(() => {
@@ -804,8 +813,7 @@ const useMessageListPagination = ({
 
   const jumpToPresent = useCallback(async () => {
     const storage = messageStore;
-    historyRequestGenerationRef.current += 1;
-    const requestGeneration = historyRequestGenerationRef.current;
+    const requestGeneration = advanceMessageWindowGeneration(windowRequestGenerationRef);
     setLoadingNewer(true);
 
     try {
@@ -816,7 +824,7 @@ const useMessageListPagination = ({
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages, storage);
       const visibleFreshMessages = filterMessagesByHistoryFence(localMessages, historyAccessFence);
       const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
-      if (requestGeneration !== historyRequestGenerationRef.current) {
+      if (!isCurrentMessageWindowGeneration(windowRequestGenerationRef, requestGeneration)) {
         return;
       }
 
@@ -824,6 +832,9 @@ const useMessageListPagination = ({
         messages: freshUI,
         firstItemIndex: messageListBaseIndex,
         groupBreakBeforeIds: new Set(),
+        loading: false,
+        syncing: false,
+        initialHydrationSettled: true,
         loadingOlder: false,
         loadingNewer: false,
         hasOlder: serverResult.has_more,
@@ -845,7 +856,7 @@ const useMessageListPagination = ({
     onMessagesLoaded,
     replaceWindow,
     setLoadingNewer,
-    userId,
+    windowRequestGenerationRef,
   ]);
 
   return {

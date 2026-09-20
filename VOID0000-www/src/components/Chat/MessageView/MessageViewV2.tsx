@@ -63,6 +63,7 @@ import {
   saveConversationScrollPosition,
   type ConversationScrollPosition,
 } from '../../../Services/hooks/Chats/MessageList/messageListWindowCache';
+import { getMessageWindowResetKey } from '../../../Services/hooks/Chats/MessageList/messageListWindowBoundary';
 import {
   getHistoryLogicalSlotHeight,
   getRenderedNewerHistoryRangeLimit,
@@ -255,6 +256,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     hasNewer,
     isAtPresent,
     runtimeStats,
+    windowRevision,
     topSpacerHeight,
     bottomSpacerHeight,
     groupBreakBeforeIds,
@@ -264,6 +266,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     getReplyParent,
     isReplyParentLoading,
     mergeVisibleMessages,
+    patchVisibleMessageIfPresent,
     loadMessageContext,
     jumpToPresent,
     loadOlder,
@@ -294,6 +297,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName: getSmartDisplayName, getSenderAvatarUrl, getSenderUsername: getSmartUsername } = useMessageDisplay(members, userAvatar, myProfile);
   const visualMessages = messages;
+  const messageWindowResetKey = getMessageWindowResetKey(conversation.id, windowRevision);
   const refreshAttachmentDelivery = useCallback((message: Message) => {
     const key = `${conversation.id}:${message.message_id}`;
     const active = attachmentDeliveryRefreshesRef.current.get(key);
@@ -301,15 +305,17 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     const request = getMessageById(conversation.id, message.message_id).then((refreshed) => {
       if (!refreshed) return null;
-      const merged = mergeAttachmentDelivery(message, refreshed);
-      mergeVisibleMessages({ incoming: [merged], currentUserId: user?.id });
-      return merged;
+      patchVisibleMessageIfPresent({
+        messageId: message.message_id,
+        updater: (current) => mergeAttachmentDelivery(current, refreshed),
+      });
+      return mergeAttachmentDelivery(message, refreshed);
     }).finally(() => {
       attachmentDeliveryRefreshesRef.current.delete(key);
     });
     attachmentDeliveryRefreshesRef.current.set(key, request);
     return request;
-  }, [conversation.id, mergeVisibleMessages, user?.id]);
+  }, [conversation.id, patchVisibleMessageIfPresent]);
   if (isMessageGeometryDiagnosticsEnabled()) {
     messageGeometryTraitsRef.current = new Map(
       visualMessages.map((message) => [
@@ -368,7 +374,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   } = useMessageScrollGeometry({
     scrollerRef,
     scrollCompensationBlockerRef: historyScrollTransactionActiveRef,
-    resetKey: conversation.id,
+    resetKey: messageWindowResetKey,
     topSpacerHeight,
     bottomSpacerHeight,
     hasOlder,
@@ -897,7 +903,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     restoreHistoryViewportAfterCommit,
     syncScrollState,
   } = useMessageHistoryViewportRestoration({
-    resetKey: conversation.id,
+    resetKey: messageWindowResetKey,
     scrollerRef,
     firstVisualMessageId,
     lastVisualMessageId,
@@ -1044,9 +1050,10 @@ const MessageViewV2 = memo(function MessageViewV2({
   const {
     handleScroll,
     maybeStartBestHistoryLoad,
+    resetHistoryDemand,
   } = useMessageTimelineVirtualizer({
     scrollerRef,
-    resetKey: conversation.id,
+    resetKey: messageWindowResetKey,
     initialLatestRestoreDoneRef,
     pendingOlderLoadScrollSnapshotRef,
     pendingNewerLoadScrollSnapshotRef,
@@ -1077,7 +1084,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   useMessageHistoryBoundaryLock({
     scrollerRef,
-    resetKey: conversation.id,
+    resetKey: messageWindowResetKey,
     loadingOlderRequestInFlightRef,
     loadingOlderStateRef,
     pendingOlderLoadScrollSnapshotRef,
@@ -1175,7 +1182,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     scrollerRef,
     olderSentinelRef,
     newerSentinelRef,
-    resetKey: conversation.id,
+    resetKey: messageWindowResetKey,
     initialLatestRestoreDoneRef,
     loadingNewerRequestInFlightRef,
     hasNewer,
@@ -1185,6 +1192,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   });
 
   const jumpToPresentAndScroll = useCallback(async () => {
+    resetHistoryDemand();
     forceFollowOutputRef.current = true;
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
@@ -1203,7 +1211,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         syncScrollState();
       });
     });
-  }, [bottomLogicalRangeHeight, jumpToPresent, scrollToBottom, syncScrollState]);
+  }, [bottomLogicalRangeHeight, jumpToPresent, resetHistoryDemand, scrollToBottom, syncScrollState]);
 
   useEffect(() => {
     if (!ownSendJumpRequest || ownSendJumpRequest === lastOwnSendJumpRequestRef.current) {

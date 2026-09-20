@@ -20,6 +20,7 @@ import {
   createCachedHistoricalWindow,
   hasCachedMessagesAfterWindow,
 } from './messageListInitialRuntime';
+import { isCurrentMessageWindowGeneration } from './messageListWindowBoundary';
 
 interface UseMessageListLoadingParams {
   conversationId: string;
@@ -69,6 +70,7 @@ interface UseMessageListLoadingParams {
   setInitialHydrationSettled: Dispatch<SetStateAction<boolean>>;
   messagesRef: MutableRefObject<Message[]>;
   lastLoadedConversationIdRef: MutableRefObject<string | null>;
+  windowRequestGenerationRef: MutableRefObject<number>;
 }
 
 const INITIAL_OPEN_LIMIT = MESSAGE_INITIAL_PAGE_SIZE;
@@ -90,15 +92,20 @@ const useMessageListLoading = ({
   setInitialHydrationSettled,
   messagesRef,
   lastLoadedConversationIdRef,
+  windowRequestGenerationRef,
 }: UseMessageListLoadingParams) => {
   const lastLoadedHistoryFenceSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
     let ignore = false;
+    const requestGeneration = windowRequestGenerationRef.current;
+    const isStale = () => (
+      ignore || !isCurrentMessageWindowGeneration(windowRequestGenerationRef, requestGeneration)
+    );
     const sessionSnapshot = getConversationWindowSnapshot(conversationId);
 
     const settleInitialHydration = () => {
-      if (!ignore) setInitialHydrationSettled(true);
+      if (!isStale()) setInitialHydrationSettled(true);
     };
 
     const resetVisibleWindow = () => {
@@ -238,7 +245,7 @@ const useMessageListLoading = ({
             savedRuntimeExists: Boolean(savedRuntime),
           }),
         ]);
-        if (ignore) return;
+        if (isStale()) return;
 
         const cachedMessages = filterMessagesByHistoryFence(cached.messages, historyAccessFence);
         const cachedUI = sortMessages(cachedMessages.map(toUIMessage));
@@ -277,7 +284,7 @@ const useMessageListLoading = ({
 
         setSyncing(true);
         const syncResult = await syncPromise;
-        if (ignore) return;
+        if (isStale()) return;
         setSyncing(false);
         if (cachedHistoricalWindow) {
           if (syncResult.newMessages.length > 0) {
@@ -293,7 +300,7 @@ const useMessageListLoading = ({
         }
 
         const fresh = await messageSync.readLocal(conversationId, { limit: INITIAL_OPEN_LIMIT });
-        if (ignore) return;
+        if (isStale()) return;
 
         const freshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
         const freshUI = sortMessages(freshMessages.map(toUIMessage));
@@ -316,7 +323,7 @@ const useMessageListLoading = ({
         }
         settleInitialHydration();
       } catch (error) {
-        if (ignore) return;
+        if (isStale()) return;
         console.error('Failed to load messages:', error);
         setLoading(false);
         setSyncing(false);
@@ -345,6 +352,7 @@ const useMessageListLoading = ({
     setLoading,
     setSyncing,
     userId,
+    windowRequestGenerationRef,
   ]);
 };
 

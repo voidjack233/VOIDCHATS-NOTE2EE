@@ -26,6 +26,7 @@ import {
   evictTrimmedMessages,
   getRenderedMessages,
   getRuntimeStats,
+  patchRenderedMessageIfPresent,
   queueLiveMessages,
   recordMeasuredMessageHeights,
   recordRuntimePage,
@@ -43,6 +44,11 @@ import { useMessageListPagination } from './MessageList/useMessageListPagination
 import { useMessageListRealtime } from './MessageList/useMessageListRealtime';
 import { useMessageListReplies } from './MessageList/useMessageListReplies';
 import { getRetryAfterMsFromError, isRateLimitError } from '../../Chat/chatUtils';
+import {
+  advanceMessageWindowGeneration,
+  isCurrentMessageWindowGeneration,
+  synchronizeMessageWindowRef,
+} from './MessageList/messageListWindowBoundary';
 
 const MESSAGE_LIST_BASE_INDEX = 100000;
 const MESSAGE_CONTEXT_RADIUS = 30;
@@ -56,6 +62,7 @@ interface MessageWindowMetrics {
 
 interface MessageWindowState {
   runtime: ConversationRuntime;
+  windowRevision: number;
   firstItemIndex: number;
   groupBreakBeforeIds: Set<string>;
   queuedNewerHasNewer: boolean;
@@ -72,6 +79,11 @@ interface MessageWindowState {
 
 type MessageWindowAction =
   | { type: 'set_messages'; value: SetStateAction<Message[]> }
+  | {
+      type: 'patch_visible_message';
+      messageId: string;
+      updater: (message: Message) => Message;
+    }
   | {
       type: 'replace_window';
       conversationId: string;
@@ -179,6 +191,7 @@ const createInitialMessageWindowState = ({
 
   return {
     runtime,
+    windowRevision: 0,
     firstItemIndex: MESSAGE_LIST_BASE_INDEX,
     groupBreakBeforeIds: new Set(),
     queuedNewerHasNewer: false,
@@ -247,6 +260,7 @@ const messageWindowReducer = (
       return {
         ...state,
         runtime: nextRuntime,
+        windowRevision: state.windowRevision + 1,
         firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
         groupBreakBeforeIds: pruneGroupBreaksToMessages(
           action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
@@ -269,6 +283,7 @@ const messageWindowReducer = (
       return {
         ...state,
         runtime: action.runtime,
+        windowRevision: state.windowRevision + 1,
         firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
         groupBreakBeforeIds: pruneGroupBreaksToMessages(
           action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
@@ -285,6 +300,16 @@ const messageWindowReducer = (
         hasNewer: action.runtime.hasNewer,
         isAtPresent: action.isAtPresent ?? !action.runtime.hasNewer,
       };
+    }
+    case 'patch_visible_message': {
+      const nextRuntime = patchRenderedMessageIfPresent(
+        state.runtime,
+        action.messageId,
+        action.updater,
+      );
+      return nextRuntime === state.runtime
+        ? state
+        : { ...state, runtime: nextRuntime };
     }
     case 'queue_newer_messages': {
       const hasExistingQueuedNewer = state.runtime.pendingLiveIds.length > 0;
@@ -560,9 +585,11 @@ export const useMessageList = (
   );
 
   const messagesRef = useRef<Message[]>([]);
+  const windowRequestGenerationRef = useRef(0);
   const lastLoadedConversationIdRef = useRef<string | null>(null);
 
   const runtime = windowState.runtime;
+  const windowRevision = windowState.windowRevision;
   const messages = useMemo(() => getRenderedMessages(runtime), [runtime]);
   const firstItemIndex = windowState.firstItemIndex;
   const topSpacerHeight = runtime.topSpacerHeight;
@@ -604,6 +631,7 @@ export const useMessageList = (
     hasNewer?: boolean;
     isAtPresent?: boolean;
   }) => {
+    synchronizeMessageWindowRef(messagesRef, params.messages);
     dispatchWindowState({ type: 'replace_window', conversationId, ...params });
   }, [conversationId]);
 
@@ -620,7 +648,15 @@ export const useMessageList = (
     hasNewer?: boolean;
     isAtPresent?: boolean;
   }) => {
+    synchronizeMessageWindowRef(messagesRef, getRenderedMessages(params.runtime));
     dispatchWindowState({ type: 'restore_runtime', ...params });
+  }, []);
+
+  const patchVisibleMessageIfPresent = useCallback((params: {
+    messageId: string;
+    updater: (message: Message) => Message;
+  }) => {
+    dispatchWindowState({ type: 'patch_visible_message', ...params });
   }, []);
 
   const mergeVisibleMessages = useCallback((params: {
@@ -735,6 +771,7 @@ export const useMessageList = (
 
   const loadMessageContext = useCallback(async (targetMessageId: string) => {
     const storage = messageStore;
+    const requestGeneration = advanceMessageWindowGeneration(windowRequestGenerationRef);
     try {
       const context = await getMessageContext(
         conversationId,
@@ -753,6 +790,9 @@ export const useMessageList = (
 
       const localMessages = await persistFetchedMessagesSafely(visibleMessages, storage);
       const contextMessages = sortMessages(localMessages.map(toUIMessage));
+      if (!isCurrentMessageWindowGeneration(windowRequestGenerationRef, requestGeneration)) {
+        return false;
+      }
       if (!contextMessages.some((message) => String(message.message_id) === String(targetId))) {
         return false;
       }
@@ -790,6 +830,7 @@ export const useMessageList = (
     onMessagesLoaded,
     onHistoryRateLimited,
     replaceWindow,
+    windowRequestGenerationRef,
   ]);
 
   useEffect(() => {
@@ -831,6 +872,7 @@ export const useMessageList = (
     onMessagesLoaded,
     onHistoryRateLimited,
     messageListBaseIndex: MESSAGE_LIST_BASE_INDEX,
+    windowRequestGenerationRef,
   });
 
   useMessageListLoading({
@@ -850,6 +892,7 @@ export const useMessageList = (
     setInitialHydrationSettled,
     messagesRef,
     lastLoadedConversationIdRef,
+    windowRequestGenerationRef,
   });
 
   const { handleDelete } = useMessageListRealtime({
@@ -919,6 +962,7 @@ export const useMessageList = (
     hasNewer,
     isAtPresent,
     runtimeStats,
+    windowRevision,
     firstItemIndex,
     topSpacerHeight,
     bottomSpacerHeight,
@@ -929,6 +973,7 @@ export const useMessageList = (
     getReplyParent,
     isReplyParentLoading,
     mergeVisibleMessages,
+    patchVisibleMessageIfPresent,
     loadMessageContext,
     jumpToPresent,
     loadOlder,
