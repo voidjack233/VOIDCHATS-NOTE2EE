@@ -37,19 +37,26 @@ export default function AttachmentImage({
   const [attemptState, setAttemptState] = useState(() => (
     createAttachmentImageAttemptState(attachmentIdentity)
   ));
-  const refreshAttemptedRef = useRef<string | null>(null);
+  const refreshAttemptedGenerationRef = useRef<string | null>(null);
   const source = selectAttachmentImageSource(
     attemptState,
     attachmentIdentity,
     availableSources,
   );
   const failed = mediaCanLoad && !source;
+  const deliveryGeneration = availableSources.map((candidate) => candidate.url).join('|') || [
+    attachment.display_url,
+    attachment.display_url_expires_at,
+    attachment.url,
+    attachment.url_expires_at,
+  ].join('|');
 
-  const refreshDeliveryOnce = useCallback(() => {
-    if (!onRefreshDelivery || refreshAttemptedRef.current === attachmentIdentity) return;
-    refreshAttemptedRef.current = attachmentIdentity;
+  const refreshDeliveryOnce = useCallback((failedSourceUrl?: string) => {
+    const generation = failedSourceUrl || deliveryGeneration;
+    if (!onRefreshDelivery || refreshAttemptedGenerationRef.current === generation) return;
+    refreshAttemptedGenerationRef.current = generation;
     void onRefreshDelivery();
-  }, [attachmentIdentity, onRefreshDelivery]);
+  }, [deliveryGeneration, onRefreshDelivery]);
 
   useEffect(() => {
     if (mediaCanLoad && availableSources.length === 0) refreshDeliveryOnce();
@@ -80,7 +87,7 @@ export default function AttachmentImage({
             attachmentIdentity,
             source,
           ));
-          refreshDeliveryOnce();
+          refreshDeliveryOnce(source.url);
         }}
         loading={loading}
         fetchPriority={fetchPriority}

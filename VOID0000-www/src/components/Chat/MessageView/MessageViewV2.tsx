@@ -9,6 +9,7 @@ import {
 } from '../../../Services/Chat/chatService';
 import { parseAttachments } from '../../../Services/Chat/messageAttachments';
 import { getAttachmentRenderIdentity } from '../../../Services/Chat/attachmentService';
+import { messageStore } from '../../../Services/Chat/chatStore';
 import { type Conversation, type ConversationMember, type Message } from '../../../Services/Chat/chatService';
 import { useUser } from '../../../Services/Auth/UserContext';
 import { debugLog } from '../../../Services/utils/debugLog';
@@ -303,13 +304,20 @@ const MessageViewV2 = memo(function MessageViewV2({
     const active = attachmentDeliveryRefreshesRef.current.get(key);
     if (active) return active;
 
-    const request = getMessageById(conversation.id, message.message_id).then((refreshed) => {
+    const request = getMessageById(conversation.id, message.message_id).then(async (refreshed) => {
       if (!refreshed) return null;
+      const mergedForCaller = mergeAttachmentDelivery(message, refreshed);
       patchVisibleMessageIfPresent({
         messageId: message.message_id,
         updater: (current) => mergeAttachmentDelivery(current, refreshed),
       });
-      return mergeAttachmentDelivery(message, refreshed);
+      // Keep the local-first cache on the same delivery generation. updateMessage
+      // is a no-op for an absent record and only replaces attachments on an
+      // existing record, so this cannot reinsert a trimmed timeline message.
+      await messageStore.updateMessage(conversation.id, message.message_id, {
+        attachments: mergedForCaller.attachments,
+      });
+      return mergedForCaller;
     }).finally(() => {
       attachmentDeliveryRefreshesRef.current.delete(key);
     });
