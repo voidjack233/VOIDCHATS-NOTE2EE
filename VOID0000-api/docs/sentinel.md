@@ -11,6 +11,23 @@ Sentinel is a process-local, read-only single-flight layer between API routes an
 
 Writes never pass through Sentinel.
 
+## Observability
+
+The message service's existing `GET /health` includes `metrics.sentinel`:
+`enabled`, `started`, `joined`, `succeeded`, `failed`, `bypassed`, `active` and
+`maxActive`. Reading this snapshot performs no storage operations and exposes
+no flight keys, identifiers or credentials. No additional public route or
+monitoring service is introduced.
+
+Counters are process-local and reset on restart. `active` is the current number
+of tracked flights; `maxActive` is the configured capacity, not a high-water
+mark. `joined` counts callers sharing existing work. `bypassed` counts reads
+executed without a tracked flight at capacity (or with coalescing disabled).
+`succeeded` and `failed` count tracked leaders, not followers or bypassed tasks.
+These are aggregate statistics across the read paths above, not per-path or
+per-conversation metrics. Controlled history tests independently verify which
+query joins; live per-path benefit is not inferred from aggregate totals.
+
 ## Usage
 
 ```js

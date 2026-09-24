@@ -34,6 +34,7 @@ const {
   pingIpcControlSocket,
 } = await import('../attachmentSanitizer/ipcProtocol.js');
 const { closePubSub, initPublisher } = await import('../valkey-pubsub.js');
+const { default: sentinel } = await import('../sentinel/index.js');
 
 const app = express();
 const PORT = Number(process.env.MESSAGE_SERVICE_PORT || process.env.PORT || 3002);
@@ -79,6 +80,7 @@ app.get('/health', (_req, res) => {
     success: true,
     service: 'voidapp-message-service',
     pid: process.pid,
+    metrics: { sentinel: sentinel.getSnapshot() },
   });
 });
 
