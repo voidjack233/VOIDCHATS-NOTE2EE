@@ -9,6 +9,7 @@ import {
 } from './shared.js';
 import sentinel, { createSentinelKey } from '../../../sentinel/index.js';
 import { attachSignedAttachmentUrls } from '../../../utils/attachmentDelivery.js';
+import { historyMetrics } from '../../../health/historyMetrics.js';
 
 const router = Router({ mergeParams: true });
 
@@ -102,10 +103,10 @@ router.get<{ conversationId: string }>('/', async (req, res) => {
         queryCursor,
         fetchChunkSize,
       );
-      const result: cassandra.types.ResultSet = await sentinel.guard(
+      const result: cassandra.types.ResultSet = await historyMetrics.time('history_wait', () => sentinel.guard(
         flightKey,
-        () => scylla.execute(query, params, { prepare: true }),
-      );
+        () => historyMetrics.time('scylla_messages', () => scylla.execute(query, params, { prepare: true })),
+      ));
       const rows: cassandra.types.Row[] = result.rows || [];
 
       if (rows.length === 0) {
@@ -113,7 +114,7 @@ router.get<{ conversationId: string }>('/', async (req, res) => {
         break;
       }
 
-      const visibleChunk = rows.map((row) => mapStoredMessageRow(row, conversationPublic));
+      const visibleChunk = historyMetrics.sync('message_mapping', () => rows.map((row) => mapStoredMessageRow(row, conversationPublic)));
 
       for (const message of visibleChunk) {
         if (seenMessageIds.has(message.message_id)) continue;
@@ -147,16 +148,16 @@ router.get<{ conversationId: string }>('/', async (req, res) => {
       : pageMessages;
 
     const messageIds = visibleMessages.map((message) => message.message_id);
-    const reactions = await batchFetchReactions(storageConversationId, messageIds, userId);
+    const reactions = await historyMetrics.time('reactions_total', () => batchFetchReactions(storageConversationId, messageIds, userId));
 
-    const messagesWithReactions = visibleMessages.map((message) => ({
+    const messagesWithReactions = historyMetrics.sync('message_mapping', () => visibleMessages.map((message) => ({
       ...message,
       reactions: reactions[message.message_id] || {},
-    }));
-    const messagesWithSignedAttachments = await attachSignedAttachmentUrls(
+    })));
+    const messagesWithSignedAttachments = await historyMetrics.time('attachment_delivery', () => attachSignedAttachmentUrls(
       messagesWithReactions,
       conversationId,
-    );
+    ));
 
     res.json({
       success: true,

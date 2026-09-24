@@ -1,3 +1,5 @@
+import { historyMetrics } from '../health/historyMetrics.js';
+
 const UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const PROTECTED_ATTACHMENT_PATH_PATTERN = new RegExp(
   `^/api/conversations/[^/]+/attachments/(${UUID_SOURCE})/?$`,
@@ -249,7 +251,7 @@ export function createAttachmentDeliveryMapper({
   ): Promise<AttachmentMessage[]> {
     if (!Array.isArray(messages) || messages.length === 0) return messages;
 
-    const parsedByMessage: ParsedAttachmentEntry[][] = messages.map((message) => (
+    const parsedByMessage: ParsedAttachmentEntry[][] = historyMetrics.sync('descriptor_parsing', () => messages.map((message) => (
       (message.attachments || []).map((rawAttachment) => {
         const descriptor = parseAttachmentDescriptor(rawAttachment);
         const stableUrl = descriptor ? getStableAttachmentUrl(descriptor) : '';
@@ -259,7 +261,7 @@ export function createAttachmentDeliveryMapper({
           attachmentId: getProtectedAttachmentId(stableUrl),
         };
       })
-    ));
+    )));
     const parsedEntries = parsedByMessage.flat();
     const attachmentIds = [...new Set(
       parsedEntries
@@ -314,7 +316,7 @@ export function createAttachmentDeliveryMapper({
       );
       const deliveryById = new Map(signedEntries);
 
-      return messages.map((message, messageIndex) => ({
+      return historyMetrics.sync('descriptor_mapping', () => messages.map((message, messageIndex) => ({
         ...message,
         attachments: parsedByMessage[messageIndex].map((entry, attachmentIndex) => {
           if (!entry.descriptor || !entry.stableUrl || !entry.attachmentId) {
@@ -355,7 +357,7 @@ export function createAttachmentDeliveryMapper({
 
           return JSON.stringify(deliveredDescriptor);
         }),
-      }));
+      })));
     } catch (error) {
       logger.warn('[ATTACHMENT_DELIVERY] signed URL generation failed; using protected URLs', {
         conversation_id: conversationId,

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import express from 'express';
 import ts from 'typescript';
 import { Sentinel, createSentinelKey } from '../../../server/sentinel/index.js';
+import { historyMetrics } from '../../../server/health/historyMetrics.js';
 import { root } from '../media/fixtures.js';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -71,6 +72,7 @@ test('message-service health exposes only aggregate Sentinel stats without stora
     '../health/gracefulHttpShutdown.js': { installGracefulHttpShutdown() {} },
     '../attachmentSanitizer/ipcProtocol.js': {}, '../valkey-pubsub.js': { initPublisher() {}, closePubSub() {} },
     '../sentinel/index.js': esm(sentinel),
+    '../health/historyMetrics.js': { historyMetrics },
   };
   for (const route of ['conversations/attachments', 'conversations/batchReactions', 'conversations/messages', 'conversations/reactions']) {
     dependencies[`../routes/${route}.js`] = esm(emptyRouter);
@@ -92,7 +94,8 @@ test('message-service health exposes only aggregate Sentinel stats without stora
   assert.deepEqual(body.metrics.sentinel, sentinel.getSnapshot());
   assert.equal(body.metrics.sentinel.joined, 1); assert.equal(body.metrics.sentinel.bypassed, 1);
   assert.equal(queryCount, before);
-  assert.doesNotMatch(JSON.stringify(body), /private|conversation|token|secret|flight.*key/i);
+  assert.deepEqual(body.metrics.history, historyMetrics.getSnapshot());
+  assert.doesNotMatch(JSON.stringify(body), /private-user|another-private|token|secret|flight.*key/i);
   pending.resolve(); await Promise.all([flight, joined]);
   const completed = await (await fetch(`http://127.0.0.1:${server.address().port}/health`)).json();
   assert.equal(completed.metrics.sentinel.active, 0); assert.equal(completed.metrics.sentinel.succeeded, 1);

@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import cassandra from 'cassandra-driver';
 import { load, services, until } from '../media/fixtures.js';
 import { Sentinel, createSentinelKey } from '../../../server/sentinel/index.js';
+import { historyMetrics } from '../../../server/health/historyMetrics.js';
 import * as deliveryCore from '../../../server/utils/attachmentDeliveryCore.js';
 import * as policy from '../../../server/utils/attachmentContentPolicy.js';
 import * as lifecycle from '../../../server/attachments/lifecycleCore.js';
@@ -140,7 +141,7 @@ async function fixture(t, { images = 0, type = 'dm' } = {}) {
   }
   const app = express();
   app.use(express.json(), cookieParser(), csrf.encryptedCSRFProtection);
-  app.use('/api/conversations/:conversationId/messages', auth.authenticateUser, router);
+  app.use('/api/conversations/:conversationId/messages', historyMetrics.request, historyMetrics.middleware('auth', auth.authenticateUser), router);
   const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
   const base = `http://127.0.0.1:${server.address().port}/api/conversations/${conversation}/messages`;

@@ -5,6 +5,7 @@ dist/
 .dist-previous/
 .env
 .runtime/
+benchmark-results/
 /bin/voidapp-vmd
 /bin/voidapp-media-worker
 

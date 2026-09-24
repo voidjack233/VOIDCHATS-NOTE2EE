@@ -1,6 +1,7 @@
 import { pool } from '../db.js';
 import { ATTACH_BUCKET, cdnMinioClient, minioClient } from '../minio.js';
 import { createVmdResponsiveImageDelivery } from '../vmd/capability.js';
+import { historyMetrics } from '../health/historyMetrics.js';
 import {
   createAttachmentDeliveryMapper,
   normalizeStoredAttachments,
@@ -40,12 +41,12 @@ function presignAttachmentObject(
   objectKey: string,
   policy: AttachmentStoragePolicy,
 ): Promise<string> {
-  return cdnMinioClient.presignedGetObject(
+  return historyMetrics.time('original_signing', () => cdnMinioClient.presignedGetObject(
     ATTACH_BUCKET,
     objectKey,
     ATTACHMENT_SIGNED_URL_TTL_SECONDS,
     createPresignedAttachmentPolicyParams(policy),
-  );
+  ));
 }
 
 export async function createSignedAttachmentDelivery(
@@ -53,13 +54,13 @@ export async function createSignedAttachmentDelivery(
   attachmentObject: Partial<AttachmentObject> = {},
 ) {
   const signingStartedAt = Date.now();
-  const policy = resolvePersistedAttachmentPolicy({
+  const policy = historyMetrics.sync('attachment_policy', () => resolvePersistedAttachmentPolicy({
     content_hash: attachmentObject.content_hash,
     content_type: attachmentObject.content_type,
     inline: attachmentObject.inline,
     status: attachmentObject.blob_status,
-  }, objectKey, attachmentObject.filename) ?? resolveStoredAttachmentPolicy(
-    await minioClient.statObject(ATTACH_BUCKET, objectKey), objectKey, attachmentObject.filename,
+  }, objectKey, attachmentObject.filename)) ?? resolveStoredAttachmentPolicy(
+    await historyMetrics.time('legacy_stat', () => minioClient.statObject(ATTACH_BUCKET, objectKey)), objectKey, attachmentObject.filename,
   );
   const url = await presignAttachmentObject(
     objectKey,
@@ -67,13 +68,14 @@ export async function createSignedAttachmentDelivery(
   );
   let video: Record<string, unknown> = {};
   if (policy.contentType === 'video/mp4' && policy.inline && attachmentObject.video_metadata && typeof attachmentObject.video_metadata === 'object' && typeof attachmentObject.poster_key === 'string') {
-    const posterPolicy = resolvePersistedAttachmentPolicy({
+    const posterKey = attachmentObject.poster_key;
+    const posterPolicy = historyMetrics.sync('attachment_policy', () => resolvePersistedAttachmentPolicy({
       content_hash: attachmentObject.poster_content_hash,
       content_type: attachmentObject.poster_content_type,
       inline: attachmentObject.poster_inline,
       status: attachmentObject.poster_blob_status,
-    }, attachmentObject.poster_key, 'poster.webp') ?? resolveStoredAttachmentPolicy(
-      await minioClient.statObject(ATTACH_BUCKET, attachmentObject.poster_key), attachmentObject.poster_key, 'poster.webp',
+    }, posterKey, 'poster.webp')) ?? resolveStoredAttachmentPolicy(
+      await historyMetrics.time('legacy_stat', () => minioClient.statObject(ATTACH_BUCKET, posterKey)), posterKey, 'poster.webp',
     );
     if (posterPolicy.inline && posterPolicy.contentType === 'image/webp') {
       video = { ...attachmentObject.video_metadata, video_trusted: true, poster: {
@@ -94,7 +96,7 @@ export async function createSignedAttachmentDelivery(
 
 const attachSignedAttachmentUrls = createAttachmentDeliveryMapper({
   queryAttachmentObjects: async (conversationId, attachmentIds) => {
-    const result = await pool.query(
+    const result = await historyMetrics.time('attachments_pg', () => pool.query(
       `SELECT attachment.id::text AS id,
               blob.object_key,
               blob.content_hash, blob.content_type, blob.inline, blob.status AS blob_status,
@@ -111,11 +113,11 @@ const attachSignedAttachmentUrls = createAttachmentDeliveryMapper({
          AND blob.bucket = $2
          AND attachment.id = ANY($3::uuid[])`,
       [conversationId, ATTACH_BUCKET, attachmentIds],
-    );
+    ));
     return result.rows;
   },
   createOriginalDelivery: createSignedAttachmentDelivery,
-  createImageDelivery: createVmdResponsiveImageDelivery,
+  createImageDelivery: attachmentId => historyMetrics.sync('vmd_signing', () => createVmdResponsiveImageDelivery(attachmentId)),
   maxConcurrency: ATTACHMENT_DELIVERY_MAX_CONCURRENCY,
 });
 

@@ -4,6 +4,7 @@ import { findConversationByIdentifier } from '../../../utils/conversationIdentit
 import type { ConversationIdentityRow } from '../../../utils/conversationIdentity.js';
 import { resolveMessageStorageConversation } from '../../../utils/messageConversation.js';
 import type { AttachmentMessage } from '../../../utils/attachmentDeliveryCore.js';
+import { historyMetrics } from '../../../health/historyMetrics.js';
 
 export { pool, scylla, cassandra };
 
@@ -94,11 +95,11 @@ export async function verifyMembership(
   conversationId: string,
   userId: string,
 ): Promise<MessageMembershipRow | null> {
-  const result = await pool.query<MessageMembershipRow>(
+  const result = await historyMetrics.time('membership', () => pool.query<MessageMembershipRow>(
     `SELECT role, last_message_sent_at FROM conversation_members
      WHERE conversation_id = $1 AND user_id = $2`,
     [conversationId, userId]
-  );
+  ));
   return result.rows[0] || null;
 }
 
@@ -119,12 +120,12 @@ export function conversationPublicId(
 export async function resolveConversationContexts(
   conversationIdentifier: unknown,
 ): Promise<ConversationContexts | null> {
-  const conversation = await findConversationByIdentifier(conversationIdentifier);
+  const conversation = await historyMetrics.time('conversation', () => findConversationByIdentifier(conversationIdentifier));
   if (!conversation) {
     return null;
   }
 
-  const storageConversation = await resolveMessageStorageConversation(conversation);
+  const storageConversation = await historyMetrics.time('storage_resolution', () => resolveMessageStorageConversation(conversation));
 
   return {
     conversation,
@@ -320,39 +321,41 @@ export async function batchFetchReactions(
       const messageUuids = chunk.map((id) => cassandra.types.TimeUuid.fromString(id));
 
       const [countsResult, meResult] = await Promise.all([
-        scylla.execute(
+        historyMetrics.time('reaction_counts', () => scylla.execute(
           `SELECT message_id, emoji, count FROM reaction_counts
            WHERE conversation_id = ? AND message_id IN ?`,
           [convUuid, messageUuids],
           { prepare: true }
-        ),
+        )),
         userUuid
-          ? scylla.execute(
+          ? historyMetrics.time('user_reactions', () => scylla.execute(
               `SELECT message_id, emoji FROM user_reactions
                WHERE conversation_id = ? AND user_id = ? AND message_id IN ?`,
               [convUuid, userUuid, messageUuids],
               { prepare: true }
-            )
+            ))
           : { rows: [] },
       ]);
 
-      const meSet = new Set<string>();
-      for (const row of meResult.rows) {
-        meSet.add(`${String(row.message_id)}:${String(row.emoji)}`);
-      }
+      historyMetrics.sync('reaction_mapping', () => {
+        const meSet = new Set<string>();
+        for (const row of meResult.rows) {
+          meSet.add(`${String(row.message_id)}:${String(row.emoji)}`);
+        }
 
-      for (const row of countsResult.rows) {
-        const messageId = String(row.message_id);
-        const emoji = String(row.emoji);
-        const count = normalizeCounter(row.count);
+        for (const row of countsResult.rows) {
+          const messageId = String(row.message_id);
+          const emoji = String(row.emoji);
+          const count = normalizeCounter(row.count);
 
-        if (count <= 0) continue;
+          if (count <= 0) continue;
 
-        reactions[messageId][emoji] = {
-          count,
-          me: meSet.has(`${messageId}:${emoji}`),
-        };
-      }
+          reactions[messageId][emoji] = {
+            count,
+            me: meSet.has(`${messageId}:${emoji}`),
+          };
+        }
+      });
     }
   } catch (err) {
     console.error(`[ScyllaDB] Failed to batch fetch reactions for conversation ${conversationId}:`, err);

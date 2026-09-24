@@ -11,6 +11,7 @@ import pg from 'pg';
 import Redis from 'ioredis';
 import { Client } from 'minio';
 import ts from 'typescript';
+import * as historyMetrics from '../../../server/health/historyMetrics.js';
 
 export const root = fileURLToPath(new URL('../../../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -23,6 +24,7 @@ export function load(path, dependencies, env = {}) {
   runInNewContext(output, { exports, Buffer, URL, console, setTimeout, clearTimeout, process: { env },
     require(specifier) {
       if (Object.hasOwn(dependencies, specifier)) return dependencies[specifier];
+      if (specifier.endsWith('/health/historyMetrics.js')) return historyMetrics;
       if (specifier === 'express' || specifier === 'crypto' || specifier.startsWith('node:')) return require(specifier);
       throw new Error(`Unexpected dependency: ${specifier}`);
     },
@@ -50,7 +52,7 @@ export async function services(t, ports = {}) {
   pgRun('initdb', ['-D', join(directory, 'pg'), '-A', 'trust', '--no-locale']);
   pgRun('pg_ctl', ['-D', join(directory, 'pg'), '-l', join(directory, 'pg.log'), '-o', `-h 127.0.0.1 -p ${pgPort} -k ${directory}`, '-w', 'start']);
   cleanup.push(() => pgRun('pg_ctl', ['-D', join(directory, 'pg'), '-m', 'immediate', '-w', 'stop']));
-  const pool = new pg.Pool({ host: '127.0.0.1', port: pgPort, database: 'postgres', user: process.env.USER, max: 4 });
+  const pool = new pg.Pool({ host: '127.0.0.1', port: pgPort, database: 'postgres', user: process.env.USER, max: ports.poolMax || 4 });
   cleanup.push(() => pool.end());
   for (const name of ports.migrate === false ? [] : readdirSync(join(root, 'db/migrations')).filter(name => name.endsWith('.sql')).sort()) {
     await pool.query(readFileSync(join(root, 'db/migrations', name), 'utf8'));

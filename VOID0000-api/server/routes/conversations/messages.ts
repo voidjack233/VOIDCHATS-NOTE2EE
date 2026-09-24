@@ -9,6 +9,7 @@ import historyRouter from './messages/history.js';
 import typingRouter from './messages/typing.js';
 import readRouter from './messages/read.js';
 import byIdRouter from './messages/byId.js';
+import { historyMetrics } from '../../health/historyMetrics.js';
 
 const router = Router({ mergeParams: true });
 const writeGuards = Router({ mergeParams: true });
@@ -20,7 +21,7 @@ router.use((req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') return next();
   return writeGuards(req, res, next);
 }, createRouter);
-router.use(messagesFetchLimiter, historyRouter);
+router.use(historyMetrics.middleware('fetch_limit', messagesFetchLimiter), historyRouter);
 router.use(typingRouter);
 router.use(readRouter);
 router.use(byIdRouter);
