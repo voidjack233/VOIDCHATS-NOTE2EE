@@ -1,3 +1,5 @@
+import { parseAttachmentBlobObjectKey } from '../attachments/lifecycleCore.js';
+
 const DEFAULT_ATTACHMENT_FILENAME = 'attachment.bin';
 const OCTET_STREAM_CONTENT_TYPE = 'application/octet-stream';
 const INLINE_IMAGE_CONTENT_TYPES = new Set([
@@ -164,6 +166,33 @@ export function resolveStoredAttachmentPolicy(
   };
 }
 
+// Only the server's finalized, content-addressed blob policy is reusable.
+// Migration 0011 left historical policy/hash fields NULL: those still require
+// the exact MinIO sanitizer marker check, never descriptor MIME inference.
+export function resolvePersistedAttachmentPolicy(
+  blob: { content_hash?: unknown; content_type?: unknown; inline?: unknown; status?: unknown },
+  objectKey: string,
+  logicalFilename: unknown = '',
+): AttachmentStoragePolicy | null {
+  const hash = parseAttachmentBlobObjectKey(objectKey);
+  if (!hash || blob.content_hash !== hash || blob.status !== 'ready') return null;
+
+  const contentType = blob.content_type;
+  const approvedInlineType = typeof contentType === 'string' && (
+    INLINE_IMAGE_CONTENT_TYPES.has(contentType) || contentType === 'video/mp4'
+  );
+  if (!(blob.inline === true && approvedInlineType) &&
+      !(blob.inline === false && contentType === OCTET_STREAM_CONTENT_TYPE)) return null;
+
+  const filename = sanitizeAttachmentFilename(logicalFilename || objectKey.split('/').pop());
+  return {
+    inline: blob.inline === true,
+    filename,
+    contentType: String(contentType),
+    contentDisposition: createAttachmentContentDisposition(filename, blob.inline === true),
+  };
+}
+
 export function createProtectedAttachmentResponseHeaders(
   objectStat: StoredObjectStat | null | undefined,
   objectKey: unknown = '',
@@ -184,6 +213,12 @@ export function createPresignedAttachmentResponseParams(
   logicalFilename: unknown = '',
 ): Record<string, string> {
   const policy = resolveStoredAttachmentPolicy(objectStat, objectKey, logicalFilename);
+  return createPresignedAttachmentPolicyParams(policy);
+}
+
+export function createPresignedAttachmentPolicyParams(
+  policy: AttachmentStoragePolicy,
+): Record<string, string> {
   return {
     'response-cache-control': 'private, no-store',
     'response-content-type': policy.contentType,
