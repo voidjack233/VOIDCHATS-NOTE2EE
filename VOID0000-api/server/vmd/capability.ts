@@ -189,9 +189,13 @@ export function createVmdResponsiveImageDelivery(
   display_variants: Record<VmdResponsiveImageVariant, VmdVariantDelivery>;
 } {
   const now = options.now ?? Date.now();
-  const small = createVmdImageDelivery(attachmentId, 'small', { ...options, now });
-  const medium = createVmdImageDelivery(attachmentId, 'medium', { ...options, now });
-  const large = createVmdImageDelivery(attachmentId, 'large', { ...options, now });
+  // All three variants share the domain-separated key. Keep reuse local to
+  // this call so configuration rotation is observed on the next delivery.
+  const signingKey = options.signingKey === undefined ? getVmdSigningKey() : options.signingKey;
+  const variantOptions = { ...options, now, signingKey };
+  const small = createVmdImageDelivery(attachmentId, 'small', variantOptions);
+  const medium = createVmdImageDelivery(attachmentId, 'medium', variantOptions);
+  const large = createVmdImageDelivery(attachmentId, 'large', variantOptions);
 
   return {
     ...medium,

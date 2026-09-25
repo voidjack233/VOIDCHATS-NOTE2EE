@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import crypto from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 
 import {
   createVmdImageDelivery,
   createVmdResponsiveImageDelivery,
+  getVmdSigningKey,
   verifyVmdImageCapability,
   VMD_CAPABILITY_EXPIRY_BUCKET_SECONDS,
   VMD_IMAGE_VARIANTS,
@@ -46,6 +49,62 @@ test('same attachment and variant reuse one capability URL within an expiry buck
   assert.equal(second.display_url, first.display_url);
   assert.equal(second.display_url_expires_at, first.display_url_expires_at);
   assert.notEqual(nextBucket.display_url, first.display_url);
+});
+
+test('responsive delivery derives once and is byte-identical to independent variant signing', t => {
+  const previous = process.env.VMD_SIGNING_SECRET;
+  process.env.VMD_SIGNING_SECRET = 'a'.repeat(64);
+  t.after(() => { if (previous === undefined) delete process.env.VMD_SIGNING_SECRET; else process.env.VMD_SIGNING_SECRET = previous; });
+  const original = crypto.createHmac;
+  let derivations = 0, signatures = 0;
+  crypto.createHmac = (...args) => {
+    const hmac = original(...args), update = hmac.update;
+    hmac.update = function (value, ...rest) {
+      if (value === 'void:vmd:capability-signing-key:v1') derivations++;
+      if (typeof value === 'string' && value.startsWith('void-vmd-v1\n')) signatures++;
+      return update.call(this, value, ...rest);
+    };
+    return hmac;
+  };
+  syncBuiltinESMExports();
+  t.after(() => { crypto.createHmac = original; syncBuiltinESMExports(); });
+  const options = { ...createOptions(BUCKET_START + 1000), signingKey: undefined };
+  const delivery = createVmdResponsiveImageDelivery(ATTACHMENT_ID, options);
+  assert.equal(derivations, 1); assert.equal(signatures, 3);
+  for (const variant of VMD_RESPONSIVE_IMAGE_VARIANTS) {
+    const single = createVmdImageDelivery(ATTACHMENT_ID, variant, options);
+    assert.equal(delivery.display_variants[variant].url, single.display_url);
+    assert.equal(delivery.display_variants[variant].expires_at, single.display_url_expires_at);
+  }
+  const before = derivations;
+  createVmdResponsiveImageDelivery(ATTACHMENT_ID, createOptions(BUCKET_START));
+  assert.equal(derivations, before, 'explicit caller keys do not invoke configured derivation');
+});
+
+test('key reuse observes secret rotation, fallback and invalid configuration without retaining mutable keys', t => {
+  const oldVmd = process.env.VMD_SIGNING_SECRET, oldAccess = process.env.ACCESS_SECRET;
+  t.after(() => {
+    if (oldVmd === undefined) delete process.env.VMD_SIGNING_SECRET; else process.env.VMD_SIGNING_SECRET = oldVmd;
+    if (oldAccess === undefined) delete process.env.ACCESS_SECRET; else process.env.ACCESS_SECRET = oldAccess;
+  });
+  const options = { ...createOptions(BUCKET_START + 1000), signingKey: undefined };
+  process.env.VMD_SIGNING_SECRET = 'a'.repeat(64);
+  const first = createVmdResponsiveImageDelivery(ATTACHMENT_ID, options);
+  const firstKey = getVmdSigningKey(); firstKey.fill(0);
+  assert.deepEqual(createVmdResponsiveImageDelivery(ATTACHMENT_ID, options), first);
+  process.env.VMD_SIGNING_SECRET = 'b'.repeat(64);
+  const rotated = createVmdResponsiveImageDelivery(ATTACHMENT_ID, options);
+  assert.notEqual(first.display_url, rotated.display_url);
+  const firstUrl = new URL(first.display_url);
+  assert.equal(verifyVmdImageCapability({ attachmentId: ATTACHMENT_ID, variant: 'medium', now: options.now,
+    expiresAt: firstUrl.searchParams.get('exp'), signature: firstUrl.searchParams.get('sig') }).ok, false);
+  delete process.env.VMD_SIGNING_SECRET; process.env.ACCESS_SECRET = 'b'.repeat(64);
+  assert.deepEqual(createVmdResponsiveImageDelivery(ATTACHMENT_ID, options), rotated);
+  process.env.VMD_SIGNING_SECRET = 'invalid';
+  assert.throws(() => createVmdResponsiveImageDelivery(ATTACHMENT_ID, options), /at least 32 characters/);
+  delete process.env.VMD_SIGNING_SECRET; delete process.env.ACCESS_SECRET;
+  assert.throws(() => createVmdResponsiveImageDelivery(ATTACHMENT_ID, options), /at least 32 characters/);
+  assert.doesNotThrow(() => createVmdResponsiveImageDelivery(ATTACHMENT_ID, createOptions(BUCKET_START)));
 });
 
 test('bucketed expiration never exceeds TTL and retains a safe lifetime floor', () => {

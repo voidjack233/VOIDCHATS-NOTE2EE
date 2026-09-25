@@ -70,7 +70,8 @@ for (const count of [0, 1, 5, 20]) {
     const f = fixture(rows);
     const messages = Array.from({ length: 20 }, (_, i) => ({ message_id: String(i), attachments: rows[i] ? [descriptor(rows[i])] : [] }));
     const result = await f.attachSignedAttachmentUrls(messages, conversation);
-    assert.deepEqual(f.counts, { queries: count ? 1 : 0, stats: 0, presigns: count, vmd: count, hmac: count * 6, signingNetwork: 0 });
+    // One domain-separated key derivation plus three variant signatures per image.
+    assert.deepEqual(f.counts, { queries: count ? 1 : 0, stats: 0, presigns: count, vmd: count, hmac: count * 4, signingNetwork: 0 });
     assert.deepEqual(result.map(m => m.message_id), messages.map(m => m.message_id));
     for (const m of result.filter(m => m.attachments.length)) {
       const a = JSON.parse(m.attachments[0]);
@@ -93,7 +94,7 @@ test('multiple images, duplicate references and repeated/expired delivery keep b
   f.advance(3600_000);
   const expired = await f.attachSignedAttachmentUrls(first, conversation);
   assert.notEqual(JSON.parse(first[0].attachments[0]).display_url, JSON.parse(expired[0].attachments[0]).display_url);
-  assert.deepEqual(f.counts, { queries: 3, stats: 0, presigns: 9, vmd: 9, hmac: 54, signingNetwork: 0 });
+  assert.deepEqual(f.counts, { queries: 3, stats: 0, presigns: 9, vmd: 9, hmac: 36, signingNetwork: 0 });
 });
 
 test('non-image files stay attachment/octet-stream, never VMD even with an image-looking descriptor', async () => {
@@ -267,5 +268,5 @@ test('history, pagination, message-by-ID refresh and send response use the optim
   assert.equal(JSON.parse(sent.message.attachments[0]).inline, true);
   assert.ok(calls.indexOf('INSERT INTO messages') < calls.indexOf('acknowledge'));
   assert.ok(calls.indexOf('acknowledge') < calls.indexOf('COMMIT'));
-  assert.deepEqual(f.counts, { queries: 5, stats: 0, presigns: 5, vmd: 5, hmac: 30, signingNetwork: 0 });
+  assert.deepEqual(f.counts, { queries: 5, stats: 0, presigns: 5, vmd: 5, hmac: 20, signingNetwork: 0 });
 });
