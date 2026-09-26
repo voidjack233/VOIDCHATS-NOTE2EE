@@ -1,4 +1,5 @@
 import { pool } from '../db.js';
+import type { DatabaseQueryable } from '../db/types.js';
 import { ATTACH_BUCKET, cdnMinioClient, minioClient } from '../minio.js';
 import { createVmdResponsiveImageDelivery } from '../vmd/capability.js';
 import { historyMetrics } from '../health/historyMetrics.js';
@@ -94,9 +95,10 @@ export async function createSignedAttachmentDelivery(
   };
 }
 
-const attachSignedAttachmentUrls = createAttachmentDeliveryMapper({
+export function createAttachmentDeliveryForQueryable(queryable: DatabaseQueryable) {
+  return createAttachmentDeliveryMapper({
   queryAttachmentObjects: async (conversationId, attachmentIds) => {
-    const result = await historyMetrics.time('attachments_pg', () => pool.query(
+    const result = await historyMetrics.time('attachments_pg', () => queryable.query<AttachmentObject>(
       `SELECT attachment.id::text AS id,
               blob.object_key,
               blob.content_hash, blob.content_type, blob.inline, blob.status AS blob_status,
@@ -120,5 +122,8 @@ const attachSignedAttachmentUrls = createAttachmentDeliveryMapper({
   createImageDelivery: attachmentId => historyMetrics.sync('vmd_signing', () => createVmdResponsiveImageDelivery(attachmentId)),
   maxConcurrency: ATTACHMENT_DELIVERY_MAX_CONCURRENCY,
 });
+}
+
+const attachSignedAttachmentUrls = createAttachmentDeliveryForQueryable(pool);
 
 export { attachSignedAttachmentUrls };

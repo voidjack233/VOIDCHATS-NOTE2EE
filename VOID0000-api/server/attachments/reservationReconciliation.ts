@@ -349,6 +349,8 @@ export function createPostgresAttachmentReservationStore({
         return false;
       }
 
+      // A durable send may retry its canonical write after our negative read.
+      // Never release its still-pending reservation into TTL cleanup.
       const result = state === 'committed'
         ? await client.query(
             `UPDATE attachment_objects
@@ -388,7 +390,13 @@ export function createPostgresAttachmentReservationStore({
                AND message_id = $3
                AND uploader_id = $4
                AND conversation_id = $5
-               AND reserved_until <= NOW()`,
+               AND reserved_until <= NOW()
+               AND NOT EXISTS (
+                 SELECT 1 FROM message_send_operations operation
+                 WHERE operation.user_id = $4 AND operation.conversation_id = $5
+                   AND operation.client_message_id = $2 AND operation.message_id = $3
+                   AND operation.completed_at IS NULL
+               )`,
             [
               group.attachmentIds,
               group.reservationId,

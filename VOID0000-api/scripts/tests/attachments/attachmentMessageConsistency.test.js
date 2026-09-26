@@ -107,7 +107,7 @@ test('message send wires quorum consistency to attachment writes and recovery op
 
   assert.match(
     source,
-    /if \(attachmentIds\.length > 0\)[\s\S]+writeAttachmentMessageWithAcknowledgement/,
+    /if \(attachmentIds\.length > 0 && activeReservation\)[\s\S]+writeAttachmentMessageWithAcknowledgement/,
   );
   assert.match(source, /attachmentLifecycle\.acknowledgeScyllaWrite/);
   assert.match(source, /attachmentMessageConsistency\.read/);

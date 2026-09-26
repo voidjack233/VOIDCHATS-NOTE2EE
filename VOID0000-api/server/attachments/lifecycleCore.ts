@@ -513,8 +513,9 @@ export function classifyAttachmentReservation({
 async function withTransaction<Result>(
   dbPool: LifecycleDbPool,
   callback: (client: LifecycleClient) => Promise<Result>,
+  existingClient?: LifecycleClient,
 ): Promise<Result> {
-  const client = await dbPool.connect();
+  const client = existingClient ?? await dbPool.connect();
   try {
     await client.query('BEGIN');
     const result = await callback(client);
@@ -524,7 +525,7 @@ async function withTransaction<Result>(
     await client.query('ROLLBACK').catch(() => {});
     throw error;
   } finally {
-    client.release();
+    if (!existingClient) client.release();
   }
 }
 
@@ -803,7 +804,7 @@ export function createAttachmentLifecycle({
     conversationId,
     reservationId,
     messageId,
-  }: ReservationIdentity): Promise<AttachmentReservationResult> {
+  }: ReservationIdentity, existingClient?: LifecycleClient): Promise<AttachmentReservationResult> {
     if (attachmentIds.length === 0) {
       return {
         state: 'none',
@@ -911,7 +912,7 @@ export function createAttachmentLifecycle({
         userId,
         conversationId,
       };
-    });
+    }, existingClient);
   }
 
   async function acknowledgeScyllaWrite({
@@ -920,7 +921,7 @@ export function createAttachmentLifecycle({
     messageId,
     userId,
     conversationId,
-  }: ReservationIdentity): Promise<number> {
+  }: ReservationIdentity, existingClient?: LifecycleClient): Promise<number> {
     if (attachmentIds.length === 0) {
       return 0;
     }
@@ -1012,7 +1013,28 @@ export function createAttachmentLifecycle({
         );
       }
       return updateResult.rowCount;
-    });
+    }, existingClient);
+  }
+
+  // A positive quorum read is sufficient to recover an exact reservation, just
+  // as in worker reconciliation. It is NOT an INSERT acknowledgement marker.
+  async function commitRecoveredReservation(queryable: LifecycleQueryable, identity: ReservationIdentity, row: {
+    sender_id?: unknown; message_id?: unknown; attachments?: unknown;
+  }): Promise<void> {
+    const ids = extractProtectedAttachmentIds(row.attachments ?? []).sort();
+    const expected = [...identity.attachmentIds].sort();
+    if (String(row.sender_id) !== identity.userId || String(row.message_id) !== identity.messageId ||
+      ids.length !== expected.length || ids.some((id, i) => id !== expected[i])) {
+      fail(409, 'ATTACHMENT_COMMIT_CONFLICT', 'Stored message does not match reservation');
+    }
+    if (!ids.length) return;
+    const result = await queryable.query(
+      `UPDATE attachment_objects SET status='committed', committed_at=COALESCE(committed_at,NOW()), reserved_until=NULL
+       WHERE id=ANY($1::uuid[]) AND reservation_id=$2 AND message_id=$3 AND uploader_id=$4 AND conversation_id=$5
+         AND status IN ('reserved','committed') RETURNING id`,
+      [ids, identity.reservationId, identity.messageId, identity.userId, identity.conversationId],
+    );
+    if (result.rowCount !== ids.length) fail(409, 'ATTACHMENT_COMMIT_CONFLICT', 'Attachment reservation changed');
   }
 
   async function commitReservation(queryable: LifecycleQueryable, {
@@ -1395,6 +1417,7 @@ export function createAttachmentLifecycle({
     reserveForMessage,
     acknowledgeScyllaWrite,
     commitReservation,
+    commitRecoveredReservation,
     releaseReservation,
     cleanupExpiredStaged,
     cleanupOrphanedBlobs,

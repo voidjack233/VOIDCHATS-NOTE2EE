@@ -19,6 +19,7 @@ import * as identity from '../../../server/utils/eventIdentity.js';
 import * as account from '../../../server/auth/middleware/requestAccount.js';
 import { RATE_LIMIT_POLICIES } from '../../../server/middleware/rateLimits/policies.js';
 import * as algorithms from '../../../server/middleware/rateLimits/algorithms.js';
+import * as sendOperation from '../../../server/routes/conversations/messages/sendOperation.js';
 
 let storage, cleanup;
 before(async () => { storage = await services({ after: fn => { cleanup = fn; } }); });
@@ -100,6 +101,7 @@ async function fixture(t, { images = 0, type = 'dm' } = {}) {
     '../../../sentinel/index.js': { ...esm(sentinel), createSentinelKey } }).default;
   const lifecycleInstance = lifecycle.createAttachmentLifecycle({ dbPool: pool, objectStore: storage.objects, bucket: 'attachments' });
   const send = load('routes/conversations/messages/sendMessage', { ...deps,
+    './sendOperation.js': sendOperation,
     '../../../utils/conversationInteraction.js': interaction, '../../../utils/groupPermissions.js': permissions,
     '../../../attachments/lifecycle.js': { ...lifecycle, attachmentLifecycle: lifecycleInstance },
     '../../../attachments/messageConsistency.js': consistency, '../../../utils/eventIdentity.js': identity,

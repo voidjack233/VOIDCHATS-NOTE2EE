@@ -103,8 +103,8 @@ export async function verifyMembership(
   return result.rows[0] || null;
 }
 
-export async function getConversationMembers(conversationId: string): Promise<string[]> {
-  const result = await pool.query<UserIdRow>(
+export async function getConversationMembers(conversationId: string, queryable: Pick<typeof pool, 'query'> = pool): Promise<string[]> {
+  const result = await queryable.query<UserIdRow>(
     `SELECT user_id FROM conversation_members WHERE conversation_id = $1`,
     [conversationId]
   );

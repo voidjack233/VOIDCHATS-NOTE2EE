@@ -252,6 +252,7 @@ test('history, pagination, message-by-ID refresh and send response use the optim
     for (const m of body.messages || [body.message]) assert.equal(JSON.parse(m.attachments[0]).inline, true);
   }
   const send = load('routes/conversations/messages/sendMessage', { ...deps,
+    './sendOperation.js': load('routes/conversations/messages/sendOperation', {}),
     '../../../attachments/lifecycle.js': { ...lifecycle, attachmentLifecycle: {
       reserveForMessage: async args => ({ ...args, state: 'reserved_new' }),
       acknowledgeScyllaWrite: async () => { calls.push('acknowledge'); },
