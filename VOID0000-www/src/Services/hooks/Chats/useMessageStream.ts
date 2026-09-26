@@ -3,6 +3,7 @@ import type { Conversation, Message } from '../../Chat/chatService';
 import { subscribeQueuedSendOutcomes } from '../../Chat/queuedSendRecovery';
 import { gateway } from '../../Gateway/gateway';
 import type { MessageStreamEvent, MessageUpdate } from './MessageList/messageListTypes';
+import { normalizeMessageUpdate } from './MessageList/messageUpdatePatch';
 
 interface UseMessageStreamParams {
   activeConversation: Conversation | null;
@@ -45,16 +46,7 @@ export const useMessageStream = ({
     };
     const handleUpdate = (data: Partial<Message>) => {
       if (String(data?.conversation_id) !== String(activeConversation.id)) return;
-      setMessageUpdate({
-        message_id: String(data.message_id),
-        content: data.is_deleted ? '[deleted]' : String(data.content || ''),
-        is_edited: Boolean(data.is_edited ?? true),
-        edited_at: data.edited_at || null,
-        message_type: data.message_type ?? null,
-        forwarded: data.forwarded ?? undefined,
-        mentions: data.mentions ?? undefined,
-        link_preview: data.link_preview ?? undefined,
-      });
+      setMessageUpdate(normalizeMessageUpdate(data));
     };
     const handleDelete = (data: Pick<Message, 'conversation_id' | 'message_id'>) => {
       if (String(data?.conversation_id) === String(activeConversation.id)) {

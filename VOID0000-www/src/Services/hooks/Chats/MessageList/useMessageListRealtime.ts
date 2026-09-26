@@ -14,6 +14,7 @@ import {
 } from './messageRealtimePolicy';
 import { getLocalClientId } from './messageListReconciliation';
 import type { MessageDelete, MessageStreamEvent, MessageUpdate } from './messageListTypes';
+import { applyMessageUpdate, hasOwnProperty } from './messageUpdatePatch';
 
 interface UseMessageListRealtimeParams {
   conversationId: string;
@@ -210,7 +211,7 @@ const useMessageListRealtime = ({
   useEffect(() => {
     if (!messageUpdate) return;
 
-    const hasLinkPreviewUpdate = Object.prototype.hasOwnProperty.call(messageUpdate, 'link_preview');
+    const hasLinkPreviewUpdate = hasOwnProperty(messageUpdate, 'link_preview');
     const hasContentUpdate = typeof messageUpdate.content === 'string';
 
     if (hasContentUpdate) {
@@ -233,16 +234,7 @@ const useMessageListRealtime = ({
     setMessages((previous) =>
       previous.map((message) => (
         message.message_id === messageUpdate.message_id
-          ? {
-              ...message,
-              content: hasContentUpdate ? (messageUpdate.content ?? '') : message.content,
-              is_edited: messageUpdate.is_edited ?? message.is_edited,
-              edited_at: messageUpdate.edited_at ?? message.edited_at,
-              forwarded: messageUpdate.forwarded ?? message.forwarded,
-              mentions: messageUpdate.mentions ?? message.mentions,
-              link_preview: hasLinkPreviewUpdate ? messageUpdate.link_preview : message.link_preview,
-              message_type: messageUpdate.message_type ?? message.message_type,
-            }
+          ? applyMessageUpdate(message, messageUpdate)
           : message
       ))
     );
