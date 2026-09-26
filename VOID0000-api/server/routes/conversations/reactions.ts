@@ -5,11 +5,11 @@ import { canInteractInConversation } from '../../utils/conversationInteraction.j
 import scylla, { cassandra } from '../../scylla.js';
 import { queueReactionEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
-import { reactionEventId } from '../../utils/eventIdentity.js';
 import { resolveMessageStorageConversation } from '../../utils/messageConversation.js';
+import { reactionState } from '../../reactions/index.js';
+import { ReactionError } from '../../reactions/state.js';
 
 const router = Router({ mergeParams: true });
-const MAX_UNIQUE_REACTIONS_PER_MESSAGE = 10;
 const MAX_REACTION_EMOJI_GRAPHEMES = 1;
 const MAX_REACTION_EMOJI_LENGTH = 64;
 
@@ -43,17 +43,6 @@ async function getConversationMembers(conversationId: string): Promise<string[]>
 
 function conversationPublicId(conversation: { public_id?: unknown } | null): string | null {
   return conversation?.public_id ? String(conversation.public_id) : null;
-}
-
-function normalizeReactionCount(value: unknown): number {
-  if (value && typeof value === 'object') {
-    const toNumber = Reflect.get(value, 'toNumber');
-    if (typeof toNumber === 'function') {
-      return Number(Reflect.apply(toNumber, value, []));
-    }
-  }
-
-  return Number(value || 0);
 }
 
 function getEmojiGraphemeCount(value: string): number {
@@ -105,11 +94,14 @@ async function resolveConversationContexts(conversationIdentifier: unknown) {
   };
 }
 
-// PUT /:emoji — toggle reaction
-router.put<{ conversationId: string; messageId: string; emoji: string }>('/:emoji', async (req, res) => {
+// PUT ensures presence; DELETE ensures absence. Old toggle clients must reload,
+// not repeatedly PUT in an attempt to remove a reaction.
+router.all<{ conversationId: string; messageId: string; emoji: string }>('/:emoji', async (req, res, next) => {
+  if (req.method !== 'PUT' && req.method !== 'DELETE') return next();
   const userId = req.user?.id;
   const { conversationId: conversationIdentifier, messageId } = req.params;
-  const emoji = normalizeReactionEmoji(decodeURIComponent(req.params.emoji));
+  const emoji = normalizeReactionEmoji(req.params.emoji);
+  const present = req.method === 'PUT';
 
   if (!userId) {
     return res.status(401).json({ error: 'Authentication required' });
@@ -117,6 +109,9 @@ router.put<{ conversationId: string; messageId: string; emoji: string }>('/:emoj
 
   if (!emoji) {
     return res.status(400).json({ error: 'Invalid emoji' });
+  }
+  if (req.body?.present !== present) {
+    return res.status(409).json({ code: 'REACTION_CLIENT_UPGRADE_REQUIRED', error: 'Reload to update reactions' });
   }
 
   try {
@@ -140,7 +135,6 @@ router.put<{ conversationId: string; messageId: string; emoji: string }>('/:emoj
 
     const convUuid = cassandra.types.Uuid.fromString(storageConversationId);
     const msgUuid = cassandra.types.TimeUuid.fromString(messageId);
-    const userUuid = cassandra.types.Uuid.fromString(userId);
 
     const messageExists = await scylla.execute(
       'SELECT message_id FROM messages WHERE conversation_id = ? AND message_id = ?',
@@ -151,109 +145,34 @@ router.put<{ conversationId: string; messageId: string; emoji: string }>('/:emoj
       return res.status(404).json({ error: 'Message not found' });
     }
 
-    const existing = await scylla.execute(
-      `SELECT user_id FROM message_reactions
-       WHERE conversation_id = ? AND message_id = ? AND emoji = ? AND user_id = ?`,
-      [convUuid, msgUuid, emoji, userUuid],
-      { prepare: true }
-    );
-
-    let action: 'add' | 'remove';
-
-    if (existing.rows.length > 0) {
-      await Promise.all([
-        scylla.execute(
-          `DELETE FROM message_reactions
-           WHERE conversation_id = ? AND message_id = ? AND emoji = ? AND user_id = ?`,
-          [convUuid, msgUuid, emoji, userUuid],
-          { prepare: true }
-        ),
-        scylla.execute(
-          `UPDATE reaction_counts SET count = count - 1
-           WHERE conversation_id = ? AND message_id = ? AND emoji = ?`,
-          [convUuid, msgUuid, emoji],
-          { prepare: true }
-        ),
-        scylla.execute(
-          `DELETE FROM user_reactions
-           WHERE conversation_id = ? AND user_id = ? AND message_id = ? AND emoji = ?`,
-          [convUuid, userUuid, msgUuid, emoji],
-          { prepare: true }
-        ),
-      ]);
-      action = 'remove';
-    } else {
-      const reactionCounts = await scylla.execute(
-        `SELECT emoji, count FROM reaction_counts
-         WHERE conversation_id = ? AND message_id = ?`,
-        [convUuid, msgUuid],
-        { prepare: true }
-      );
-
-      const activeReactionEmojis = reactionCounts.rows
-        .filter((row) => normalizeReactionCount(row.count) > 0)
-        .map((row) => row.emoji);
-
-      if (
-        !activeReactionEmojis.includes(emoji) &&
-        activeReactionEmojis.length >= MAX_UNIQUE_REACTIONS_PER_MESSAGE
-      ) {
-        return res.status(409).json({
-          error: `Maximum of ${MAX_UNIQUE_REACTIONS_PER_MESSAGE} reactions per message`,
-          code: 'REACTION_LIMIT_REACHED',
-        });
-      }
-
-      await Promise.all([
-        scylla.execute(
-          `INSERT INTO message_reactions (conversation_id, message_id, emoji, user_id, created_at)
-           VALUES (?, ?, ?, ?, ?)`,
-          [convUuid, msgUuid, emoji, userUuid, new Date()],
-          { prepare: true }
-        ),
-        scylla.execute(
-          `UPDATE reaction_counts SET count = count + 1
-           WHERE conversation_id = ? AND message_id = ? AND emoji = ?`,
-          [convUuid, msgUuid, emoji],
-          { prepare: true }
-        ),
-        scylla.execute(
-          `INSERT INTO user_reactions (conversation_id, user_id, message_id, emoji)
-           VALUES (?, ?, ?, ?)`,
-          [convUuid, userUuid, msgUuid, emoji],
-          { prepare: true }
-        ),
-      ]);
-      action = 'add';
-    }
+    const state = await reactionState.set(storageConversationId, messageId, userId, emoji, present);
+    const action = present ? 'add' : 'remove';
 
     const payload = {
-      event_id: reactionEventId({
-        conversationId,
-        messageId,
-        emoji,
-        userId,
-        action,
-      }),
+      event_id: `reaction:${storageConversationId}:${messageId}:${state.revision}:${userId}`,
       conversation_id: conversationId,
       conversation_public_id: conversationPublic,
       message_id: messageId,
       emoji,
       user_id: userId,
       action,
+      revision: state.revision,
+      counts: state.counts,
+      mine: state.mine,
     };
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      if (memberId !== userId) {
-        queueReactionEventToUser(memberId, payload);
-      }
+      // Include the actor's other tabs/devices. Absolute snapshots are safe
+      // both for retries and for the optimistic originator receiving its echo.
+      queueReactionEventToUser(memberId, payload);
     });
 
     res.json({ success: true, ...payload });
   } catch (err) {
-    console.error('Reaction toggle error:', err);
-    res.status(500).json({ error: 'Failed to toggle reaction' });
+    if (err instanceof ReactionError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.status === 425 ? { retryAfterMs: 250 } : {}) });
+    console.error('Reaction state error:', err);
+    res.status(503).json({ code: 'REACTION_UNAVAILABLE', error: 'Failed to update reaction', retryAfterMs: 500 });
   }
 });
 

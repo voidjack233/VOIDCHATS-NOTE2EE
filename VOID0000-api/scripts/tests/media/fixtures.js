@@ -12,6 +12,7 @@ import Redis from 'ioredis';
 import { Client } from 'minio';
 import ts from 'typescript';
 import * as historyMetrics from '../../../server/health/historyMetrics.js';
+import { createReactionState } from '../../../server/reactions/state.js';
 
 export const root = fileURLToPath(new URL('../../../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -25,6 +26,11 @@ export function load(path, dependencies, env = {}) {
     require(specifier) {
       if (Object.hasOwn(dependencies, specifier)) return dependencies[specifier];
       if (specifier.endsWith('/health/historyMetrics.js')) return historyMetrics;
+      if (specifier.endsWith('/reactions/index.js')) {
+        const scylla = Object.entries(dependencies).find(([name]) => name.endsWith('/scylla.js'))?.[1]?.default;
+        if (!scylla) throw new Error('Reaction fixture requires an injected Scylla client');
+        return { reactionState: createReactionState(scylla) };
+      }
       if (specifier === 'express' || specifier === 'crypto' || specifier.startsWith('node:')) return require(specifier);
       throw new Error(`Unexpected dependency: ${specifier}`);
     },

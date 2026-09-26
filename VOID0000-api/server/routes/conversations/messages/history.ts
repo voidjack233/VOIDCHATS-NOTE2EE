@@ -152,7 +152,8 @@ router.get<{ conversationId: string }>('/', async (req, res) => {
 
     const messagesWithReactions = historyMetrics.sync('message_mapping', () => visibleMessages.map((message) => ({
       ...message,
-      reactions: reactions[message.message_id] || {},
+      reactions: reactions.reactions[message.message_id] || {},
+      reaction_revision: reactions.revisions[message.message_id] || '0',
     })));
     const messagesWithSignedAttachments = await historyMetrics.time('attachment_delivery', () => attachSignedAttachmentUrls(
       messagesWithReactions,

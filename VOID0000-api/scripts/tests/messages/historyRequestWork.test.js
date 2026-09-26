@@ -74,10 +74,10 @@ async function fixture(t, { images = 0, type = 'dm' } = {}) {
   }));
   let holdHistory;
   const scylla = { async execute(sql, args, options) {
+    if (/FROM reaction_schema/.test(sql)) return { rows: [{ ready: true }] };
     counts.scylla.push({ sql, args, options });
     if (/FROM messages/.test(sql)) { if (holdHistory) await holdHistory; return { rows: sql.includes('message_id =') ? [rows[0]] : rows }; }
-    if (/FROM reaction_counts/.test(sql)) return { rows: [{ message_id: rows[0].message_id, emoji: 'like', count: 2 }] };
-    if (/FROM user_reactions/.test(sql)) return { rows: String(args[1]) === user ? [{ message_id: rows[0].message_id, emoji: 'like' }] : [] };
+    if (/FROM reaction_state/.test(sql)) return { rows: [{ message_id: rows[0].message_id, user_id: String(args[2].at(-1)), emojis: args[2].map(String).includes(user) ? ['like'] : [], counts: { like: 2 }, revision: '1' }] };
     if (/INSERT INTO messages/.test(sql)) return { rows: [] };
     throw new Error(`Unexpected Scylla operation: ${sql}`);
   } };
@@ -163,16 +163,17 @@ test('history request operation counts: real auth, PostgreSQL, Valkey, router an
     const f = await fixture(t, { images });
     const response = await f.request(); assert.equal(response.status, 200);
     const result = await response.json(); assert.equal(result.messages.length, 20);
-    assert.deepEqual(result.messages[0].reactions, { like: { count: 2, me: true } });
+    assert.deepEqual(result.messages[0].reactions, { like: { count: 2, me: true, revision: '1' } });
+    assert.equal(result.messages[0].reaction_revision, '1');
     if (images) for (const message of result.messages) {
       const attachment = JSON.parse(message.attachments[0]);
       assert.equal(attachment.inline, true); assert.match(attachment.url, /X-Amz-Signature=/);
       assert.match(attachment.display_url, /^https:\/\/vmd\.invalid\//);
     }
     const actual = { postgres: f.counts.postgres.length, scylla: f.counts.scylla.length,
-      reactions: f.counts.scylla.filter(c => /FROM (reaction_counts|user_reactions)/.test(c.sql)).length,
+      reactions: f.counts.scylla.filter(c => /FROM reaction_state/.test(c.sql)).length,
       valkey: f.counts.valkey.length, minio: f.counts.minio };
-    assert.deepEqual(actual, { postgres: images ? 3 : 2, scylla: 3, reactions: 2,
+    assert.deepEqual(actual, { postgres: images ? 3 : 2, scylla: 2, reactions: 1,
       valkey: process.env.HISTORY_BASELINE === '1' ? 15 : 2, minio: 0 });
     console.log(JSON.stringify({ images, baseline: process.env.HISTORY_BASELINE === '1', ...actual }));
     assert.equal(await storage.redis.hget(`rl:messages:fetch:user:${f.user}`, 'tokens'), '119');
@@ -271,7 +272,7 @@ test('authorized concurrent histories join only Scylla work; reactions remain us
   assert.equal(a.messages[0].reactions.like.me, true);
   assert.equal(b.messages[0].reactions.like.me, false);
   assert.equal(f.counts.scylla.filter(c => /FROM messages/.test(c.sql)).length, 1);
-  assert.equal(f.counts.scylla.filter(c => /FROM (reaction_counts|user_reactions)/.test(c.sql)).length, 4);
+  assert.equal(f.counts.scylla.filter(c => /FROM reaction_state/.test(c.sql)).length, 2);
   assert.equal(f.sentinel.getSnapshot().active, 0);
   await f.request();
   assert.equal(f.sentinel.getSnapshot().started, 2);
@@ -291,9 +292,9 @@ test('history flight key separates direction, cursor, storage conversation and c
     createSentinelKey('scylla.messages.history', f.child, 'latest', null, 50));
 });
 
-test('reaction reads use two partition-batched queries per 50 messages, not one query per row', async t => {
+test('reaction reads use one bounded snapshot query per 50 messages, not one query per row', async t => {
   const f = await fixture(t);
-  for (const [size, expected] of [[0, 0], [20, 2], [50, 2], [51, 4], [100, 4]]) {
+  for (const [size, expected] of [[0, 0], [20, 1], [50, 1], [51, 2], [100, 2]]) {
     const start = f.counts.scylla.length;
     const ids = Array.from({ length: size }, (_, i) => String(f.rows[i % f.rows.length].message_id));
     await f.shared.batchFetchReactions(f.conversation, ids, f.user);

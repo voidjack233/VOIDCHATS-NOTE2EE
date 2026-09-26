@@ -28,6 +28,7 @@ export interface LocalMessage {
   is_deleted: boolean;
   created_at: string;
   reactions: Record<string, string[]>;
+  reaction_revision?: string;
   attachments?: string[];
   forwarded?: {
     original_message_id?: string | null;

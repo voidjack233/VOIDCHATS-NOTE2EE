@@ -172,6 +172,18 @@ test('fresh cached conversation reopens without a message request', async () => 
   assert.equal(result.cached.messages[0]?.message_id, 'message-1');
 });
 
+test('empty reaction snapshot retains its revision through local cache projection', async () => {
+  const store = new FakeMessageStore();
+  const fetcher = createFetcher(async () => ({ messages: [makeServerMessage(1, { reactions: {}, reaction_revision: '12' })], has_more: false }));
+  const sync = new MessageSync(store, fetcher.fetchMessages, () => BASE_TIME);
+  const first = await sync.loadConversation(CONVERSATION_ID);
+  await first.syncPromise;
+  assert.equal(store.storedMessages[0]?.reaction_revision, '12');
+  const reopened = await sync.loadConversation(CONVERSATION_ID);
+  assert.equal(reopened.cached.messages[0]?.reaction_revision, '12');
+  assert.equal(fetcher.calls.length, 1);
+});
+
 test('stale cached attachment delivery refreshes the latest window and merges the same message', async () => {
   const now = BASE_TIME;
   const store = new FakeMessageStore();

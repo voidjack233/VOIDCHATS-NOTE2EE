@@ -407,14 +407,17 @@ export async function markAsRead(conversationId: string, messageId: string): Pro
   if (!response.ok || !data.success) throw createApiError(data, { status: response.status });
 }
 
-export async function toggleReaction(conversationId: string, messageId: string, emoji: string) {
+export async function setReaction(conversationId: string, messageId: string, emoji: string, present: boolean, signal?: AbortSignal) {
   const response = await fetchWithAuth(
     `${CHAT_API_PREFIX}/${conversationId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
-    { method: 'PUT' },
+    { method: present ? 'PUT' : 'DELETE', body: JSON.stringify({ present }), signal },
   );
   const data = await response.json();
-  if (!response.ok || !data.success) throw createApiError(data, { status: response.status });
-  return data as { action: 'add' | 'remove'; emoji: string; user_id: string };
+  if (!response.ok || !data.success) throw createApiError(data, { status: response.status, retryAfterMs: getRetryAfterMsFromResponse(response) ?? data.retryAfterMs });
+  if (!/^\d+$/.test(data.revision) || !data.counts || typeof data.counts !== 'object' || !Array.isArray(data.mine)) {
+    throw createApiError({ error: 'Reaction service needs a coordinated update', code: 'REACTION_PROTOCOL_MISMATCH' }, { status: 409 });
+  }
+  return data as { conversation_id: string; message_id: string; action: 'add' | 'remove'; emoji: string; user_id: string; revision: string; counts: Record<string, number>; mine: string[] };
 }
 
 export async function getMessageById(conversationId: string, messageId: string): Promise<Message | null> {

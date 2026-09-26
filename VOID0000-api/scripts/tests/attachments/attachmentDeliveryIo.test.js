@@ -211,6 +211,7 @@ test('history, pagination, message-by-ID refresh and send response use the optim
     async connect() { return { query: async sql => { calls.push(sql.trim().split(/\s+/)[0]); }, release() {} }; },
   };
   const scylla = { async execute(sql, params, options) {
+    if (sql.includes('FROM reaction_schema')) return { rows: [{ ready: true }] };
     calls.push(sql.trim().split(/\s+/).slice(0, 3).join(' '));
     if (sql.includes('INSERT INTO messages')) {
       assert.equal(options.consistency, cassandra.types.consistencies.localQuorum);

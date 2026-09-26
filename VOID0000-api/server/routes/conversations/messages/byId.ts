@@ -191,7 +191,8 @@ router.get<{ conversationId: string; messageId: string }>('/:messageId/context',
 
     const messagesWithReactions = contextMessages.map((message) => ({
       ...message,
-      reactions: reactions[message.message_id] || {},
+      reactions: reactions.reactions[message.message_id] || {},
+      reaction_revision: reactions.revisions[message.message_id] || '0',
     }));
     const messagesWithSignedAttachments = await attachSignedAttachmentUrls(
       messagesWithReactions,

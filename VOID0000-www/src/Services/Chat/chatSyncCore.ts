@@ -83,6 +83,7 @@ function toLocalMessage(message: Message): LocalMessage {
     is_deleted: message.is_deleted,
     created_at: message.created_at,
     reactions: message.reactions as Record<string, string[]> || {},
+    ...(message.reaction_revision !== undefined ? { reaction_revision: message.reaction_revision } : {}),
     attachments: message.attachments,
     forwarded: message.forwarded,
     mentions: message.mentions,

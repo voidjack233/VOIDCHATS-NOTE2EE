@@ -113,6 +113,7 @@ export interface Message {
   is_deleted: boolean;
   created_at: string;
   reactions?: ReactionMap;
+  reaction_revision?: string;
   forwarded?: ForwardedMessageMetadata | null;
   mentions?: MessageMentionMetadata[];
   link_preview?: LinkPreviewMetadata | null;

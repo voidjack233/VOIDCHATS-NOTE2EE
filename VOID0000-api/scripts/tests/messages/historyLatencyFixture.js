@@ -13,12 +13,18 @@ import { createAttachmentBlobObjectKey } from '../../../server/attachments/lifec
 import * as account from '../../../server/auth/middleware/requestAccount.js';
 import { RATE_LIMIT_POLICIES } from '../../../server/middleware/rateLimits/policies.js';
 import * as algorithms from '../../../server/middleware/rateLimits/algorithms.js';
+import { createReactionState } from '../../../server/reactions/state.js';
+import { readFileSync } from 'node:fs';
 
 const esm = value => ({ __esModule: true, default: value });
 
 // Real route, authentication, limits and datastore clients. Only unused write routes are omitted.
 export async function historyLatencyFixture(t, storage, scylla, sentinel, options = {}) {
   const { images = 0, reactions = false, group = false, size = 20 } = options;
+  const schema = readFileSync(new URL('../../../db/scylla-migrations/0001_atomic_reactions.cql', import.meta.url), 'utf8').replaceAll('{{KEYSPACE}}.', '');
+  for (const sql of schema.split(';').map(s => s.trim()).filter(Boolean)) await scylla.execute(sql);
+  await scylla.execute("INSERT INTO reaction_schema(version,ready) VALUES('atomic_v1',true)");
+  const reactionState = createReactionState(scylla);
   const user = randomUUID(), conversation = randomUUID(), channel = group ? randomUUID() : conversation;
   const counters = { pgWaitMs: [], pgQueryMs: [], scyllaMs: [], valkeyMs: [], minioStats: 0, pgWaitingMax: 0, scyllaInFlightMax: 0 };
   const queries = new Map();
@@ -69,9 +75,7 @@ export async function historyLatencyFixture(t, storage, scylla, sentinel, option
     await scylla.execute(`INSERT INTO messages(conversation_id,message_id,sender_id,content,message_type,attachments,created_at,is_deleted)
       VALUES(?,?,?,?,'text',?,?,false)`, [conv, id, sender, `Synthetic history message ${i}`, attachments, new Date()], { prepare: true });
     if (reactions) for (const [index, emoji] of ['like', 'heart', 'laugh', 'eyes', 'party', 'wave'].entries()) {
-      await scylla.execute('UPDATE reaction_counts SET count = count + ? WHERE conversation_id=? AND message_id=? AND emoji=?',
-        [cassandra.types.Long.fromNumber(3 + index), conv, id, emoji], { prepare: true });
-      if (index % 2 === 0) await scylla.execute('INSERT INTO user_reactions(conversation_id,user_id,message_id,emoji) VALUES(?,?,?,?)', [conv, sender, id, emoji], { prepare: true });
+      for (let member = 0; member < 3 + index; member++) await reactionState.set(String(conv), String(id), member === 0 && index % 2 === 0 ? user : randomUUID(), emoji, true);
     }
   }
   const shared = load('routes/conversations/messages/shared', {

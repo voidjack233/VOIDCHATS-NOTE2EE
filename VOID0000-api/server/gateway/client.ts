@@ -17,6 +17,9 @@ interface ReactionEventPayload {
   emoji?: unknown;
   user_id?: unknown;
   action?: unknown;
+  revision?: unknown;
+  counts?: unknown;
+  mine?: unknown;
 }
 
 interface QueuedReactionEntry {
@@ -103,6 +106,9 @@ export function queueReactionEventToUser(
       emoji: payload.emoji,
       user_id: payload.user_id,
       action: payload.action,
+      revision: payload.revision,
+      counts: payload.counts,
+      mine: payload.mine,
     });
     return;
   }
@@ -117,6 +123,9 @@ export function queueReactionEventToUser(
       emoji: payload.emoji,
       user_id: payload.user_id,
       action: payload.action,
+      revision: payload.revision,
+      counts: payload.counts,
+      mine: payload.mine,
     }],
     timer: null,
   };
