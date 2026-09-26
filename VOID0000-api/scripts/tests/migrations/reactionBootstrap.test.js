@@ -46,6 +46,7 @@ async function connect(keyspace) {
   const client = new cassandra.Client({
     contactPoints: ['127.0.0.1'],
     localDataCenter,
+    socketOptions: { readTimeout: 60_000 },
     ...(keyspace ? { keyspace } : {}),
   });
   await client.connect();
@@ -72,6 +73,65 @@ test('normal migration makes a fresh Scylla target reaction-ready', async (t) =>
     true,
   );
   const state = createReactionState(db);
+  await state.ensureReady();
+  const snapshot = await state.set(
+    String(cassandra.types.Uuid.random()),
+    String(cassandra.types.TimeUuid.now()),
+    String(cassandra.types.Uuid.random()),
+    '👍',
+    true,
+  );
+  assert.equal(snapshot.counts['👍'], 1);
+});
+
+test('interrupted fresh readiness publication is retried after both migrations are recorded', async (t) => {
+  const keyspace = nextKeyspace();
+  const admin = await connect();
+  t.after(async () => {
+    await admin.execute(`DROP KEYSPACE IF EXISTS ${keyspace}`);
+    await admin.shutdown();
+  });
+
+  const execute = cassandra.Client.prototype.execute;
+  let failReadinessPublication = true;
+  cassandra.Client.prototype.execute = function patchedExecute(query, ...args) {
+    if (
+      failReadinessPublication &&
+      typeof query === 'string' &&
+      query.includes(`INSERT INTO ${keyspace}.reaction_schema`)
+    ) {
+      failReadinessPublication = false;
+      return Promise.reject(new Error('injected readiness publication failure'));
+    }
+    return execute.call(this, query, ...args);
+  };
+  try {
+    await assert.rejects(
+      withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } })),
+      /injected readiness publication failure/,
+    );
+  } finally {
+    cassandra.Client.prototype.execute = execute;
+  }
+
+  const beforeRetry = await connect(keyspace);
+  t.after(() => beforeRetry.shutdown());
+  const applied = await beforeRetry.execute(
+    'SELECT filename FROM schema_migrations WHERE scope=?',
+    ['scylla'],
+    { prepare: true },
+  );
+  assert.deepEqual(applied.rows.map((row) => row.filename).sort(), [
+    '0000_message_storage.cql',
+    '0001_atomic_reactions.cql',
+  ]);
+  assert.equal(
+    (await beforeRetry.execute("SELECT ready FROM reaction_schema WHERE version='atomic_v1'")).rows.length,
+    0,
+  );
+
+  await withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } }));
+  const state = createReactionState(beforeRetry);
   await state.ensureReady();
   const snapshot = await state.set(
     String(cassandra.types.Uuid.random()),
@@ -114,6 +174,19 @@ test('legacy memberships remain fail-closed until the explicit verified backfill
   const db = await connect(keyspace);
   t.after(() => db.shutdown());
   const state = createReactionState(db);
+  assert.notEqual(
+    (await db.execute("SELECT ready FROM reaction_schema WHERE version='atomic_v1'")).rows[0]?.ready,
+    true,
+  );
+  assert.equal(
+    (await db.execute(
+      'SELECT filename FROM schema_migrations WHERE scope=? AND filename=?',
+      ['bootstrap', 'fresh_atomic_reactions_v1'],
+      { prepare: true },
+    )).rows.length,
+    0,
+  );
+  await withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } }));
   assert.notEqual(
     (await db.execute("SELECT ready FROM reaction_schema WHERE version='atomic_v1'")).rows[0]?.ready,
     true,

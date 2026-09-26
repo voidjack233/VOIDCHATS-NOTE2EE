@@ -19,6 +19,10 @@ const postgresMigrationsDir = path.join(projectRoot, 'db', 'migrations');
 const scyllaMigrationsDir = path.join(projectRoot, 'db', 'scylla-migrations');
 const MIGRATION_LOCK_KEYS = [1448030532, 1296641874];
 const SCYLLA_MIGRATION_READ_TIMEOUT_MS = 120_000;
+const FRESH_REACTION_BOOTSTRAP_SCOPE = 'bootstrap';
+const FRESH_REACTION_BOOTSTRAP_FILENAME = 'fresh_atomic_reactions_v1';
+const FRESH_REACTION_BOOTSTRAP_CHECKSUM = 'fresh-atomic-reactions-v1';
+const ATOMIC_REACTIONS_MIGRATION = '0001_atomic_reactions.cql';
 
 interface MigrationLogger {
   log(...values: unknown[]): void;
@@ -239,6 +243,20 @@ async function readScyllaAppliedMigrations(
   }));
 }
 
+async function hasFreshReactionBootstrapMarker(
+  client: cassandra.Client,
+  keyspace: string,
+): Promise<boolean> {
+  if (!(await scyllaKeyspaceExists(client, keyspace))) return false;
+  if (!(await scyllaTableExists(client, keyspace, 'schema_migrations'))) return false;
+  const result = await client.execute(
+    `SELECT checksum FROM ${keyspace}.schema_migrations WHERE scope = ? AND filename = ?`,
+    [FRESH_REACTION_BOOTSTRAP_SCOPE, FRESH_REACTION_BOOTSTRAP_FILENAME],
+    { prepare: true },
+  );
+  return result.rows[0]?.checksum === FRESH_REACTION_BOOTSTRAP_CHECKSUM;
+}
+
 async function assertFreshScyllaBaseline(
   client: cassandra.Client,
   config: ScyllaConfig,
@@ -276,6 +294,27 @@ async function publishFreshReactionSchemaReadiness(
   await client.execute(
     `INSERT INTO ${keyspace}.reaction_schema (version, ready) VALUES (?, ?)`,
     ['atomic_v1', true],
+    { prepare: true },
+  );
+}
+
+async function recordFreshReactionBootstrapMarker(
+  client: cassandra.Client,
+  keyspace: string,
+): Promise<void> {
+  // This durable marker is written only after assertFreshScyllaBaseline proved
+  // the target empty, and before 0001 can be recorded. It lets an interrupted
+  // fresh bootstrap retry readiness publication without treating legacy data as
+  // migrated.
+  await client.execute(
+    `INSERT INTO ${keyspace}.schema_migrations (scope, filename, checksum, applied_at)
+     VALUES (?, ?, ?, ?)`,
+    [
+      FRESH_REACTION_BOOTSTRAP_SCOPE,
+      FRESH_REACTION_BOOTSTRAP_FILENAME,
+      FRESH_REACTION_BOOTSTRAP_CHECKSUM,
+      new Date(),
+    ],
     { prepare: true },
   );
 }
@@ -520,6 +559,7 @@ export async function runScyllaMigrations({
     const migrations = await loadScyllaMigrations();
     const appliedRows = await readScyllaAppliedMigrations(client, config.keyspace);
     const freshScyllaTarget = await assertFreshScyllaBaseline(client, config, appliedRows);
+    let freshReactionBootstrap = await hasFreshReactionBootstrapMarker(client, config.keyspace);
     const appliedByFilename = new Map(
       appliedRows.map((row) => [row.filename, row])
     );
@@ -552,6 +592,14 @@ export async function runScyllaMigrations({
     await ensureScyllaKeyspace(client, config);
     await ensureScyllaMigrationsTable(client, config.keyspace);
 
+    if (
+      freshScyllaTarget &&
+      pending.some((migration) => migration.filename === ATOMIC_REACTIONS_MIGRATION)
+    ) {
+      await recordFreshReactionBootstrapMarker(client, config.keyspace);
+      freshReactionBootstrap = true;
+    }
+
     for (const migration of pending) {
       logger.log(`Applying Scylla migration ${migration.filename}...`);
       try {
@@ -573,10 +621,9 @@ export async function runScyllaMigrations({
       }
     }
 
-    if (
-      freshScyllaTarget &&
-      pending.some((migration) => migration.filename === '0001_atomic_reactions.cql')
-    ) {
+    const atomicReactionsApplied = [...appliedRows, ...pending]
+      .some((migration) => migration.filename === ATOMIC_REACTIONS_MIGRATION);
+    if (freshReactionBootstrap && atomicReactionsApplied) {
       await publishFreshReactionSchemaReadiness(client, config.keyspace);
       logger.log('Initialized fresh atomic reaction schema readiness.');
     }
