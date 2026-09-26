@@ -243,10 +243,9 @@ async function assertFreshScyllaBaseline(
   client: cassandra.Client,
   config: ScyllaConfig,
   appliedRows: AppliedMigration[],
-): Promise<void> {
-  if (appliedRows.length > 0 || !(await scyllaKeyspaceExists(client, config.keyspace))) {
-    return;
-  }
+): Promise<boolean> {
+  if (appliedRows.length > 0) return false;
+  if (!(await scyllaKeyspaceExists(client, config.keyspace))) return true;
 
   const tablesResult = await client.execute(
     `SELECT table_name
@@ -263,6 +262,22 @@ async function assertFreshScyllaBaseline(
       `Fresh NOTE2EE migrations require an empty Scylla keyspace. Found: ${existingTables.join(', ')}`
     );
   }
+
+  return true;
+}
+
+async function publishFreshReactionSchemaReadiness(
+  client: cassandra.Client,
+  keyspace: string,
+): Promise<void> {
+  // This path is reachable only when the keyspace was empty before the normal
+  // migration sequence created message_reactions. Existing deployments retain
+  // their fail-closed readiness state until migrate-reactions verifies them.
+  await client.execute(
+    `INSERT INTO ${keyspace}.reaction_schema (version, ready) VALUES (?, ?)`,
+    ['atomic_v1', true],
+    { prepare: true },
+  );
 }
 
 async function loadSqlMigrations(): Promise<SqlMigration[]> {
@@ -504,7 +519,7 @@ export async function runScyllaMigrations({
   try {
     const migrations = await loadScyllaMigrations();
     const appliedRows = await readScyllaAppliedMigrations(client, config.keyspace);
-    await assertFreshScyllaBaseline(client, config, appliedRows);
+    const freshScyllaTarget = await assertFreshScyllaBaseline(client, config, appliedRows);
     const appliedByFilename = new Map(
       appliedRows.map((row) => [row.filename, row])
     );
@@ -556,6 +571,14 @@ export async function runScyllaMigrations({
           { cause: error },
         );
       }
+    }
+
+    if (
+      freshScyllaTarget &&
+      pending.some((migration) => migration.filename === '0001_atomic_reactions.cql')
+    ) {
+      await publishFreshReactionSchemaReadiness(client, config.keyspace);
+      logger.log('Initialized fresh atomic reaction schema readiness.');
     }
 
     logger.log(

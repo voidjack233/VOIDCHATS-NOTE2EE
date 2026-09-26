@@ -57,7 +57,10 @@ test('message-service health exposes only aggregate Sentinel stats without stora
   t.after(() => pending.resolve());
   const pass = (_req, _res, next) => next();
   const emptyRouter = express.Router(), esm = value => ({ __esModule: true, default: value });
-  let server, queryCount = 0;
+  let server, queryCount = 0, readinessChecks, reactionReady = true;
+  const reactionState = { async ensureReady() {
+    if (!reactionReady) throw new Error('Reaction migration is not complete');
+  } };
   const dependencies = {
     express: esm(express), cors: esm(() => pass), dotenv: esm({ config() {} }), 'cookie-parser': esm(() => pass),
     http: { createServer(app) { server = createServer(app); return server; } },
@@ -68,11 +71,18 @@ test('message-service health exposes only aggregate Sentinel stats without stora
     '../db.js': { pool: { async query() { queryCount++; return { rows: [] }; } } },
     '../attachments/schemaCompatibility.js': { async assertAttachmentBlobSchemaCompatible() {} },
     '../valkey.js': esm({}), '../scylla.js': esm({}), '../minio.js': { minioClient: {}, ATTACH_BUCKET: 'fixture' },
-    '../health/readiness.js': { createReadinessHandler: () => pass },
+    '../health/readiness.js': { createReadinessHandler: ({ checks }) => {
+      readinessChecks = checks;
+      return async (_req, res) => {
+        try { await checks.reactions(); res.sendStatus(200); }
+        catch { res.sendStatus(503); }
+      };
+    } },
     '../health/gracefulHttpShutdown.js': { installGracefulHttpShutdown() {} },
     '../attachmentSanitizer/ipcProtocol.js': {}, '../valkey-pubsub.js': { initPublisher() {}, closePubSub() {} },
     '../sentinel/index.js': esm(sentinel),
     '../health/historyMetrics.js': { historyMetrics },
+    '../reactions/index.js': { reactionState },
   };
   for (const route of ['conversations/attachments', 'conversations/batchReactions', 'conversations/messages', 'conversations/reactions']) {
     dependencies[`../routes/${route}.js`] = esm(emptyRouter);
@@ -96,6 +106,11 @@ test('message-service health exposes only aggregate Sentinel stats without stora
   assert.equal(queryCount, before);
   assert.deepEqual(body.metrics.history, historyMetrics.getSnapshot());
   assert.doesNotMatch(JSON.stringify(body), /private-user|another-private|token|secret|flight.*key/i);
+  assert.equal(typeof readinessChecks.reactions, 'function');
+  await readinessChecks.reactions();
+  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/ready`)).status, 200);
+  reactionReady = false;
+  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/ready`)).status, 503);
   pending.resolve(); await Promise.all([flight, joined]);
   const completed = await (await fetch(`http://127.0.0.1:${server.address().port}/health`)).json();
   assert.equal(completed.metrics.sentinel.active, 0); assert.equal(completed.metrics.sentinel.succeeded, 1);

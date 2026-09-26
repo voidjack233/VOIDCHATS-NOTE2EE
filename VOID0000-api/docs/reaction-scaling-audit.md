@@ -315,7 +315,7 @@ fail closed until the migration readiness marker exists. Operator rollout:
 2. Review `npm run migrate:status`, then apply the additive schema with the existing migration runner (`npm run migrate`). Review other pending migrations first.
 3. Run `npx tsx scripts/migrate-reactions.ts` for inventory (no copy/readiness writes).
 4. Run `npx tsx scripts/migrate-reactions.ts --apply --writers-stopped`. Copy uses idempotent conditional writes; verify membership and aggregate counts before readiness is published.
-5. Deploy/restart the built API and matching frontend together; verify add/remove, two tabs and history. A fresh installation also needs the readiness step even with zero legacy memberships.
+5. Deploy/restart the built API and matching frontend together; verify add/remove, two tabs and history. A provably fresh Scylla target publishes atomic readiness during `npm run migrate`; only targets with legacy memberships need the explicit inventory/copy/verify steps above.
 
 No legacy tables are dropped. Failed/interrupted copies are resumable with
 writers still stopped; the serving gate stays closed. Already-ready copies are

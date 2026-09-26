@@ -26,6 +26,7 @@ const { default: mediaIngestRouter } = await import('../media/ingestRoutes.js');
 const { default: batchReactionsRouter } = await import('../routes/conversations/batchReactions.js');
 const { default: messagesRouter } = await import('../routes/conversations/messages.js');
 const { default: reactionsRouter } = await import('../routes/conversations/reactions.js');
+const { reactionState } = await import('../reactions/index.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
 const { installGracefulHttpShutdown } = await import('../health/gracefulHttpShutdown.js');
 const {
@@ -91,6 +92,7 @@ app.get('/ready', createReadinessHandler({
     postgres: () => pool.query('SELECT 1'),
     valkey: () => valkey.ping(),
     scylla: () => scyllaClient.execute('SELECT key FROM system.local'),
+    reactions: () => reactionState.ensureReady(),
     minio: () => minioClient.bucketExists(ATTACH_BUCKET),
     attachmentSanitizer: () => pingIpcControlSocket(
       getAttachmentSanitizerSocketPath(),
