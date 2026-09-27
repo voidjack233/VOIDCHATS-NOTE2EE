@@ -32,7 +32,7 @@ async function runCheck(
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   try {
-    await Promise.race([
+    const result = await Promise.race([
       Promise.resolve().then(check),
       new Promise((_, reject) => {
         timeoutId = setTimeout(() => {
@@ -40,6 +40,9 @@ async function runCheck(
         }, timeoutMs);
       }),
     ]);
+    if (result === false) {
+      throw new Error('Readiness check returned false');
+    }
 
     return {
       name,

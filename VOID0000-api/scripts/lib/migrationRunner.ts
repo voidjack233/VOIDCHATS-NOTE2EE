@@ -23,6 +23,45 @@ const FRESH_REACTION_BOOTSTRAP_SCOPE = 'bootstrap';
 const FRESH_REACTION_BOOTSTRAP_FILENAME = 'fresh_atomic_reactions_v1';
 const FRESH_REACTION_BOOTSTRAP_CHECKSUM = 'fresh-atomic-reactions-v1';
 const ATOMIC_REACTIONS_MIGRATION = '0001_atomic_reactions.cql';
+type FreshColumn = readonly [type: string, kind: string, position: number, order: string];
+// A marker permits retry only when every existing 0000 table still has its expected empty shape.
+const FRESH_0000_TABLES: Record<string, Record<string, FreshColumn>> = {
+  messages: {
+    conversation_id: ['uuid', 'partition_key', 0, 'NONE'],
+    message_id: ['timeuuid', 'clustering', 0, 'DESC'],
+    sender_id: ['uuid', 'regular', -1, 'NONE'],
+    content: ['text', 'regular', -1, 'NONE'],
+    message_type: ['text', 'regular', -1, 'NONE'],
+    reply_to: ['timeuuid', 'regular', -1, 'NONE'],
+    attachments: ['list<text>', 'regular', -1, 'NONE'],
+    forwarded: ['text', 'regular', -1, 'NONE'],
+    mentions: ['text', 'regular', -1, 'NONE'],
+    link_preview: ['text', 'regular', -1, 'NONE'],
+    is_edited: ['boolean', 'regular', -1, 'NONE'],
+    edited_at: ['timestamp', 'regular', -1, 'NONE'],
+    is_deleted: ['boolean', 'regular', -1, 'NONE'],
+    created_at: ['timestamp', 'regular', -1, 'NONE'],
+  },
+  message_reactions: {
+    conversation_id: ['uuid', 'partition_key', 0, 'NONE'],
+    message_id: ['timeuuid', 'partition_key', 1, 'NONE'],
+    emoji: ['text', 'partition_key', 2, 'NONE'],
+    user_id: ['uuid', 'clustering', 0, 'ASC'],
+    created_at: ['timestamp', 'regular', -1, 'NONE'],
+  },
+  user_reactions: {
+    conversation_id: ['uuid', 'partition_key', 0, 'NONE'],
+    user_id: ['uuid', 'partition_key', 1, 'NONE'],
+    message_id: ['timeuuid', 'clustering', 0, 'ASC'],
+    emoji: ['text', 'clustering', 1, 'ASC'],
+  },
+  reaction_counts: {
+    conversation_id: ['uuid', 'partition_key', 0, 'NONE'],
+    message_id: ['timeuuid', 'clustering', 0, 'ASC'],
+    emoji: ['text', 'clustering', 1, 'ASC'],
+    count: ['counter', 'regular', -1, 'NONE'],
+  },
+};
 
 interface MigrationLogger {
   log(...values: unknown[]): void;
@@ -261,6 +300,7 @@ async function assertFreshScyllaBaseline(
   client: cassandra.Client,
   config: ScyllaConfig,
   appliedRows: AppliedMigration[],
+  freshBootstrapMarker: boolean,
 ): Promise<boolean> {
   if (appliedRows.length > 0) return false;
   if (!(await scyllaKeyspaceExists(client, config.keyspace))) return true;
@@ -276,9 +316,37 @@ async function assertFreshScyllaBaseline(
     .map((row) => String(row.table_name))
     .filter((tableName) => tableName !== 'schema_migrations');
   if (existingTables.length > 0) {
-    throw new Error(
-      `Fresh NOTE2EE migrations require an empty Scylla keyspace. Found: ${existingTables.join(', ')}`
-    );
+    if (!freshBootstrapMarker) {
+      throw new Error(
+        `Fresh NOTE2EE migrations require an empty Scylla keyspace or a valid fresh bootstrap marker. Found: ${existingTables.join(', ')}`
+      );
+    }
+    for (const table of existingTables) {
+      const expected = FRESH_0000_TABLES[table];
+      if (!expected) {
+        throw new Error(`Unexpected table during fresh Scylla bootstrap: ${table}`);
+      }
+      const columns = await client.execute(
+        `SELECT column_name, type, kind, position, clustering_order
+         FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ?`,
+        [config.keyspace, table],
+        { prepare: true },
+      );
+      if (columns.rows.length !== Object.keys(expected).length || columns.rows.some((column) => {
+        const shape = expected[String(column.column_name)];
+        return !shape ||
+          shape[0] !== String(column.type) ||
+          shape[1] !== String(column.kind) ||
+          shape[2] !== Number(column.position) ||
+          shape[3] !== String(column.clustering_order);
+      })) {
+        throw new Error(`Incompatible table during fresh Scylla bootstrap: ${table}`);
+      }
+      const data = await client.execute(`SELECT conversation_id FROM ${config.keyspace}.${table} LIMIT 1`);
+      if (data.rows.length > 0) {
+        throw new Error(`Preexisting data during fresh Scylla bootstrap: ${table}`);
+      }
+    }
   }
 
   return true;
@@ -302,10 +370,9 @@ async function recordFreshReactionBootstrapMarker(
   client: cassandra.Client,
   keyspace: string,
 ): Promise<void> {
-  // This durable marker is written only after assertFreshScyllaBaseline proved
-  // the target empty, and before 0001 can be recorded. It lets an interrupted
-  // fresh bootstrap retry readiness publication without treating legacy data as
-  // migrated.
+  // This durable marker is written after the target is proved empty, before
+  // the first 0000 statement. It also permits retrying reaction readiness
+  // without treating legacy data as migrated.
   await client.execute(
     `INSERT INTO ${keyspace}.schema_migrations (scope, filename, checksum, applied_at)
      VALUES (?, ?, ?, ?)`,
@@ -558,8 +625,8 @@ export async function runScyllaMigrations({
   try {
     const migrations = await loadScyllaMigrations();
     const appliedRows = await readScyllaAppliedMigrations(client, config.keyspace);
-    const freshScyllaTarget = await assertFreshScyllaBaseline(client, config, appliedRows);
     let freshReactionBootstrap = await hasFreshReactionBootstrapMarker(client, config.keyspace);
+    const freshScyllaTarget = await assertFreshScyllaBaseline(client, config, appliedRows, freshReactionBootstrap);
     const appliedByFilename = new Map(
       appliedRows.map((row) => [row.filename, row])
     );
@@ -593,7 +660,7 @@ export async function runScyllaMigrations({
     await ensureScyllaMigrationsTable(client, config.keyspace);
 
     if (
-      freshScyllaTarget &&
+      freshScyllaTarget && !freshReactionBootstrap &&
       pending.some((migration) => migration.filename === ATOMIC_REACTIONS_MIGRATION)
     ) {
       await recordFreshReactionBootstrapMarker(client, config.keyspace);

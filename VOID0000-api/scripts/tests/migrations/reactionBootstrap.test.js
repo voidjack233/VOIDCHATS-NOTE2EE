@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import cassandra from 'cassandra-driver';
+import pg from 'pg';
 import { runScyllaMigrations } from '../../../scripts/lib/migrationRunner.js';
+import { resolvePostgresConfig } from '../../../server/config/databaseConfig.js';
 import { createReactionState, ReactionError } from '../../../server/reactions/state.js';
 import { migrateReactions } from '../../../server/reactions/migrate.js';
 import { root } from '../media/fixtures.js';
@@ -82,6 +85,197 @@ test('normal migration makes a fresh Scylla target reaction-ready', async (t) =>
     true,
   );
   assert.equal(snapshot.counts['👍'], 1);
+});
+
+test('interrupted initial Scylla migration resumes only after a recorded fresh bootstrap', async (t) => {
+  const keyspace = nextKeyspace();
+  const admin = await connect();
+  t.after(async () => {
+    await admin.execute(`DROP KEYSPACE IF EXISTS ${keyspace}`);
+    await admin.shutdown();
+  });
+
+  const execute = cassandra.Client.prototype.execute;
+  let failed = false;
+  cassandra.Client.prototype.execute = function patchedExecute(query, ...args) {
+    if (!failed && typeof query === 'string' && query.includes(`CREATE TABLE IF NOT EXISTS ${keyspace}.message_reactions`)) {
+      failed = true;
+      return Promise.reject(new Error('injected failure after first 0000 table'));
+    }
+    return execute.call(this, query, ...args);
+  };
+  try {
+    await assert.rejects(
+      withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } })),
+      /injected failure after first 0000 table/,
+    );
+  } finally {
+    cassandra.Client.prototype.execute = execute;
+  }
+  assert.equal(failed, true);
+  const marker = await admin.execute(
+    `SELECT checksum FROM ${keyspace}.schema_migrations WHERE scope=? AND filename=?`,
+    ['bootstrap', 'fresh_atomic_reactions_v1'], { prepare: true },
+  );
+  assert.equal(marker.rows[0]?.checksum, 'fresh-atomic-reactions-v1');
+  assert.equal((await admin.execute(
+    'SELECT table_name FROM system_schema.tables WHERE keyspace_name=? AND table_name=?',
+    [keyspace, 'messages'], { prepare: true },
+  )).rows.length, 1);
+  assert.equal((await admin.execute(
+    `SELECT filename FROM ${keyspace}.schema_migrations WHERE scope=?`,
+    ['scylla'], { prepare: true },
+  )).rows.length, 0);
+
+  const database = `void_rx_pg_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+  const postgres = resolvePostgresConfig();
+  const pgAdmin = new pg.Client({ ...postgres, database: 'postgres' });
+  await pgAdmin.connect();
+  t.after(async () => {
+    await pgAdmin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    await pgAdmin.end();
+  });
+  await pgAdmin.query(`CREATE DATABASE ${database}`);
+  const retry = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/migrate.ts'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PGHOST: postgres.host,
+      PGPORT: String(postgres.port),
+      PGUSER: postgres.user,
+      PGPASSWORD: postgres.password,
+      PGDATABASE: database,
+      SCYLLA_HOST: '127.0.0.1',
+      SCYLLA_KEYSPACE: keyspace,
+      SCYLLA_LOCAL_DATACENTER: localDataCenter,
+      SCYLLA_REPLICATION_FACTOR: '1',
+    },
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  assert.equal(retry.status, 0, retry.stderr);
+  const db = await connect(keyspace);
+  t.after(() => db.shutdown());
+  const applied = await db.execute('SELECT filename FROM schema_migrations WHERE scope=?', ['scylla'], { prepare: true });
+  assert.deepEqual(applied.rows.map((row) => row.filename).sort(), [
+    '0000_message_storage.cql', '0001_atomic_reactions.cql',
+  ]);
+  assert.equal(applied.rows.filter((row) => row.filename === '0000_message_storage.cql').length, 1);
+  assert.equal((await db.execute("SELECT ready FROM reaction_schema WHERE version='atomic_v1'")).rows[0]?.ready, true);
+  const conversation = cassandra.types.Uuid.random();
+  const message = cassandra.types.TimeUuid.now();
+  await db.execute(
+    'INSERT INTO messages (conversation_id, message_id, sender_id, content) VALUES (?, ?, ?, ?)',
+    [conversation, message, cassandra.types.Uuid.random(), 'isolated bootstrap test'], { prepare: true },
+  );
+  assert.equal((await db.execute('SELECT message_id FROM messages WHERE conversation_id=?', [conversation], { prepare: true })).rows.length, 1);
+  const state = createReactionState(db);
+  await state.ensureReady();
+  const snapshot = await state.set(String(conversation), String(message), String(cassandra.types.Uuid.random()), '👍', true);
+  assert.equal(snapshot.counts['👍'], 1);
+});
+
+test('initial Scylla migration also resumes when all 0000 tables exist but its record is missing', async (t) => {
+  const keyspace = nextKeyspace();
+  const admin = await connect();
+  t.after(async () => {
+    await admin.execute(`DROP KEYSPACE IF EXISTS ${keyspace}`);
+    await admin.shutdown();
+  });
+  const execute = cassandra.Client.prototype.execute;
+  let failed = false;
+  cassandra.Client.prototype.execute = function patchedExecute(query, ...args) {
+    if (!failed && typeof query === 'string' && query.includes(`INSERT INTO ${keyspace}.schema_migrations`) &&
+        args[0]?.[0] === 'scylla' && args[0]?.[1] === '0000_message_storage.cql') {
+      failed = true;
+      return Promise.reject(new Error('injected failure before 0000 record'));
+    }
+    return execute.call(this, query, ...args);
+  };
+  try {
+    await assert.rejects(
+      withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } })),
+      /injected failure before 0000 record/,
+    );
+  } finally {
+    cassandra.Client.prototype.execute = execute;
+  }
+  assert.equal(failed, true);
+  await withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } }));
+  const applied = await admin.execute(`SELECT filename FROM ${keyspace}.schema_migrations WHERE scope=?`, ['scylla'], { prepare: true });
+  assert.deepEqual(applied.rows.map((row) => row.filename).sort(), ['0000_message_storage.cql', '0001_atomic_reactions.cql']);
+});
+
+test('untracked Scylla application tables without a bootstrap marker fail closed', async (t) => {
+  const keyspace = nextKeyspace();
+  const admin = await connect();
+  t.after(async () => {
+    await admin.execute(`DROP KEYSPACE IF EXISTS ${keyspace}`);
+    await admin.shutdown();
+  });
+  await admin.execute(`CREATE KEYSPACE ${keyspace} WITH replication = {'class':'NetworkTopologyStrategy','${localDataCenter}':1} AND tablets = {'enabled':false}`);
+  await admin.execute(migrationStatements('0000_message_storage.cql', keyspace)[0]);
+  await assert.rejects(
+    withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } })),
+    /empty Scylla keyspace or a valid fresh bootstrap marker/,
+  );
+  assert.equal((await admin.execute(
+    'SELECT table_name FROM system_schema.tables WHERE keyspace_name=? AND table_name=?',
+    [keyspace, 'schema_migrations'], { prepare: true },
+  )).rows.length, 0);
+});
+
+test('a fresh marker does not admit unknown tables, incompatible schema, or data', async (t) => {
+  const admin = await connect();
+  const keyspaces = [];
+  t.after(async () => {
+    for (const keyspace of keyspaces) await admin.execute(`DROP KEYSPACE IF EXISTS ${keyspace}`);
+    await admin.shutdown();
+  });
+
+  for (const scenario of ['unknown', 'incompatible', 'populated']) {
+    const keyspace = nextKeyspace();
+    keyspaces.push(keyspace);
+    const execute = cassandra.Client.prototype.execute;
+    let failed = false;
+    cassandra.Client.prototype.execute = function patchedExecute(query, ...args) {
+      if (!failed && typeof query === 'string' && query.includes(`CREATE TABLE IF NOT EXISTS ${keyspace}.messages`)) {
+        failed = true;
+        return Promise.reject(new Error('injected failure before 0000 tables'));
+      }
+      return execute.call(this, query, ...args);
+    };
+    try {
+      await assert.rejects(
+        withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } })),
+        /injected failure before 0000 tables/,
+      );
+    } finally {
+      cassandra.Client.prototype.execute = execute;
+    }
+    assert.equal(failed, true);
+    if (scenario === 'unknown') {
+      await admin.execute(`CREATE TABLE ${keyspace}.untracked (id uuid PRIMARY KEY)`);
+    } else if (scenario === 'incompatible') {
+      await admin.execute(`CREATE TABLE ${keyspace}.messages (conversation_id uuid PRIMARY KEY, content text)`);
+    } else {
+      await admin.execute(migrationStatements('0000_message_storage.cql', keyspace)[0]);
+      await admin.execute(
+        `INSERT INTO ${keyspace}.messages (conversation_id, message_id, sender_id) VALUES (?, ?, ?)`,
+        [cassandra.types.Uuid.random(), cassandra.types.TimeUuid.now(), cassandra.types.Uuid.random()],
+        { prepare: true },
+      );
+    }
+    const reason = {
+      unknown: /Unexpected table during fresh Scylla bootstrap/,
+      incompatible: /Incompatible table during fresh Scylla bootstrap/,
+      populated: /Preexisting data during fresh Scylla bootstrap/,
+    }[scenario];
+    await assert.rejects(
+      withScyllaEnvironment(keyspace, () => runScyllaMigrations({ logger: { log() {} } })),
+      reason,
+    );
+  }
 });
 
 test('interrupted fresh readiness publication is retried after both migrations are recorded', async (t) => {
