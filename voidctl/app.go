@@ -79,10 +79,7 @@ func (app App) Run(ctx context.Context, args []string) error {
 	case "down":
 		return app.down(ctx)
 	case "restart":
-		if err := app.down(ctx); err != nil {
-			return err
-		}
-		return app.up(ctx)
+		return app.restart(ctx)
 	case "status":
 		return app.status(ctx)
 	case "logs":
@@ -210,26 +207,39 @@ func (app App) doctor(ctx context.Context) error {
 	return nil
 }
 
-func (app App) up(ctx context.Context) error {
+type preparedDeployment struct {
+	runtime     Runtime
+	previousTag string
+	previousSHA string
+}
+
+func (app App) prepare(ctx context.Context) (preparedDeployment, error) {
 	runtime, err := app.selectedRuntime(ctx)
 	if err != nil {
-		return err
+		return preparedDeployment{}, err
 	}
 	if err := requirePrivateEnvironment(app.Root); err != nil {
-		return err
+		return preparedDeployment{}, err
 	}
 	if err := app.requireCleanTrackedTree(ctx); err != nil {
-		return err
+		return preparedDeployment{}, err
 	}
 	sha, err := app.gitSHA(ctx)
 	if err != nil {
-		return err
+		return preparedDeployment{}, err
+	}
+	previous, err := ReadEnvironment(filepath.Join(app.Root, "deploy", ".env"))
+	if err != nil {
+		return preparedDeployment{}, err
+	}
+	prepared := preparedDeployment{
+		runtime: runtime, previousTag: previous["VOID_IMAGE_TAG"], previousSHA: previous["VOID_GIT_SHA"],
 	}
 	if err := UpdateDeploymentEnvironment(app.Root, map[string]string{
 		"VOID_IMAGE_TAG": sha[:12],
 		"VOID_GIT_SHA":   sha,
 	}); err != nil {
-		return err
+		return preparedDeployment{}, app.restoreDeploymentIdentity(prepared, fmt.Errorf("prepare deployment identity: %w", err))
 	}
 
 	// Build one image at a time so TypeScript, Go, and Elixir compilers cannot
@@ -237,22 +247,73 @@ func (app App) up(ctx context.Context) error {
 	for _, service := range []string{"account", "vmd", "media-worker", "gateway", "edge"} {
 		fmt.Fprintf(app.Stdout, "building production image: %s\n", service)
 		if err := app.composeInteractive(ctx, runtime, "build", service); err != nil {
-			return fmt.Errorf("production image build failed for %s: %w", service, err)
+			return preparedDeployment{}, app.restoreDeploymentIdentity(prepared, fmt.Errorf("production image build failed for %s: %w", service, err))
 		}
 	}
+	if err := app.validateCompose(ctx, runtime); err != nil {
+		return preparedDeployment{}, app.restoreDeploymentIdentity(prepared, err)
+	}
+	return prepared, nil
+}
+
+func (app App) restoreDeploymentIdentity(prepared preparedDeployment, reason error) error {
+	if err := UpdateDeploymentEnvironment(app.Root, map[string]string{
+		"VOID_IMAGE_TAG": prepared.previousTag,
+		"VOID_GIT_SHA":   prepared.previousSHA,
+	}); err != nil {
+		return fmt.Errorf("%w; restoring previous deployment image tag and SHA failed: %v", reason, err)
+	}
+	return reason
+}
+
+func (app App) validateCompose(ctx context.Context, runtime Runtime) error {
+	executable, args, err := composeInvocation(app.Root, runtime, "config", "--quiet")
+	if err != nil {
+		return err
+	}
+	result, err := app.Executor.Run(ctx, app.Root, nil, executable, args...)
+	if err != nil {
+		return fmt.Errorf("prepared Compose configuration is invalid: %w: %s", err, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+func (app App) up(ctx context.Context) error {
+	prepared, err := app.prepare(ctx)
+	if err != nil {
+		return err
+	}
+	return app.activate(ctx, prepared.runtime)
+}
+
+func (app App) restart(ctx context.Context) error {
+	prepared, err := app.prepare(ctx)
+	if err != nil {
+		return err
+	}
+	if err := app.stop(ctx, prepared.runtime); err != nil {
+		app.reportDeploymentStatus(ctx, prepared.runtime)
+		return app.restoreDeploymentIdentity(prepared, fmt.Errorf("deployment shutdown failed: %w", err))
+	}
+	return app.activate(ctx, prepared.runtime)
+}
+
+func (app App) activate(ctx context.Context, runtime Runtime) error {
 	if err := app.composeInteractive(ctx, runtime, "up", "--detach", "--remove-orphans"); err != nil {
-		status, _ := queryDeploymentStatus(ctx, app.Executor, app.Root, runtime)
-		app.printStatus(status)
+		app.reportDeploymentStatus(ctx, runtime)
 		return fmt.Errorf("deployment start failed: %w", err)
 	}
 
 	deadline := time.Now().Add(10 * time.Minute)
 	lastState := DeploymentState("")
+	var lastStatus DeploymentStatus
 	for time.Now().Before(deadline) {
 		status, statusErr := queryDeploymentStatus(ctx, app.Executor, app.Root, runtime)
 		if statusErr != nil {
-			return statusErr
+			fmt.Fprintf(app.Stderr, "deployment status unavailable: %v\n", statusErr)
+			return fmt.Errorf("deployment readiness check failed: %w", statusErr)
 		}
+		lastStatus = status
 		if status.State != lastState {
 			fmt.Fprintf(app.Stdout, "deployment state: %s\n", status.State)
 			lastState = status.State
@@ -266,10 +327,12 @@ func (app App) up(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			app.printStatus(lastStatus)
+			return fmt.Errorf("deployment readiness interrupted: %w", ctx.Err())
 		case <-time.After(2 * time.Second):
 		}
 	}
+	app.printStatus(lastStatus)
 	return fmt.Errorf("deployment did not become READY within 10 minutes")
 }
 
@@ -278,8 +341,21 @@ func (app App) down(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return app.stop(ctx, runtime)
+}
+
+func (app App) stop(ctx context.Context, runtime Runtime) error {
 	// Deliberately no --volumes/-v: normal lifecycle must preserve all data.
 	return app.composeInteractive(ctx, runtime, "down", "--remove-orphans")
+}
+
+func (app App) reportDeploymentStatus(ctx context.Context, runtime Runtime) {
+	status, err := queryDeploymentStatus(ctx, app.Executor, app.Root, runtime)
+	if err != nil {
+		fmt.Fprintf(app.Stderr, "deployment status unavailable: %v\n", err)
+		return
+	}
+	app.printStatus(status)
 }
 
 func (app App) status(ctx context.Context) error {

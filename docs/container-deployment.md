@@ -54,9 +54,14 @@ served so MinIO signatures retain the expected host.
 ```
 
 `up` refuses tracked Git changes, updates the image tag to the current commit,
-builds the four production images sequentially to bound compiler memory, starts
-the topology, and waits for aggregate `READY`. `down` never passes `--volumes`
-or `-v`; named data volumes survive normal shutdown and restart.
+builds the five production images sequentially to bound compiler memory,
+validates the prepared Compose configuration, starts the topology, and waits
+for aggregate `READY`. `restart` completes that preparation before stopping
+the running topology. If preparation fails, it restores the previous image tag
+and Git SHA without stopping the deployment. A failure after shutdown reports
+deployment status and needs operator recovery; automatic rollback is not
+provided. `down` never passes `--volumes` or `-v`; named data volumes survive
+normal shutdown and restart.
 
 `GET /health` is edge liveness. `GET /ready` exposes account-service readiness
 for load balancers that need an HTTP upstream probe; it is not aggregate stack

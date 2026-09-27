@@ -1,6 +1,7 @@
 package voidctl_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,22 +19,47 @@ import (
 )
 
 type fakeExecutor struct {
-	runs        [][]string
-	interactive [][]string
-	composePS   string
+	runs         [][]string
+	interactive  [][]string
+	commands     []recordedCommand
+	composePS    string
+	dirtyTracked bool
+	failOn       string
+}
+
+type recordedCommand struct {
+	args []string
+	tag  string
+	sha  string
+}
+
+func (executor *fakeExecutor) record(root string, command []string) {
+	recorded := recordedCommand{args: command}
+	if values, err := voidctl.ReadEnvironment(filepath.Join(root, "deploy", ".env")); err == nil {
+		recorded.tag = values["VOID_IMAGE_TAG"]
+		recorded.sha = values["VOID_GIT_SHA"]
+	}
+	executor.commands = append(executor.commands, recorded)
 }
 
 func (executor *fakeExecutor) Run(
 	_ context.Context,
-	_ string,
+	root string,
 	_ []string,
 	name string,
 	args ...string,
 ) (voidctl.Result, error) {
 	command := append([]string{name}, args...)
 	executor.runs = append(executor.runs, command)
+	executor.record(root, command)
+	if executor.failOn != "" && strings.Contains(strings.Join(command, " "), executor.failOn) {
+		return voidctl.Result{Stderr: "injected failure"}, fmt.Errorf("injected failure")
+	}
 	if name == "git" && reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}) {
 		return voidctl.Result{Stdout: strings.Repeat("a", 40) + "\n"}, nil
+	}
+	if name == "git" && reflect.DeepEqual(args, []string{"status", "--porcelain", "--untracked-files=no"}) && executor.dirtyTracked {
+		return voidctl.Result{Stdout: " M tracked.go\n"}, nil
 	}
 	if name == "docker" && executor.composePS != "" {
 		for _, argument := range args {
@@ -47,12 +73,17 @@ func (executor *fakeExecutor) Run(
 
 func (executor *fakeExecutor) Interactive(
 	_ context.Context,
-	_ string,
+	root string,
 	_ []string,
 	name string,
 	args ...string,
 ) error {
-	executor.interactive = append(executor.interactive, append([]string{name}, args...))
+	command := append([]string{name}, args...)
+	executor.interactive = append(executor.interactive, command)
+	executor.record(root, command)
+	if executor.failOn != "" && strings.Contains(strings.Join(command, " "), executor.failOn) {
+		return fmt.Errorf("injected failure")
+	}
 	return nil
 }
 
@@ -91,6 +122,71 @@ func testRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func restartFixture(t *testing.T) (voidctl.App, *fakeExecutor, string, *bytes.Buffer) {
+	t.Helper()
+	root := testRoot(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	states, err := json.Marshal(healthyContainers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &fakeExecutor{composePS: string(states)}
+	var output bytes.Buffer
+	app := voidctl.App{Root: root, Executor: executor, Stdout: &output, Stderr: &output}
+	if err := app.Run(context.Background(), []string{"setup", "--runtime", "docker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := voidctl.UpdateDeploymentEnvironment(root, map[string]string{
+		"VOID_EDGE_BIND": host,
+		"VOID_EDGE_PORT": port,
+		"VOID_IMAGE_TAG": strings.Repeat("b", 12),
+		"VOID_GIT_SHA":   strings.Repeat("b", 40),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	executor.commands = nil
+	executor.runs = nil
+	executor.interactive = nil
+	output.Reset()
+	return app, executor, root, &output
+}
+
+func assertDeploymentIdentity(t *testing.T, root, prefix string) {
+	t.Helper()
+	values, err := voidctl.ReadEnvironment(filepath.Join(root, "deploy", ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["VOID_IMAGE_TAG"] != strings.Repeat(prefix, 12) || values["VOID_GIT_SHA"] != strings.Repeat(prefix, 40) {
+		t.Fatalf("deployment identity does not match %s", prefix)
+	}
+}
+
+func commandPosition(commands []recordedCommand, fragment string) int {
+	for index, command := range commands {
+		if strings.Contains(strings.Join(command.args, " "), fragment) {
+			return index
+		}
+	}
+	return -1
+}
+
+func assertNoActivation(commands []recordedCommand, t *testing.T) {
+	t.Helper()
+	for _, fragment := range []string{" down --remove-orphans", " up --detach --remove-orphans"} {
+		if commandPosition(commands, fragment) >= 0 {
+			t.Fatalf("unexpected activation command %q", fragment)
+		}
+	}
 }
 
 func TestSetupGeneratesPrivateSecretsAndIsIdempotent(t *testing.T) {
@@ -205,6 +301,165 @@ func TestUpBuildsProductionImagesSequentiallyBeforeStarting(t *testing.T) {
 	startCommand := strings.Join(executor.interactive[5], " ")
 	if !strings.HasSuffix(startCommand, " up --detach --remove-orphans") {
 		t.Fatalf("start command = %s", startCommand)
+	}
+	if commandPosition(executor.commands, " config --quiet") < 0 || commandPosition(executor.commands, " ps --all --format json") < 0 {
+		t.Fatal("up did not validate Compose configuration and wait for READY")
+	}
+	if commandPosition(executor.commands, " build edge") >= commandPosition(executor.commands, " config --quiet") ||
+		commandPosition(executor.commands, " config --quiet") >= commandPosition(executor.commands, " up --detach --remove-orphans") ||
+		commandPosition(executor.commands, " up --detach --remove-orphans") >= commandPosition(executor.commands, " ps --all --format json") {
+		t.Fatal("up preparation, activation, or readiness commands are out of order")
+	}
+}
+
+func TestRestartPreflightFailureLeavesDeploymentRunning(t *testing.T) {
+	app, executor, root, _ := restartFixture(t)
+	executor.dirtyTracked = true
+	if err := app.Run(context.Background(), []string{"restart"}); err == nil || !strings.Contains(err.Error(), "tracked Git changes") {
+		t.Fatalf("restart error = %v", err)
+	}
+	assertNoActivation(executor.commands, t)
+	if commandPosition(executor.commands, " build account") >= 0 {
+		t.Fatal("dirty tree reached image builds")
+	}
+	assertDeploymentIdentity(t, root, "b")
+}
+
+func TestRestartInvalidEnvironmentPermissionsLeaveDeploymentRunning(t *testing.T) {
+	app, executor, root, _ := restartFixture(t)
+	if err := os.Chmod(filepath.Join(root, "deploy", ".env"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Run(context.Background(), []string{"restart"}); err == nil || !strings.Contains(err.Error(), "permissions") {
+		t.Fatalf("restart error = %v", err)
+	}
+	assertNoActivation(executor.commands, t)
+	assertDeploymentIdentity(t, root, "b")
+}
+
+func TestRestartBuildFailurePreservesDeploymentAndIdentity(t *testing.T) {
+	app, executor, root, _ := restartFixture(t)
+	environmentPath := filepath.Join(root, "deploy", ".env")
+	before, err := os.ReadFile(environmentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.failOn = " build media-worker"
+	if err := app.Run(context.Background(), []string{"restart"}); err == nil || !strings.Contains(err.Error(), "media-worker") {
+		t.Fatalf("restart error = %v", err)
+	}
+	assertNoActivation(executor.commands, t)
+	for _, service := range []string{"account", "vmd", "media-worker"} {
+		position := commandPosition(executor.commands, " build "+service)
+		if position < 0 || executor.commands[position].tag != strings.Repeat("a", 12) || executor.commands[position].sha != strings.Repeat("a", 40) {
+			t.Fatalf("%s build did not use target image identity", service)
+		}
+	}
+	if commandPosition(executor.commands, " build gateway") >= 0 {
+		t.Fatal("builds continued after failure")
+	}
+	assertDeploymentIdentity(t, root, "b")
+	after, err := os.ReadFile(environmentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed build changed the persistent deployment environment")
+	}
+}
+
+func TestRestartComposeValidationFailureRestoresIdentity(t *testing.T) {
+	app, executor, root, _ := restartFixture(t)
+	executor.failOn = " config --quiet"
+	if err := app.Run(context.Background(), []string{"restart"}); err == nil || !strings.Contains(err.Error(), "Compose configuration") {
+		t.Fatalf("restart error = %v", err)
+	}
+	assertNoActivation(executor.commands, t)
+	if commandPosition(executor.commands, " build edge") < 0 {
+		t.Fatal("Compose validation did not follow all builds")
+	}
+	assertDeploymentIdentity(t, root, "b")
+}
+
+func TestRestartPreparesAllImagesBeforeStoppingAndPreservesVolumes(t *testing.T) {
+	app, executor, root, _ := restartFixture(t)
+	if err := app.Run(context.Background(), []string{"restart"}); err != nil {
+		t.Fatal(err)
+	}
+	previous := -1
+	for _, fragment := range []string{
+		"docker info", "docker compose version", "git status --porcelain --untracked-files=no",
+		"git rev-parse HEAD", " build account", " build vmd", " build media-worker",
+		" build gateway", " build edge", " config --quiet", " down --remove-orphans",
+		" up --detach --remove-orphans", " ps --all --format json",
+	} {
+		position := commandPosition(executor.commands, fragment)
+		if position <= previous {
+			t.Fatalf("command %q was missing or out of order", fragment)
+		}
+		previous = position
+	}
+	for _, command := range executor.commands {
+		for _, argument := range command.args {
+			if argument == "--volumes" || argument == "-v" {
+				t.Fatalf("restart requested volume deletion: %v", command.args)
+			}
+		}
+		joined := strings.Join(command.args, " ")
+		if strings.Contains(joined, " build ") || strings.Contains(joined, " config --quiet") ||
+			strings.Contains(joined, " down --remove-orphans") || strings.Contains(joined, " up --detach") {
+			if command.tag != strings.Repeat("a", 12) || command.sha != strings.Repeat("a", 40) {
+				t.Fatalf("prepared command has wrong target image identity: %s", joined)
+			}
+		}
+	}
+	assertDeploymentIdentity(t, root, "a")
+}
+
+func TestRestartShutdownFailureReportsStateAndRestoresIdentity(t *testing.T) {
+	app, executor, root, output := restartFixture(t)
+	executor.failOn = " down --remove-orphans"
+	if err := app.Run(context.Background(), []string{"restart"}); err == nil || !strings.Contains(err.Error(), "shutdown failed") {
+		t.Fatalf("restart error = %v", err)
+	}
+	if commandPosition(executor.commands, " up --detach") >= 0 {
+		t.Fatal("restart started replacement after failed shutdown")
+	}
+	if commandPosition(executor.commands, " ps --all --format json") < 0 || !strings.Contains(output.String(), "READY") {
+		t.Fatal("failed shutdown did not report deployment state")
+	}
+	assertDeploymentIdentity(t, root, "b")
+}
+
+func TestRestartStartAndReadinessFailuresReportState(t *testing.T) {
+	for _, scenario := range []string{"start", "readiness"} {
+		t.Run(scenario, func(t *testing.T) {
+			app, executor, root, output := restartFixture(t)
+			if scenario == "start" {
+				executor.failOn = " up --detach --remove-orphans"
+				executor.composePS = ""
+			} else {
+				states := healthyContainers()
+				states[2].ExitCode = 1
+				payload, err := json.Marshal(states)
+				if err != nil {
+					t.Fatal(err)
+				}
+				executor.composePS = string(payload)
+			}
+			err := app.Run(context.Background(), []string{"restart"})
+			if err == nil {
+				t.Fatal("restart concealed activation failure")
+			}
+			if commandPosition(executor.commands, " down --remove-orphans") < 0 ||
+				commandPosition(executor.commands, " ps --all --format json") < 0 {
+				t.Fatal("activation failure did not occur after down or report status")
+			}
+			if !strings.Contains(output.String(), string(voidctl.Stopped)) && !strings.Contains(output.String(), string(voidctl.Failed)) {
+				t.Fatal("activation failure did not print deployment state")
+			}
+			assertDeploymentIdentity(t, root, "a")
+		})
 	}
 }
 
