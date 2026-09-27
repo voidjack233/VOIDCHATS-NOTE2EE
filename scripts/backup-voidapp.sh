@@ -5,7 +5,7 @@ umask 077
 usage() {
   cat <<'USAGE'
 Usage:
-  ./scripts/backup-voidapp.sh [--no-archive]
+  ./scripts/backup-voidapp.sh [--no-archive] [--allow-incomplete]
 
 Environment:
   VOIDAPP_ENV_FILE=/path/to/VOID0000-api/.env
@@ -19,20 +19,30 @@ Environment:
 What it backs up:
   - PostgreSQL with pg_dump custom format
   - ScyllaDB tables with cqlsh COPY
-  - MinIO buckets with mc mirror, or local minio-data fallback
+  - MinIO object bytes with mc mirror plus authoritative metadata manifests
   - Valkey RDB snapshot when valkey-cli/redis-cli supports it
 
 Notes:
+  A full backup quiesces all PM2 VOID writers before the recovery point and
+  resumes them only after every required store completed successfully. Use
+  VOIDAPP_BACKUP_QUIESCE_COMMAND and VOIDAPP_BACKUP_RESUME_COMMAND for a
+  non-PM2 deployment (for example Compose).
+
   This is a simple hobby-server backup helper. For huge Scylla datasets, replace
   the cqlsh COPY part with proper Scylla snapshots/backup tooling.
 USAGE
 }
 
 NO_ARCHIVE=0
+ALLOW_INCOMPLETE=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --no-archive)
       NO_ARCHIVE=1
+      shift
+      ;;
+    --allow-incomplete)
+      ALLOW_INCOMPLETE=1
       shift
       ;;
     -h|--help)
@@ -56,6 +66,14 @@ BACKUP_NAME="voidapp-$TIMESTAMP"
 BACKUP_DIR="$BACKUP_ROOT/$BACKUP_NAME"
 WARNINGS_FILE="$BACKUP_DIR/WARNINGS.txt"
 MANIFEST_FILE="$BACKUP_DIR/MANIFEST.txt"
+COMPLETE=1
+QUIESCED=0
+QUIESCE_METHOD="none"
+PM2_STARTED_FILE="$BACKUP_DIR/.pm2-started"
+POSTGRES_STATUS="pending"
+SCYLLA_STATUS="pending"
+MINIO_STATUS="pending"
+VALKEY_STATUS="pending"
 
 mkdir -p "$BACKUP_DIR"
 : > "$WARNINGS_FILE"
@@ -67,6 +85,11 @@ log() {
 warn() {
   printf '[backup] WARN: %s\n' "$*" >&2
   printf '%s\n' "$*" >> "$WARNINGS_FILE"
+}
+
+fail() {
+  printf '[backup] ERROR: %s\n' "$*" >&2
+  exit 1
 }
 
 have_cmd() {
@@ -89,6 +112,10 @@ source_env_file() {
 write_manifest() {
   {
     echo "backup_name=$BACKUP_NAME"
+    echo "backup_format=2"
+    echo "backup_complete=$COMPLETE"
+    echo "recovery_point_quiesced=$QUIESCED"
+    echo "quiesce_method=$QUIESCE_METHOD"
     echo "created_at_utc=$TIMESTAMP"
     echo "host=$(hostname)"
     echo "app_root=$APP_ROOT"
@@ -97,20 +124,65 @@ write_manifest() {
     echo "git_branch=$(git -C "$APP_ROOT" branch --show-current 2>/dev/null || echo unknown)"
     echo "postgres_database=${PGDATABASE:-unset}"
     echo "scylla_keyspace=${SCYLLA_KEYSPACE:-voidapp}"
+    echo "scylla_tables=messages reaction_state reaction_schema schema_migrations"
     echo "minio_buckets=${MINIO_BUCKET:-avatars} ${MINIO_GROUP_AVATAR_BUCKET:-group-avatars} ${MINIO_ATTACH_BUCKET:-chat-attachments}"
+    echo "minio_metadata_format=void-minio-object-metadata-v1"
+    echo "postgres_status=$POSTGRES_STATUS"
+    echo "scylla_status=$SCYLLA_STATUS"
+    echo "minio_status=$MINIO_STATUS"
+    echo "valkey_status=$VALKEY_STATUS"
     echo "valkey_host=${VALKEY_HOST:-127.0.0.1}"
   } > "$MANIFEST_FILE"
 }
 
+resume_writers() {
+  if [ "$QUIESCED" -ne 1 ]; then return; fi
+  if [ "$QUIESCE_METHOD" = "pm2" ] && [ -s "$PM2_STARTED_FILE" ]; then
+    xargs -r pm2 start < "$PM2_STARTED_FILE" || printf '[backup] ERROR: failed to resume PM2 writers\n' >&2
+  elif [ "$QUIESCE_METHOD" = "external" ]; then
+    eval "$VOIDAPP_BACKUP_RESUME_COMMAND" || printf '[backup] ERROR: external writer resume failed\n' >&2
+  fi
+  QUIESCED=0
+}
+
+trap resume_writers EXIT
+
+quiesce_writers() {
+  if [ "$ALLOW_INCOMPLETE" -eq 1 ]; then
+    COMPLETE=0
+    return
+  fi
+  if [ -n "${VOIDAPP_BACKUP_QUIESCE_COMMAND:-}" ]; then
+    [ -n "${VOIDAPP_BACKUP_RESUME_COMMAND:-}" ] || fail "VOIDAPP_BACKUP_RESUME_COMMAND is required with VOIDAPP_BACKUP_QUIESCE_COMMAND."
+    eval "$VOIDAPP_BACKUP_QUIESCE_COMMAND"
+    QUIESCED=1
+    QUIESCE_METHOD="external"
+    return
+  fi
+  have_cmd pm2 || fail "Full backup requires PM2 or explicit quiesce/resume commands."
+  local names=(voidapp-api voidapp-message-service voidapp-conversation-service voidapp-social-profile-service voidapp-worker-service voidapp-gateway-phoenix voidapp-vmd-service)
+  : > "$PM2_STARTED_FILE"
+  local name
+  for name in "${names[@]}"; do
+    if pm2 describe "$name" 2>/dev/null | grep -q 'status.*online'; then
+      printf '%s\n' "$name" >> "$PM2_STARTED_FILE"
+    fi
+  done
+  [ -s "$PM2_STARTED_FILE" ] || fail "Full backup found no running VOID PM2 writers; use explicit quiesce/resume commands for this deployment."
+  xargs -r pm2 stop < "$PM2_STARTED_FILE"
+  QUIESCED=1
+  QUIESCE_METHOD="pm2"
+}
+
 backup_postgres() {
   if [ "${VOIDAPP_BACKUP_SKIP_POSTGRES:-0}" = "1" ]; then
-    warn "Skipping PostgreSQL backup because VOIDAPP_BACKUP_SKIP_POSTGRES=1."
+    [ "$ALLOW_INCOMPLETE" -eq 1 ] || fail "PostgreSQL is required for a full backup. Use --allow-incomplete to intentionally skip it."
+    COMPLETE=0; POSTGRES_STATUS="skipped"; warn "Skipping PostgreSQL backup because VOIDAPP_BACKUP_SKIP_POSTGRES=1."
     return
   fi
 
   if ! have_cmd pg_dump; then
-    warn "pg_dump not found. PostgreSQL backup skipped."
-    return
+    fail "pg_dump not found. PostgreSQL is required for a full backup."
   fi
 
   local out_dir="$BACKUP_DIR/postgres"
@@ -145,19 +217,20 @@ backup_postgres() {
       -p "$port" \
       -U "$user" \
       --globals-only \
-      -f "$out_dir/globals.sql" || warn "pg_dumpall --globals-only failed. Database dump still exists."
+      -f "$out_dir/globals.sql" || fail "pg_dumpall --globals-only failed."
   fi
+  POSTGRES_STATUS="complete"
 }
 
 backup_scylla() {
   if [ "${VOIDAPP_BACKUP_SKIP_SCYLLA:-0}" = "1" ]; then
-    warn "Skipping Scylla backup because VOIDAPP_BACKUP_SKIP_SCYLLA=1."
+    [ "$ALLOW_INCOMPLETE" -eq 1 ] || fail "Scylla is required for a full backup. Use --allow-incomplete to intentionally skip it."
+    COMPLETE=0; SCYLLA_STATUS="skipped"; warn "Skipping Scylla backup because VOIDAPP_BACKUP_SKIP_SCYLLA=1."
     return
   fi
 
   if ! have_cmd cqlsh; then
-    warn "cqlsh not found. Scylla backup skipped."
-    return
+    fail "cqlsh not found. Scylla is required for a full backup."
   fi
 
   local out_dir="$BACKUP_DIR/scylla"
@@ -169,30 +242,27 @@ backup_scylla() {
   local keyspace="${SCYLLA_KEYSPACE:-voidapp}"
   local tables=(
     messages
-    message_edits
-    message_reactions
-    user_reactions
-    reaction_counts
+    reaction_state
+    reaction_schema
+    schema_migrations
   )
 
   log "Backing up Scylla keyspace $keyspace with cqlsh COPY..."
-  cqlsh "$host" "$port" -e "DESCRIBE KEYSPACE $keyspace;" > "$out_dir/schema.cql" || {
-    warn "Could not export Scylla schema for $keyspace."
-  }
+  cqlsh "$host" "$port" -e "DESCRIBE KEYSPACE $keyspace;" > "$out_dir/schema.cql" || fail "Could not export Scylla schema for $keyspace."
 
   local table
   for table in "${tables[@]}"; do
     local csv="$out_dir/$table.csv"
     log "Exporting Scylla table $keyspace.$table..."
-    if ! cqlsh "$host" "$port" -e "COPY $keyspace.$table TO '$csv' WITH HEADER = TRUE;"; then
-      warn "Scylla export failed for $keyspace.$table."
-    fi
+    cqlsh "$host" "$port" -e "COPY $keyspace.$table TO '$csv' WITH HEADER = TRUE;" || fail "Scylla export failed for $keyspace.$table."
   done
+  SCYLLA_STATUS="complete"
 }
 
 backup_minio() {
   if [ "${VOIDAPP_BACKUP_SKIP_MINIO:-0}" = "1" ]; then
-    warn "Skipping MinIO backup because VOIDAPP_BACKUP_SKIP_MINIO=1."
+    [ "$ALLOW_INCOMPLETE" -eq 1 ] || fail "MinIO is required for a full backup. Use --allow-incomplete to intentionally skip it."
+    COMPLETE=0; MINIO_STATUS="skipped"; warn "Skipping MinIO backup because VOIDAPP_BACKUP_SKIP_MINIO=1."
     return
   fi
 
@@ -209,29 +279,22 @@ backup_minio() {
     local secret_key="${MINIO_SECRET_KEY:-minioadmin}"
     local alias_name="voidapp-backup-$TIMESTAMP"
 
-    log "Backing up MinIO buckets with mc mirror..."
+    log "Backing up MinIO buckets and object metadata..."
     mc alias set "$alias_name" "$endpoint" "$access_key" "$secret_key" >/dev/null
 
     local bucket
     for bucket in "$bucket_avatar" "$bucket_group" "$bucket_attach"; do
       log "Mirroring MinIO bucket $bucket..."
-      if ! mc mirror --overwrite "$alias_name/$bucket" "$out_dir/$bucket"; then
-        warn "MinIO mirror failed for bucket $bucket."
-      fi
+      mc mirror --overwrite "$alias_name/$bucket" "$out_dir/$bucket" || fail "MinIO mirror failed for bucket $bucket."
+      (cd "$APP_ROOT/VOID0000-api" && node --import tsx scripts/backup/minioObjectMetadata.ts capture "$bucket" "$out_dir/$bucket" "$out_dir/metadata/$bucket.json") || fail "MinIO metadata capture failed for bucket $bucket."
     done
 
     mc alias remove "$alias_name" >/dev/null 2>&1 || true
+    MINIO_STATUS="complete"
     return
   fi
 
-  local minio_data_dir="${VOIDAPP_MINIO_DATA_DIR:-$APP_ROOT/minio-data}"
-  if [ -d "$minio_data_dir" ] && have_cmd rsync; then
-    warn "mc command not found. Falling back to raw local MinIO data copy from $minio_data_dir."
-    rsync -a "$minio_data_dir/" "$out_dir/raw-minio-data/"
-    return
-  fi
-
-  warn "Could not back up MinIO. Install mc or set VOIDAPP_MINIO_DATA_DIR to a readable local data directory."
+  fail "mc command not found. MinIO backup must preserve object metadata."
 }
 
 valkey_cli() {
@@ -248,6 +311,7 @@ valkey_cli() {
 
 backup_valkey() {
   if [ "${VOIDAPP_BACKUP_SKIP_VALKEY:-0}" = "1" ]; then
+    VALKEY_STATUS="skipped"
     warn "Skipping Valkey backup because VOIDAPP_BACKUP_SKIP_VALKEY=1."
     return
   fi
@@ -255,6 +319,7 @@ backup_valkey() {
   local cli
   cli="$(valkey_cli || true)"
   if [ -z "$cli" ]; then
+    VALKEY_STATUS="unavailable"
     warn "valkey-cli/redis-cli not found. Valkey backup skipped."
     return
   fi
@@ -275,6 +340,7 @@ backup_valkey() {
   else
     warn "$cli does not advertise --rdb support. Valkey data file was not copied."
   fi
+  VALKEY_STATUS="best-effort"
 }
 
 create_archive() {
@@ -303,11 +369,13 @@ source_env_file
 : "${VALKEY_HOST:=127.0.0.1}"
 : "${VALKEY_PORT:=6379}"
 
+quiesce_writers
 write_manifest
 backup_postgres
 backup_scylla
 backup_minio
 backup_valkey
+write_manifest
 create_archive
 
 log "Backup directory: $BACKUP_DIR"
@@ -315,7 +383,9 @@ if [ "$NO_ARCHIVE" -eq 0 ]; then
   log "Backup archive:   $BACKUP_ROOT/$BACKUP_NAME.tar.gz"
 fi
 
-if [ -s "$WARNINGS_FILE" ]; then
+if [ "$COMPLETE" -ne 1 ]; then
+  log "INCOMPLETE backup created; it is not valid for full disaster recovery."
+elif [ -s "$WARNINGS_FILE" ]; then
   log "Backup completed with warnings. Read: $WARNINGS_FILE"
 else
   rm -f "$WARNINGS_FILE"

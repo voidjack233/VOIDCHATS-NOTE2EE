@@ -122,6 +122,12 @@ fail() {
   exit 1
 }
 
+manifest_value() {
+  local key="$1"
+  [ -f "$BACKUP_DIR/MANIFEST.txt" ] || return 1
+  sed -n "s/^${key}=//p" "$BACKUP_DIR/MANIFEST.txt" | head -n 1
+}
+
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -292,20 +298,29 @@ restore_scylla() {
   host="${host%%,*}"
   local port="${SCYLLA_PORT:-9042}"
   local keyspace="${SCYLLA_KEYSPACE:-voidapp}"
+  local backup_keyspace
+  backup_keyspace="$(manifest_value scylla_keyspace || true)"
+  [ -n "$backup_keyspace" ] || fail "Backup manifest does not identify its Scylla keyspace."
   local schema="$BACKUP_DIR/scylla/schema.cql"
   local tables=(
     messages
-    message_edits
-    message_reactions
-    user_reactions
-    reaction_counts
+    reaction_state
+    reaction_schema
+    schema_migrations
   )
 
   [ -d "$BACKUP_DIR/scylla" ] || fail "Scylla backup folder not found: $BACKUP_DIR/scylla"
 
   if [ -f "$schema" ]; then
     log "Restoring Scylla schema from $schema..."
-    run_cmd cqlsh "$host" "$port" -f "$schema"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "DRY RUN: rewrite Scylla keyspace $backup_keyspace to isolated target $keyspace and apply schema"
+    else
+      local rewritten_schema="$BACKUP_DIR/scylla/schema.restore.cql"
+      sed "s/\\<$backup_keyspace\\>/$keyspace/g" "$schema" > "$rewritten_schema"
+      cqlsh "$host" "$port" -f "$rewritten_schema" || fail "Scylla schema restore failed."
+      rm -f "$rewritten_schema"
+    fi
   else
     log "Scylla schema.cql not found. Assuming schema already exists."
   fi
@@ -321,8 +336,7 @@ restore_scylla() {
   for table in "${tables[@]}"; do
     local csv="$BACKUP_DIR/scylla/$table.csv"
     if [ ! -f "$csv" ]; then
-      log "Skipping missing Scylla CSV: $csv"
-      continue
+      fail "Required Scylla CSV is missing: $csv"
     fi
 
     log "Importing Scylla table $keyspace.$table from $csv..."
@@ -353,16 +367,26 @@ restore_minio() {
   run_cmd_masked "mc alias set $alias_name $endpoint ******** ********" \
     mc alias set "$alias_name" "$endpoint" "$access_key" "$secret_key"
 
+  local bucket_index=0
   local bucket
   for bucket in "${buckets[@]}"; do
-    if [ ! -d "$minio_dir/$bucket" ]; then
-      log "Skipping missing MinIO bucket backup: $minio_dir/$bucket"
-      continue
-    fi
+    [ -d "$minio_dir/$bucket" ] || fail "Required MinIO bucket backup is missing: $minio_dir/$bucket"
+    [ -f "$minio_dir/metadata/$bucket.json" ] || fail "Required MinIO metadata manifest is missing: $minio_dir/metadata/$bucket.json"
 
     log "Restoring MinIO bucket $bucket..."
     run_cmd mc mb --ignore-existing "$alias_name/$bucket"
+    if [ "$bucket_index" -lt 2 ]; then
+      run_cmd mc anonymous set download "$alias_name/$bucket"
+    else
+      run_cmd mc anonymous set none "$alias_name/$bucket"
+    fi
     run_cmd mc mirror --overwrite "$minio_dir/$bucket" "$alias_name/$bucket"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "DRY RUN: restore and verify MinIO metadata for $bucket"
+    else
+      (cd "$APP_ROOT/VOID0000-api" && node --import tsx scripts/backup/minioObjectMetadata.ts restore "$bucket" "$minio_dir/$bucket" "$minio_dir/metadata/$bucket.json") || fail "MinIO metadata restore/verification failed for bucket $bucket."
+    fi
+    bucket_index=$((bucket_index + 1))
   done
 }
 
@@ -421,7 +445,15 @@ source_env_file
 require_component_selection
 resolve_backup_dir
 
-[ -f "$BACKUP_DIR/MANIFEST.txt" ] || log "MANIFEST.txt not found. Continuing, but verify this is a VOID backup."
+[ -f "$BACKUP_DIR/MANIFEST.txt" ] || fail "MANIFEST.txt is required for restore."
+if [ "$RESTORE_POSTGRES" -eq 1 ] && [ "$RESTORE_SCYLLA" -eq 1 ] && [ "$RESTORE_MINIO" -eq 1 ]; then
+  [ "$(manifest_value backup_format || true)" = "2" ] || fail "Backup format is not a complete-restorable format 2 artifact."
+  [ "$(manifest_value backup_complete || true)" = "1" ] || fail "Backup is incomplete and cannot be used for full recovery."
+  [ "$(manifest_value recovery_point_quiesced || true)" = "1" ] || fail "Backup did not record a coordinated quiesced recovery point."
+  [ "$(manifest_value postgres_status || true)" = "complete" ] || fail "Backup PostgreSQL component is not complete."
+  [ "$(manifest_value scylla_status || true)" = "complete" ] || fail "Backup Scylla component is not complete."
+  [ "$(manifest_value minio_status || true)" = "complete" ] || fail "Backup MinIO component is not complete."
+fi
 
 log "Backup directory: $BACKUP_DIR"
 check_running_app
