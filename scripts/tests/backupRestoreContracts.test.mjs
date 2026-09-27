@@ -1,9 +1,25 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 
 const root = new URL('../', import.meta.url);
 const read = (relativePath) => readFile(new URL(relativePath, root), 'utf8');
+const require = createRequire(import.meta.url);
+
+test('PM2 full backup quiesces the media worker and lists only configured services', async () => {
+  const backup = await read('backup-voidapp.sh');
+  const declaration = backup.match(/^\s*local names=\(([^)]*)\)$/m);
+  assert.ok(declaration, 'PM2 writer list is present');
+  const writers = declaration[1].trim().split(/\s+/);
+  const { apps } = require('../../VOID0000-api/ecosystem.config.cjs');
+  const configured = new Set(apps.map(({ name }) => name));
+
+  assert.ok(writers.includes('voidapp-media-worker'));
+  for (const writer of writers) {
+    assert.ok(configured.has(writer), `${writer} is missing from the PM2 ecosystem`);
+  }
+});
 
 test('full backup uses the authoritative Scylla reaction and migration tables', async () => {
   const backup = await read('backup-voidapp.sh');

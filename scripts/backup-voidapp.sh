@@ -160,7 +160,7 @@ quiesce_writers() {
     return
   fi
   have_cmd pm2 || fail "Full backup requires PM2 or explicit quiesce/resume commands."
-  local names=(voidapp-api voidapp-message-service voidapp-conversation-service voidapp-social-profile-service voidapp-worker-service voidapp-gateway-phoenix voidapp-vmd-service)
+  local names=(voidapp-api voidapp-message-service voidapp-conversation-service voidapp-social-profile-service voidapp-worker-service voidapp-gateway-phoenix voidapp-vmd-service voidapp-media-worker)
   : > "$PM2_STARTED_FILE"
   local name
   for name in "${names[@]}"; do
