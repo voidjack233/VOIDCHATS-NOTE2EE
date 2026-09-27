@@ -287,6 +287,7 @@ backup_minio() {
     local bucket
     for bucket in "$bucket_avatar" "$bucket_group" "$bucket_attach"; do
       log "Mirroring MinIO bucket $bucket..."
+      mkdir -p "$out_dir/$bucket"
       mc mirror --overwrite "$alias_name/$bucket" "$out_dir/$bucket" || fail "MinIO mirror failed for bucket $bucket."
       (cd "$APP_ROOT/VOID0000-api" && node --import tsx scripts/backup/minioObjectMetadata.ts capture "$bucket" "$out_dir/$bucket" "$out_dir/metadata/$bucket.json") || fail "MinIO metadata capture failed for bucket $bucket."
     done

@@ -31,6 +31,11 @@ test('backup and restore MinIO commands target the internal endpoint', async () 
   }
 });
 
+test('backup creates local bucket directories before mirroring', async () => {
+  const backup = await read('backup-voidapp.sh');
+  assert.match(backup, /mkdir -p "\$out_dir\/\$bucket"\s+mc mirror/);
+});
+
 test('full backup uses the authoritative Scylla reaction and migration tables', async () => {
   const backup = await read('backup-voidapp.sh');
   const restore = await read('restore-voidapp.sh');

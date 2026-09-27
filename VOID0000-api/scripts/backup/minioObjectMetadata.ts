@@ -24,7 +24,7 @@ async function streamSha256(stream: AsyncIterable<Buffer>): Promise<string> {
 }
 
 function usage(): never {
-  throw new Error('Usage: minioObjectMetadata.ts capture|restore <bucket> <object-dir> <manifest>');
+  throw new Error('Usage: minioObjectMetadata.ts capture|restore|assert-empty <bucket> <object-dir> <manifest>');
 }
 
 function client(): Client {
@@ -60,12 +60,17 @@ async function capture(bucket: string, objectDirectory: string, manifestPath: st
   writeFileSync(manifestPath, `${JSON.stringify({ format: 1, bucket, objects } satisfies ObjectManifest, null, 2)}\n`, { mode: 0o600 });
 }
 
-async function restore(bucket: string, objectDirectory: string, manifestPath: string): Promise<void> {
+function loadManifest(bucket: string, manifestPath: string): ObjectManifest {
   if (!existsSync(manifestPath)) throw new Error(`Missing MinIO metadata manifest: ${manifestPath}`);
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ObjectManifest;
   if (manifest.format !== 1 || manifest.bucket !== bucket || !Array.isArray(manifest.objects)) {
     throw new Error(`Invalid MinIO metadata manifest: ${manifestPath}`);
   }
+  return manifest;
+}
+
+async function restore(bucket: string, objectDirectory: string, manifestPath: string): Promise<void> {
+  const manifest = loadManifest(bucket, manifestPath);
   const minio = client();
   for (const object of manifest.objects) {
     const objectPath = localObjectPath(objectDirectory, object.key);
@@ -91,4 +96,9 @@ const [action, bucket, objectDirectory, manifestPath] = process.argv.slice(2);
 if (!action || !bucket || !objectDirectory || !manifestPath) usage();
 if (action === 'capture') await capture(bucket, objectDirectory, manifestPath);
 else if (action === 'restore') await restore(bucket, objectDirectory, manifestPath);
+else if (action === 'assert-empty') {
+  if (loadManifest(bucket, manifestPath).objects.length !== 0) {
+    throw new Error(`MinIO bucket backup is not empty: ${bucket}`);
+  }
+}
 else usage();

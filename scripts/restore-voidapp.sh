@@ -372,8 +372,11 @@ restore_minio() {
   local bucket_index=0
   local bucket
   for bucket in "${buckets[@]}"; do
-    [ -d "$minio_dir/$bucket" ] || fail "Required MinIO bucket backup is missing: $minio_dir/$bucket"
     [ -f "$minio_dir/metadata/$bucket.json" ] || fail "Required MinIO metadata manifest is missing: $minio_dir/metadata/$bucket.json"
+    local bucket_dir="$minio_dir/$bucket"
+    if [ ! -d "$bucket_dir" ]; then
+      (cd "$APP_ROOT/VOID0000-api" && node --import tsx scripts/backup/minioObjectMetadata.ts assert-empty "$bucket" "$bucket_dir" "$minio_dir/metadata/$bucket.json") || fail "Required MinIO bucket backup is missing or invalid: $bucket_dir"
+    fi
 
     log "Restoring MinIO bucket $bucket..."
     run_cmd mc mb --ignore-existing "$alias_name/$bucket"
@@ -382,11 +385,15 @@ restore_minio() {
     else
       run_cmd mc anonymous set none "$alias_name/$bucket"
     fi
-    run_cmd mc mirror --overwrite "$minio_dir/$bucket" "$alias_name/$bucket"
+    if [ -d "$bucket_dir" ]; then
+      run_cmd mc mirror --overwrite "$bucket_dir" "$alias_name/$bucket"
+    else
+      log "Empty MinIO bucket $bucket has no objects to mirror."
+    fi
     if [ "$DRY_RUN" -eq 1 ]; then
       log "DRY RUN: restore and verify MinIO metadata for $bucket"
     else
-      (cd "$APP_ROOT/VOID0000-api" && node --import tsx scripts/backup/minioObjectMetadata.ts restore "$bucket" "$minio_dir/$bucket" "$minio_dir/metadata/$bucket.json") || fail "MinIO metadata restore/verification failed for bucket $bucket."
+      (cd "$APP_ROOT/VOID0000-api" && node --import tsx scripts/backup/minioObjectMetadata.ts restore "$bucket" "$bucket_dir" "$minio_dir/metadata/$bucket.json") || fail "MinIO metadata restore/verification failed for bucket $bucket."
     fi
     bucket_index=$((bucket_index + 1))
   done
