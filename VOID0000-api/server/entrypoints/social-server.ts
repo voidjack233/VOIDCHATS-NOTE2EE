@@ -27,6 +27,7 @@ const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
 const { pool } = await import('../db.js');
 const { default: valkey } = await import('../valkey.js');
 const { minioClient, BUCKET, GROUP_AVATAR_BUCKET } = await import('../minio.js');
+const { closeImageQueueResources } = await import('../queues/imageQueue.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
 const { installGracefulHttpShutdown } = await import('../health/gracefulHttpShutdown.js');
 
@@ -83,5 +84,10 @@ httpServer.listen(PORT, HOST, () => {
 
 installGracefulHttpShutdown(httpServer, {
   service: 'Social/profile service',
-  hooks: [() => closePubSub(), () => valkey.quit(), () => pool.end()],
+  hooks: [
+    () => closeImageQueueResources(),
+    () => closePubSub(),
+    () => valkey.quit(),
+    () => pool.end(),
+  ],
 });

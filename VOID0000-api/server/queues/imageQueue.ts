@@ -47,6 +47,19 @@ export const imageQueue = new Queue<ImageJobData, ImageJobResult, 'process-avata
 );
 export const imageQueueEvents = new QueueEvents('image-processing', { connection });
 
+export async function closeImageQueueResources(): Promise<void> {
+  const results = await Promise.allSettled([
+    imageQueueEvents.close(),
+    imageQueue.close(),
+  ]);
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Image queue shutdown failed');
+  }
+}
+
 /**
  * Add an image processing job to the queue
  * Called from the avatar upload route

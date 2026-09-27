@@ -9,6 +9,7 @@ interface GracefulHttpShutdownOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const POST_CLEANUP_EXIT_MS = 500;
 
 export function installGracefulHttpShutdown(
   server: Server,
@@ -30,8 +31,6 @@ export function installGracefulHttpShutdown(
       server.closeAllConnections?.();
       process.exit(1);
     }, timeoutMs);
-    deadline.unref?.();
-
     try {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -57,6 +56,21 @@ export function installGracefulHttpShutdown(
       process.exitCode = 1;
     } finally {
       clearTimeout(deadline);
+      // PM2 keeps its IPC pipe ref'ed. Once all work is drained, disconnect it
+      // so the process can exit naturally and the supervisor can replace it.
+      try {
+        if (process.connected) process.disconnect();
+      } catch (error) {
+        console.error(`${service} supervisor IPC disconnect failed:`, error);
+        process.exitCode = 1;
+      }
+      // Let a clean process exit naturally. A forgotten live handle must not
+      // leave a non-listening process reported online indefinitely.
+      const postCleanupExit = setTimeout(() => {
+        console.error(`${service} remained alive after shutdown cleanup`);
+        process.exit(process.exitCode ?? 0);
+      }, POST_CLEANUP_EXIT_MS);
+      postCleanupExit.unref?.();
     }
   };
 
