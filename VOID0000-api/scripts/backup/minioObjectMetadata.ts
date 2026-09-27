@@ -3,6 +3,7 @@ import { mkdir, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Client } from 'minio';
+import { minioClientConfig } from './minioClientConfig.js';
 
 type ObjectManifest = {
   format: 1;
@@ -27,14 +28,7 @@ function usage(): never {
 }
 
 function client(): Client {
-  const endPoint = process.env.MINIO_ENDPOINT || '127.0.0.1';
-  return new Client({
-    endPoint,
-    port: Number(process.env.MINIO_PORT || '9000'),
-    useSSL: (process.env.MINIO_URL || '').startsWith('https://'),
-    accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
-    secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin',
-  });
+  return new Client(minioClientConfig());
 }
 
 function localObjectPath(objectDirectory: string, key: string): string {

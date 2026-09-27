@@ -353,7 +353,9 @@ restore_minio() {
   local minio_dir="$BACKUP_DIR/minio"
   [ -d "$minio_dir" ] || fail "MinIO backup folder not found: $minio_dir"
 
-  local endpoint="${MINIO_URL:-http://${MINIO_ENDPOINT:-127.0.0.1}:${MINIO_PORT:-9000}}"
+  local scheme="http"
+  if [ "${MINIO_USE_SSL:-false}" = "true" ]; then scheme="https"; fi
+  local endpoint="${scheme}://${MINIO_ENDPOINT:-127.0.0.1}:${MINIO_PORT:-9000}"
   local access_key="${MINIO_ACCESS_KEY:-minioadmin}"
   local secret_key="${MINIO_SECRET_KEY:-minioadmin}"
   local alias_name="${VOIDAPP_MINIO_ALIAS:-voidapp-restore-local}"

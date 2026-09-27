@@ -21,6 +21,16 @@ test('PM2 full backup quiesces the media worker and lists only configured servic
   }
 });
 
+test('backup and restore MinIO commands target the internal endpoint', async () => {
+  for (const script of ['backup-voidapp.sh', 'restore-voidapp.sh']) {
+    const source = await read(script);
+    assert.match(source, /MINIO_USE_SSL/);
+    assert.match(source, /MINIO_ENDPOINT/);
+    assert.match(source, /MINIO_PORT/);
+    assert.doesNotMatch(source, /MINIO_URL/);
+  }
+});
+
 test('full backup uses the authoritative Scylla reaction and migration tables', async () => {
   const backup = await read('backup-voidapp.sh');
   const restore = await read('restore-voidapp.sh');
