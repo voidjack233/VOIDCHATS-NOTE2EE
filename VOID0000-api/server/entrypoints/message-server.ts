@@ -19,7 +19,7 @@ const {
   assertAttachmentBlobSchemaCompatible,
 } = await import('../attachments/schemaCompatibility.js');
 const { default: valkey } = await import('../valkey.js');
-const { default: scyllaClient } = await import('../scylla.js');
+const { default: scyllaClient, shutdownScyllaClient } = await import('../scylla.js');
 const { minioClient, ATTACH_BUCKET } = await import('../minio.js');
 const { default: attachmentsRouter } = await import('../routes/conversations/attachments.js');
 const { default: mediaIngestRouter } = await import('../media/ingestRoutes.js');
@@ -141,7 +141,7 @@ installGracefulHttpShutdown(httpServer, {
   hooks: [
     () => closePubSub(),
     () => valkey.quit(),
-    () => scyllaClient.shutdown(),
+    () => shutdownScyllaClient(),
     () => pool.end(),
   ],
 });

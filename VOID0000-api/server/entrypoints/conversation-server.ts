@@ -15,6 +15,7 @@ const { authenticateUser } = await import('../middleware/jwt.js');
 const { noCache } = await import('../middleware/noCache.js');
 const { pool } = await import('../db.js');
 const { default: valkey } = await import('../valkey.js');
+const { shutdownScyllaClient } = await import('../scylla.js');
 const { default: bootstrapRouter } = await import('../routes/bootstrap.js');
 const { default: dmRouter } = await import('../routes/conversations/dm.js');
 const { default: dmSettingsRouter } = await import('../routes/conversations/dm-settings.js');
@@ -90,5 +91,5 @@ httpServer.listen(PORT, HOST, () => {
 
 installGracefulHttpShutdown(httpServer, {
   service: 'Conversation service',
-  hooks: [() => closePubSub(), () => valkey.quit(), () => pool.end()],
+  hooks: [() => closePubSub(), () => valkey.quit(), () => shutdownScyllaClient(), () => pool.end()],
 });
