@@ -172,11 +172,12 @@ export function createStagedAttachmentCleanupRunner({
     interval.unref?.();
   }
 
-  function stop() {
+  async function stop(): Promise<void> {
     if (interval) {
       clearInterval(interval);
       interval = null;
     }
+    await runPromise;
   }
 
   return Object.freeze({

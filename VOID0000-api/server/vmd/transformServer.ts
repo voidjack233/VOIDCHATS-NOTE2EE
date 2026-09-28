@@ -138,6 +138,7 @@ class BoundedVmdTransformQueue {
   pendingBytes: number;
   readonly reservations: Set<QueueReservation>;
   readonly queue: QueueItem[];
+  readonly activeTasks = new Set<Promise<void>>();
   closed: boolean;
 
   constructor({
@@ -212,18 +213,20 @@ class BoundedVmdTransformQueue {
       if (!item) return;
       item.reservation.state = 'active';
       this.active += 1;
-      Promise.resolve()
+      const taskPromise: Promise<void> = Promise.resolve()
         .then(item.task)
         .then(item.resolve, item.reject)
         .finally(() => {
           this.active -= 1;
           this.release(item.reservation);
+          this.activeTasks.delete(taskPromise);
           this.drain();
         });
+      this.activeTasks.add(taskPromise);
     }
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.closed = true;
     const error = shutdownError();
     for (const item of this.queue.splice(0)) {
@@ -235,6 +238,7 @@ class BoundedVmdTransformQueue {
         this.release(reservation);
       }
     }
+    await Promise.all(this.activeTasks);
   }
 
   getStats(): QueueStats {
@@ -441,6 +445,7 @@ export async function startVmdTransformServer(
   });
   const sockets = new Set<Socket>();
   let closing = false;
+  let closePromise: Promise<void> | undefined;
 
   await ensurePrivateSocketDirectory(socketPath);
   await removeStaleSocket(socketPath);
@@ -559,15 +564,19 @@ export async function startVmdTransformServer(
   return {
     socketPath,
     getStats: () => workQueue.getStats(),
-    async close() {
-      if (closing) return;
+    close() {
+      if (closePromise) return closePromise;
       closing = true;
-      workQueue.close();
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        for (const socket of sockets) socket.destroy();
-      });
-      await unlinkOwnedSocket(socketPath);
+      const workDrained = workQueue.close();
+      closePromise = (async () => {
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+          for (const socket of sockets) socket.destroy();
+        });
+        await workDrained;
+        await unlinkOwnedSocket(socketPath);
+      })();
+      return closePromise;
     },
   };
 }

@@ -594,10 +594,12 @@ export function createAttachmentReservationReconciliationRunner({
     interval.unref?.();
   }
 
-  function stop() {
-    if (!interval) return;
-    clearInterval(interval);
-    interval = null;
+  async function stop(): Promise<void> {
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+    }
+    await runPromise;
   }
 
   return Object.freeze({ runOnce, start, stop });

@@ -21,13 +21,15 @@ interface FriendIdRow extends QueryResultRow {
 }
 
 let subscriber: Redis | null = null;
+const activeChanges = new Set<Promise<void>>();
+let closePromise: Promise<void> | undefined;
 
 /**
  * Start the presence-change subscriber.
  * Call once at server startup, after initPublisher().
  */
 export function initPresenceFanout(): void {
-  if (subscriber) return;
+  if (subscriber || closePromise) return;
 
   subscriber = new Redis({
     host: process.env.VALKEY_HOST || '127.0.0.1',
@@ -67,8 +69,26 @@ export function initPresenceFanout(): void {
       return;
     }
 
-    handlePresenceChange(userId, status, lastActive);
+    const work = handlePresenceChange(userId, status, lastActive);
+    activeChanges.add(work);
+    void work.finally(() => activeChanges.delete(work));
   });
+}
+
+export function closePresenceFanout(): Promise<void> {
+  closePromise ??= (async () => {
+    const current = subscriber;
+    subscriber = null;
+    // Stop admitting events before draining handlers that may still use PG
+    // and the publisher. Their dependencies stay open until this completes.
+    current?.removeAllListeners('message');
+    const results = await Promise.allSettled([current?.quit(), ...activeChanges]);
+    const failures = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length) throw new AggregateError(failures, 'Presence fanout shutdown failed');
+  })();
+  return closePromise;
 }
 
 async function handlePresenceChange(
