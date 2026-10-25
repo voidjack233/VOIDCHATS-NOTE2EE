@@ -99,6 +99,30 @@ Full setup notes are here:
 Use the setup doc. This repo depends on local infra and a Linux-first workflow.
 It also shows the Nginx + Cloudflared layout used for deployment.
 
+### Bare-metal hold / wake control
+
+For the dedicated Linux production host, use `scripts/void-hostctl.sh` to
+inspect or intentionally park/wake the PM2 + systemd stack. It is separate
+from `voidctl`, which manages the Compose topology.
+
+```bash
+./scripts/void-hostctl.sh status
+./scripts/void-hostctl.sh requirements
+./scripts/void-hostctl.sh park
+./scripts/void-hostctl.sh wake
+```
+
+Running it with no arguments opens a small interactive menu that stays open
+until you choose `q` or press Ctrl+C. The script only
+accepts its fixed VOID service allowlist, asks for confirmation before changes,
+and never reboots, powers off, or deletes data. See `--help` for individual
+`start`, `stop`, `enable`, and `disable` actions.
+
+The read-only requirements check is for the bare-metal PM2/systemd profile.
+Stopped services are reported separately from missing services. RAM guidance
+is advisory, not a tested minimum; live database health, migrations, buckets,
+deployed frontend, and public connectivity are not verified by this preflight.
+
 ## The Story
 
 I work full-time as a store clerk and built VOID as a hobby project.
