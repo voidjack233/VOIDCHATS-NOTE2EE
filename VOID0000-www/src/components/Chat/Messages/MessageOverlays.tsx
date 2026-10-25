@@ -3,6 +3,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -44,6 +45,7 @@ import type {
 
 const EmojiPicker = lazy(() => import('./EmojiPicker'));
 const UserProfileModal = lazy(() => import('../../common/Profile/UserProfileModal'));
+const VIEWER_IMAGE_TIMEOUT_MS = 15_000;
 
 interface MessageOverlaysProps {
   contextMenu: ContextMenuState | null;
@@ -163,6 +165,13 @@ function ImageViewerOverlay({
   const downloadUrl = originalDownloadUrl || currentAttachment?.fallback_url?.trim() || null;
   const scale = fitScale * zoom;
 
+  const fitImage = useCallback((image: HTMLImageElement) => {
+    const viewportWidth = Math.max(1, window.innerWidth - 112);
+    const viewportHeight = Math.max(1, window.innerHeight - 112);
+    setFitScale(Math.min(1, viewportWidth / image.naturalWidth, viewportHeight / image.naturalHeight));
+    setLoadState('ready');
+  }, []);
+
   const getPanBounds = useCallback((nextScale = scale) => {
     const image = imageRef.current;
     if (!image) return { x: 0, y: 0 };
@@ -199,10 +208,35 @@ function ImageViewerOverlay({
       : current, nextScale));
   }, [clampPan, fitScale, zoom]);
 
+  useLayoutEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      resetView();
+      const image = imageRef.current;
+      // A cached image can finish before a passive effect runs, and navigating
+      // between entries with the same URL does not produce another load event.
+      if (image?.complete && image.naturalWidth > 0) {
+        fitImage(image);
+      } else {
+        setLoadState(currentUrl ? 'loading' : 'error');
+      }
+    });
+    return () => { active = false; };
+  }, [currentIndex, currentUrl, currentSource?.srcSet, fitImage, resetView]);
+
   useEffect(() => {
-    resetView();
-    setLoadState(currentUrl ? 'loading' : 'error');
-  }, [currentIndex, currentUrl, resetView]);
+    if (!currentUrl || loadState !== 'loading') return;
+    const timeout = window.setTimeout(() => {
+      const image = imageRef.current;
+      if (image?.complete && image.naturalWidth > 0) {
+        fitImage(image);
+      } else {
+        setFailedUrls((current) => new Set(current).add(currentUrl));
+      }
+    }, VIEWER_IMAGE_TIMEOUT_MS);
+    return () => window.clearTimeout(timeout);
+  }, [currentIndex, currentUrl, currentSource?.srcSet, fitImage, loadState]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -227,11 +261,7 @@ function ImageViewerOverlay({
   };
 
   const handleImageLoad = (event: SyntheticEvent<HTMLImageElement>) => {
-    const image = event.currentTarget;
-    const viewportWidth = Math.max(1, window.innerWidth - 112);
-    const viewportHeight = Math.max(1, window.innerHeight - 112);
-    setFitScale(Math.min(1, viewportWidth / image.naturalWidth, viewportHeight / image.naturalHeight));
-    setLoadState('ready');
+    fitImage(event.currentTarget);
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLImageElement>) => {

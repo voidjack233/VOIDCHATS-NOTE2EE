@@ -24,6 +24,17 @@ window.openFixture = attachment => root.render(React.createElement(MessageOverla
   imageViewer:{sessionId:++session,attachments:[attachment],urls:[],index:0},
   onCloseImageViewer:()=>root.render(null),onPreviousImage:()=>{},onNextImage:()=>{},onSelectImageIndex:()=>{}
 }));
+window.openDuplicateFixture = attachment => {
+  const duplicateSession = ++session;
+  let index = 0;
+  const render = () => root.render(React.createElement(MessageOverlays, {
+    contextMenu:null,emojiPickerTarget:null,selectedProfileId:null,selectedFriend:null,
+    imageViewer:{sessionId:duplicateSession,attachments:[attachment,attachment],urls:[attachment.url,attachment.url],index},
+    onCloseImageViewer:()=>root.render(null),onPreviousImage:()=>{index -= 1;render()},
+    onNextImage:()=>{index += 1;render()},onSelectImageIndex:nextIndex=>{index=nextIndex;render()}
+  }));
+  render();
+};
 window.downloadHref = null;
 HTMLAnchorElement.prototype.click = function () { window.downloadHref = this.href; };
 `;
@@ -40,6 +51,7 @@ server.middlewares.use(async (req, res, next) => {
   res.end(await server.transformIndexHtml('/', '<html><body><div id="root"></div><script type="module" src="/signing-consumers.js"></script></body></html>'));
 });
 let browser;
+const heldRoutes = [];
 try {
   await server.listen(); const origin = server.resolvedUrls.local[0].replace(/\/$/, '');
   browser = await chromium.launch(); const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -52,6 +64,10 @@ try {
     if (url.origin !== origin) return route.abort();
     if (!url.pathname.startsWith('/test-media/')) return route.continue();
     requests.push({ url: request.url(), type: request.resourceType() });
+    if (url.searchParams.has('stall') && !url.pathname.endsWith('/original')) {
+      await new Promise(resolveHeld => heldRoutes.push({ route, resolveHeld }));
+      return;
+    }
     return failVmd && !url.pathname.endsWith('/original') ? route.fulfill({ status: 503 })
       : route.fulfill({ contentType: 'image/jpeg', body: bytes });
   });
@@ -63,6 +79,11 @@ try {
       [name, { url: `${origin}/test-media/${name}`, width, expires_at: Date.now() + 3600000 }])) };
   await page.evaluate(a => window.openFixture(a), attachment);
   await page.waitForFunction(() => document.querySelector('img[alt="image.jpg"]')?.naturalWidth > 0);
+  await page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+  });
+  assert.equal(await page.getByText('Loading image').count(), 0, 'loaded image must not retain the spinner');
   const img = page.locator('img[alt="image.jpg"]');
   assert.match(await img.getAttribute('srcset'), /medium.*960w.*large.*1600w/);
   await page.getByRole('button', { name: /Download/i }).click();
@@ -74,6 +95,48 @@ try {
   await page.waitForFunction(url => {
     const img = document.querySelector('img[alt="image.jpg"]'); return img?.naturalWidth > 0 && img.currentSrc === url;
   }, attachment.url);
+  failVmd = false;
+  await page.evaluate(a => window.openDuplicateFixture(a), attachment);
+  await page.waitForFunction(() => {
+    const img = document.querySelector('img[alt="image.jpg"]');
+    return img?.complete && img.naturalWidth > 0;
+  });
+  await page.getByRole('button', { name: 'Next image' }).click();
+  await page.getByText('2 / 2').waitFor();
+  await page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+  });
+  const duplicateResult = await page.evaluate(() => {
+    const img = document.querySelector('img[alt="image.jpg"]');
+    return { complete: img?.complete, naturalWidth: img?.naturalWidth, loading: document.body.textContent.includes('Loading image') };
+  });
+  assert.equal(duplicateResult.complete, true, 'duplicate gallery image is already complete');
+  assert.ok(duplicateResult.naturalWidth > 0, 'duplicate gallery image has decoded pixels');
+  assert.equal(duplicateResult.loading, false, 'already complete image must not leave the viewer loading');
+
+  const stalled = { ...attachment, url: `${attachment.url}?stall=1`, display_variants: Object.fromEntries(Object.entries(attachment.display_variants)
+    .map(([variant, value]) => [variant, { ...value, url: `${value.url}?stall=1` }])) };
+  const stalledVariantRequest = page.waitForRequest(request => request.url().includes('stall=1') &&
+    !new URL(request.url()).pathname.endsWith('/original'));
+  await page.evaluate(a => window.openFixture(a), stalled);
+  await stalledVariantRequest;
+  await page.waitForFunction(() => document.querySelector('img[alt="image.jpg"]')?.src?.includes('stall=1'));
+  assert.equal(await page.getByText('Loading image').count(), 1, 'stalled VMD starts in loading state');
+  await page.waitForFunction(url => {
+    const img = document.querySelector('img[alt="image.jpg"]');
+    return img?.currentSrc === url && img.naturalWidth > 0 && !document.body.textContent.includes('Loading image');
+  }, stalled.url, { timeout: 25_000 });
+  await Promise.all(heldRoutes.map(async ({ route, resolveHeld }) => {
+    await route.abort().catch(() => {});
+    resolveHeld();
+  }));
   assert.equal(requests.some(request => ['fetch', 'xhr'].includes(request.type)), false);
-  console.log('PASS: actual viewer opens medium/large, Download selects original, VMD failure falls back to original, no media Fetch/XHR.');
-} finally { await browser?.close(); await server.close(); rmSync(cacheDir, { recursive: true, force: true }); }
+  console.log('PASS: viewer loads responsive images, falls back to original after HTTP failure or a stalled request, clears loading for duplicate URL navigation, and makes no media Fetch/XHR.');
+} finally {
+  await Promise.all(heldRoutes.map(async ({ route, resolveHeld }) => {
+    await route.abort().catch(() => {});
+    resolveHeld();
+  }));
+  await browser?.close(); await server.close(); rmSync(cacheDir, { recursive: true, force: true });
+}
