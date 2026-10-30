@@ -4,6 +4,7 @@ import { randomBytes } from 'crypto';
 import { IPSecurity } from '../../utils/securityUtils.js';
 import { sendPasswordResetEmail } from '../../middleware/emailService.js';
 import { hashToken } from '../services/tokenService.js';
+import { getFrontendOrigin } from '../../config/publicDomain.js';
 
 const router = Router();
 const GENERIC_SUCCESS_MESSAGE = 'If that email exists, a reset link has been sent.';
@@ -61,7 +62,7 @@ router.post('/', async (req, res) => {
       [user_id, tokenHash, expires_at, req.ip]
     );
 
-    const resetUrl = `${process.env.FRONT_URL}/auth?view=reset-password&token=${token}`;
+    const resetUrl = `${getFrontendOrigin()}/auth?view=reset-password&token=${token}`;
 
     // Use emailService instead of creating transporter here
     await sendPasswordResetEmail(email, resetUrl);

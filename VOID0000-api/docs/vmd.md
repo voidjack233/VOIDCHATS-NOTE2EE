@@ -1,7 +1,7 @@
 # VOID Media Delivery (VMD)
 
 VMD serves bounded display variants for private chat images. Original attachment
-downloads continue to use signed `cdn.void0000.online` URLs.
+downloads continue to use signed `cdn.example.test` URLs.
 
 The public VMD control plane is a Go service. Cache-miss image decoding and
 encoding remain isolated in the existing worker process behind a private Unix
@@ -43,7 +43,7 @@ remains the direct fallback.
 ## Production Routing
 
 Run `voidapp-vmd-service` on loopback port `3006`. Route
-`vmd.void0000.online` to `http://127.0.0.1:3006`. The service intentionally
+`vmd.example.test` to `http://127.0.0.1:3006`. The service intentionally
 exposes only:
 
 - `GET /health`
@@ -66,7 +66,7 @@ previous Node entrypoint remains available through `npm run start:vmd:node` and
 `server/entrypoints/vmd-server.ts` until the Go migration is frozen.
 
 The frontend Content Security Policy must include
-`https://vmd.void0000.online` in `img-src`. No VMD origin is needed in
+`https://vmd.example.test` in `img-src`. No VMD origin is needed in
 `connect-src` because persisted image rendering is a native browser image
 request, not Fetch/XHR.
 
@@ -91,7 +91,7 @@ Errors and invalid capabilities send `no-store` for every cache-control layer.
 
 Cloudflare must use the complete URL as the cache key. Configure one Cache Rule:
 
-- match hostname `vmd.void0000.online` and path beginning `/v1/images/`
+- match hostname `vmd.example.test` and path beginning `/v1/images/`
 - mark the response eligible for cache
 - use the default cache key with all query parameters included
 - set Edge TTL to **Use cache-control header if present, bypass cache if not**

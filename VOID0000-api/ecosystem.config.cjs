@@ -5,6 +5,31 @@ const config = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'server', 'config.json'), 'utf8'),
 );
 
+// PM2 reads the base domain from the API environment and supplies the usual
+// public URLs to the services. Explicit settings remain available as overrides.
+const envPath = path.join(__dirname, '.env');
+const fileEnv = fs.existsSync(envPath)
+  ? require('dotenv').parse(fs.readFileSync(envPath))
+  : {};
+const publicDomain = process.env.PUBLIC_DOMAIN || fileEnv.PUBLIC_DOMAIN;
+const publicEnv = {};
+if (publicDomain) {
+  if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(publicDomain)) {
+    throw new Error('PUBLIC_DOMAIN must be a hostname without a scheme, port, or path');
+  }
+  publicEnv.PUBLIC_DOMAIN = publicDomain;
+  const defaults = {
+    FRONT_URL: `https://${publicDomain}`,
+    CDN_URL: `https://cdn.${publicDomain}`,
+    VMD_PUBLIC_URL: `https://vmd.${publicDomain}`,
+    COOKIE_DOMAIN: `.${publicDomain}`,
+    VAPID_SUBJECT: `https://${publicDomain}`,
+  };
+  for (const [key, value] of Object.entries(defaults)) {
+    publicEnv[key] = process.env[key] || fileEnv[key] || value;
+  }
+}
+
 const clusterEnabled = config.cluster.enabled;
 const workers = config.cluster.workers || 4;
 const gatewayMode = config.gateway?.mode || 'phoenix';
@@ -16,6 +41,7 @@ if (gatewayMode !== 'phoenix') {
 }
 
 const commonEnv = {
+  ...publicEnv,
   NODE_ENV: 'production',
   HOST: '127.0.0.1',
   VALKEY_PORT: 6379,
@@ -114,6 +140,7 @@ const apps = [
     exec_mode: 'fork',
     interpreter: 'none',
     env: {
+      ...publicEnv,
       NODE_ENV: 'production',
       MIX_ENV: 'prod',
       GATEWAY_PORT: 4001,

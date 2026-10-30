@@ -32,6 +32,18 @@ The app processes are separate from infrastructure services. PM2 starts the spli
 
 The Dockerfile uses `node:24-bookworm-slim`.
 
+The public domain is configured with `PUBLIC_DOMAIN` in the API environment and
+is required in production.
+The shared `server/config/publicDomain.ts` derives the default frontend, CDN,
+VMD, and cookie domains. Existing `FRONT_URL`, `CDN_URL`, `VMD_PUBLIC_URL`,
+`COOKIE_DOMAIN`, and `EMAIL_FROM` values take precedence, so remove or update
+old overrides when changing the domain. The Phoenix gateway reads the same
+`PUBLIC_DOMAIN` environment setting. Frontend build settings, Nginx,
+cloudflared, DNS, and email delivery still require separate configuration.
+For production frontend builds, set `VITE_PUBLIC_DOMAIN` to the same hostname.
+The host monitor also requires `PUBLIC_DOMAIN` or `VOIDAPP_MONITOR_PUBLIC_URLS`
+in its environment when checking public endpoints.
+
 ## Quick Start
 
 ```bash

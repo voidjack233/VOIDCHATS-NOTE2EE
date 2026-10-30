@@ -1,4 +1,6 @@
-const CDN_BASE = process.env.CDN_URL || 'https://cdn.void0000.online';
+import { getCdnOrigin } from '../config/publicDomain.js';
+
+const CDN_BASE = getCdnOrigin();
 
 export function resolveUserAvatarUrl(
   avatarFilename: string | null | undefined,

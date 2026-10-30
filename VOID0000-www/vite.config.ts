@@ -22,8 +22,15 @@ function emitBuildVersionPlugin(buildVersion: string): PluginOption {
   }
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const publicDomain = env.VITE_PUBLIC_DOMAIN?.trim()
+  if (command === 'build' && mode === 'production' && !publicDomain) {
+    throw new Error('VITE_PUBLIC_DOMAIN is required for production builds')
+  }
+  if (publicDomain && !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(publicDomain)) {
+    throw new Error('VITE_PUBLIC_DOMAIN must be a hostname without a scheme, path, or port')
+  }
   const buildVersion = Date.now().toString()
   const apiProxyTarget = env.VITE_API_URL || 'http://localhost:3001'
   const conversationApiProxyTarget = env.VITE_CONVERSATION_API_URL || apiProxyTarget

@@ -26,11 +26,11 @@ test('deployed routed timeline: delayed mixed media and poster playback retain r
         role: 'owner', owner_id: user.id, member_count: 1, created_at: '2026-01-01', updated_at: '2026-01-01',
         members: [{ user_id: user.id, profile_id: '101', username: 'fixture', display_name: 'Fixture', role: 'owner' }] };
       const image = (id, w, h) => ({ id, mime: 'image/png', name: `${id}.png`, inline: true, width: w, height: h,
-        blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', url: `https://cdn.void0000.online/test-media/${id}/original`,
-        display_url: `https://vmd.void0000.online/test-media/${id}/small` });
+        blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', url: `https://cdn.example.test/test-media/${id}/original`,
+        display_url: `https://vmd.example.test/test-media/${id}/small` });
       const video = id => ({ id, mime: 'video/mp4', name: `${id}.mp4`, inline: true, video_trusted: true,
-        width: 1920, height: 1080, duration_ms: 3000, url: `https://cdn.void0000.online/test-media/${id}/video`,
-        poster: { url: `https://cdn.void0000.online/test-media/${id}/poster`, width: 640, height: 360 } });
+        width: 1920, height: 1080, duration_ms: 3000, url: `https://cdn.example.test/test-media/${id}/video`,
+        poster: { url: `https://cdn.example.test/test-media/${id}/poster`, width: 640, height: 360 } });
       const groups = [[image('portrait', 3760, 5640)], [image('landscape', 5640, 3760)],
         [image('portrait2', 3760, 5640), image('landscape2', 5640, 3760)],
         [image('mixed', 1920, 1080), video('one')], [video('two'), video('three')],

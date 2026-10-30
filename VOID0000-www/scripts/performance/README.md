@@ -52,7 +52,7 @@ node --test --test-concurrency=1 scripts/tests/attachments/mediaPerformance.test
 
 # Public deployed JS/CSS with intercepted API, WebSocket, and media fixtures.
 # No login or production data writes; this is a functional deployment smoke.
-MEDIA_TEST_DEPLOYED_URL=https://void0000.online node --test scripts/tests/attachments/mediaTimeline.test.mjs
+MEDIA_TEST_DEPLOYED_URL=https://example.test node --test scripts/tests/attachments/mediaTimeline.test.mjs
 
 # Real authenticated production requests, three reloads per viewport by default.
 # First log in with perf:chat:auth and select an accessible conversation.
@@ -100,7 +100,7 @@ node --test scripts/tests/messages/trimGeometry.test.mjs
 TRIM_BASELINE=1 node --test scripts/tests/messages/trimGeometry.test.mjs
 
 # Same routed regression using the actual deployed JS/CSS, with fixture data.
-TRIM_DEPLOYED_URL=https://void0000.online node --test scripts/tests/messages/trimGeometry.test.mjs
+TRIM_DEPLOYED_URL=https://example.test node --test scripts/tests/messages/trimGeometry.test.mjs
 
 # Existing authenticated conversation, actual production history responses.
 # Requires enough messages to cross the >80 trigger; does not create messages.

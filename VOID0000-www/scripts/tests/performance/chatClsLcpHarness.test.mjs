@@ -51,11 +51,11 @@ test('numeric and route configuration rejects unsafe values', () => {
   assert.equal(parsePositiveInteger('5', 3, 'RUNS'), 5);
   assert.throws(() => parsePositiveInteger('0', 3, 'RUNS'), /positive integer/);
   assert.equal(
-    normalizeConversationRoute('/chats/@me/123', 'https://void0000.online'),
+    normalizeConversationRoute('/chats/@me/123', 'https://example.test'),
     '/chats/@me/123',
   );
   assert.throws(
-    () => normalizeConversationRoute('https://example.com/chats/123', 'https://void0000.online'),
+    () => normalizeConversationRoute('https://example.com/chats/123', 'https://example.test'),
     /frontend origin/,
   );
 });

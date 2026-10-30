@@ -30,9 +30,9 @@ test('mixed-height history trimming preserves surviving visible rows in both dir
   const messages = Array.from({ length: 220 }, (_, i) => {
     const attachments = [];
     if (i % 9 === 0) attachments.push({ id: `image-${i}`, mime: 'image/jpeg', name: 'image.jpg', inline: true,
-      width: 3760, height: 5640, display_url: 'https://vmd.void0000.online/fixture.jpg', url: 'https://cdn.void0000.online/fixture.jpg' });
+      width: 3760, height: 5640, display_url: 'https://vmd.example.test/fixture.jpg', url: 'https://cdn.example.test/fixture.jpg' });
     if (i % 11 === 0) attachments.push({ id: `video-${i}`, mime: 'video/mp4', name: 'video.mp4', inline: true, video_trusted: true,
-      width: 1920, height: 1080, url: 'https://cdn.void0000.online/fixture.mp4', poster: { url: 'https://cdn.void0000.online/fixture.jpg' } });
+      width: 1920, height: 1080, url: 'https://cdn.example.test/fixture.mp4', poster: { url: 'https://cdn.example.test/fixture.jpg' } });
     return { conversation_id: conversation.id, message_id: `${String(i + 1).padStart(8, '0')}-88b1-11f1-bc31-62cdbf2cbe66`,
       sender_id: Math.floor(i / 7) % 2 ? user.id : peer.id, content: i % 3 ? `Message ${i}` : `Message ${i}: wrapping text with fractional line heights. `.repeat(6),
       created_at: new Date(Date.UTC(2026, 8, 1, 23, 0, i * 30)).toISOString(), message_type: 'text',

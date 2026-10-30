@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
 import { fromProjectRoot } from '../config/projectRoot.js';
+import { getAllowedOrigins, getCookieDomain } from '../config/publicDomain.js';
 import { securityMiddleware } from '../middleware/xss/index.js';
 import captchaRouter from '../routes/captcha/index.js';
 import { pool } from '../db.js';
@@ -28,14 +29,7 @@ validateAuthSecrets();
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || process.env.BIND_HOST || '0.0.0.0';
-const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
-
-const allowedOrigins = [
-  FRONT_URL,
-  'https://void0000.online',
-  'http://localhost:5173',
-  'http://localhost'
-];
+const allowedOrigins = getAllowedOrigins();
 
 // ================== MIDDLEWARE ==================
 
@@ -114,9 +108,10 @@ app.use('/api/auth/login', (req, res, next) => {
     res.clearCookie('accessToken', { path: '/' });
     res.clearCookie('refreshToken', { path: '/' });
     res.clearCookie('_csrf', { path: '/' });
-    res.clearCookie('accessToken', { path: '/', domain: '.void0000.online' });
-    res.clearCookie('refreshToken', { path: '/', domain: '.void0000.online' });
-    res.clearCookie('_csrf', { path: '/', domain: '.void0000.online' });
+    const domain = getCookieDomain();
+    res.clearCookie('accessToken', { path: '/', domain });
+    res.clearCookie('refreshToken', { path: '/', domain });
+    res.clearCookie('_csrf', { path: '/', domain });
   }
   next();
 });

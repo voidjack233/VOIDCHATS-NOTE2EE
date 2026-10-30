@@ -18,7 +18,10 @@ STATE_FILE="${VOIDAPP_MONITOR_STATE_FILE:-/tmp/voidapp-monitor.state}"
 ALERT_WEBHOOK_URL="${VOIDAPP_ALERT_WEBHOOK_URL:-}"
 ALERT_WEBHOOK_TYPE="${VOIDAPP_ALERT_WEBHOOK_TYPE:-discord}"
 
-PUBLIC_URLS="${VOIDAPP_MONITOR_PUBLIC_URLS:-https://void0000.online/ https://api.void0000.online/health}"
+PUBLIC_URLS="${VOIDAPP_MONITOR_PUBLIC_URLS:-}"
+if [ -z "$PUBLIC_URLS" ] && [ -n "${PUBLIC_DOMAIN:-}" ]; then
+  PUBLIC_URLS="https://${PUBLIC_DOMAIN}/ https://api.${PUBLIC_DOMAIN}/health"
+fi
 LOCAL_URLS="${VOIDAPP_MONITOR_LOCAL_URLS:-http://127.0.0.1:3001/health http://127.0.0.1:3002/health http://127.0.0.1:3004/health http://127.0.0.1:3005/health http://127.0.0.1:4001/health}"
 EXPECTED_PM2="${VOIDAPP_MONITOR_PM2:-voidapp-gateway-phoenix voidapp-api voidapp-message-service voidapp-conversation-service voidapp-social-profile-service voidapp-worker-service}"
 DISK_PATHS="${VOIDAPP_MONITOR_DISK_PATHS:-/ /home /var/www}"
@@ -148,6 +151,9 @@ send_alert() {
     "$ALERT_WEBHOOK_URL" >/dev/null 2>&1 || true
 }
 
+if [ -z "$PUBLIC_URLS" ]; then
+  record_failure 'public URLs not configured; set PUBLIC_DOMAIN or VOIDAPP_MONITOR_PUBLIC_URLS'
+fi
 for url in $PUBLIC_URLS; do
   check_url "public" "$url"
 done

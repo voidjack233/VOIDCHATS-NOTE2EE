@@ -4,6 +4,7 @@ import {
   type BinaryLike,
   type KeyObject,
 } from 'crypto';
+import { getVmdPublicOrigin } from '../config/publicDomain.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SIGNATURE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -91,9 +92,7 @@ function resolveCapabilityExpiresAt(
 }
 
 function resolvePublicOrigin(value: string | undefined = process.env.VMD_PUBLIC_URL): string {
-  const fallback = process.env.NODE_ENV === 'production'
-    ? 'https://vmd.void0000.online'
-    : `http://localhost:${process.env.VMD_SERVICE_PORT || 3006}`;
+  const fallback = getVmdPublicOrigin();
   const origin = new URL(value || fallback);
 
   if (

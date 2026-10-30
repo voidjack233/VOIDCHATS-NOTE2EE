@@ -1,5 +1,6 @@
 // server/minio.js
 import * as Minio from 'minio';
+import { getCdnOrigin } from './config/publicDomain.js';
 
 const isProduction = process.env.NODE_ENV === 'production';
 const accessKey = process.env.MINIO_ACCESS_KEY || (isProduction ? '' : 'minioadmin');
@@ -28,7 +29,7 @@ const minioClient = new Minio.Client({
 
 function getCdnMinioClient() {
   const fallbackUrl = isProduction
-    ? 'https://cdn.void0000.online'
+    ? getCdnOrigin()
     : `${minioUseSSL ? 'https' : 'http'}://${minioEndpoint}:${minioPort}`;
   const cdnUrl = new URL(process.env.CDN_URL || fallbackUrl);
 

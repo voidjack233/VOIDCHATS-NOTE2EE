@@ -185,7 +185,7 @@ From `VOID0000-www`:
 
 ```sh
 node --import tsx --test scripts/tests/*/*.test.ts scripts/tests/messages/*.test.tsx
-MEDIA_TEST_DEPLOYED_URL=https://void0000.online node --test --test-concurrency=1 scripts/tests/attachments/*.test.mjs scripts/tests/auth/*.test.mjs scripts/tests/chats/*.test.mjs scripts/tests/performance/*.test.mjs
+MEDIA_TEST_DEPLOYED_URL=https://example.test node --test --test-concurrency=1 scripts/tests/attachments/*.test.mjs scripts/tests/auth/*.test.mjs scripts/tests/chats/*.test.mjs scripts/tests/performance/*.test.mjs
 node --test scripts/tests/attachments/mediaPerformance.test.mjs
 node --test scripts/tests/attachments/video.test.mjs
 node --test scripts/tests/messages/trimGeometry.test.mjs

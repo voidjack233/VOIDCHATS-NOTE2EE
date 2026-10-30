@@ -14,6 +14,11 @@ gateway_ip =
 valkey_host = System.get_env("VALKEY_HOST", "127.0.0.1")
 valkey_port = System.get_env("VALKEY_PORT", "6379") |> String.to_integer()
 valkey_database = System.get_env("VALKEY_DB", "0") |> String.to_integer()
+public_domain = System.get_env("PUBLIC_DOMAIN")
+
+if config_env() == :prod and (is_nil(public_domain) or String.trim(public_domain) == "") do
+  raise "PUBLIC_DOMAIN is required in production"
+end
 
 config :void_gateway, VoidGatewayWeb.Endpoint,
   http: [ip: gateway_ip, port: gateway_port],
@@ -35,7 +40,7 @@ config :void_gateway,
   allowed_origins:
     [
       System.get_env("FRONT_URL"),
-      "https://void0000.online",
+      if(public_domain && String.trim(public_domain) != "", do: "https://#{public_domain}"),
       "http://localhost:5173",
       "http://localhost"
     ]

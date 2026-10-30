@@ -1,6 +1,5 @@
 import type { CookieOptions, Request } from 'express';
-
-const PRODUCTION_COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || '.void0000.online';
+import { getCookieDomain } from '../config/publicDomain.js';
 
 function stripPort(host: string = ''): string {
   const value = String(host).trim().toLowerCase();
@@ -64,7 +63,7 @@ export const getCookieOptions = (
   };
 
   if (useProductionCookieScope) {
-    options.domain = PRODUCTION_COOKIE_DOMAIN;
+    options.domain = getCookieDomain();
   }
 
   if (maxAge) {

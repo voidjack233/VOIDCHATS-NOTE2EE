@@ -9,6 +9,7 @@ import {
 } from '../../middleware/emailService.js';
 import { hashToken } from '../services/tokenService.js';
 import { hashEmailVerificationCode } from '../../utils/emailVerificationSecurity.js';
+import { getFrontendOrigin } from '../../config/publicDomain.js';
 
 const router = Router();
 
@@ -87,7 +88,7 @@ router.post('/', async (req, res) => {
     }
 
     // 7. Send email
-    const frontUrl = process.env.FRONT_URL || 'https://void0000.online';
+    const frontUrl = getFrontendOrigin();
     const verificationUrl = `${frontUrl}/auth?view=email-verification&vtoken=${verificationToken}`;
     await VerificationService.sendVerificationEmail(email, code, verificationUrl);
 

@@ -32,7 +32,7 @@ const RESULTS_ROOT = path.resolve(
   WEB_ROOT,
   process.env.CHAT_PERF_RESULTS_DIR || 'performance-results/chat-cls-lcp',
 );
-const DEFAULT_BASE_URL = 'https://void0000.online';
+const DEFAULT_BASE_URL = 'http://localhost:5173';
 const TARGET_FIX_COMMIT = '44244edc7662da75654dd99d590a202c2922fd4d';
 const MESSAGE_TIMELINE_SELECTOR = '[data-message-timeline]';
 const MAX_POSITION_ATTEMPTS = 140;

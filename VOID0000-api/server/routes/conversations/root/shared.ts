@@ -4,6 +4,7 @@ import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { BUCKET, GROUP_AVATAR_BUCKET } from '../../../minio.js';
 import { resolveUserAvatarUrl } from '../../../utils/avatarFallback.js';
 import { resolvePermissions } from '../../../utils/groupPermissions.js';
+import { getCdnOrigin } from '../../../config/publicDomain.js';
 
 export const MAX_ICON_PAYLOAD_SIZE = 10 * 1024 * 1024;
 export const MAX_ICON_DIMENSION = 4096;
@@ -22,7 +23,7 @@ const ICON_MAGIC_BYTES = {
   webp: [0x52, 0x49, 0x46, 0x46],
 };
 
-const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+const baseUrl = getCdnOrigin();
 
 export interface ConversationMemberRow extends Record<string, unknown> {
   user_id: string;

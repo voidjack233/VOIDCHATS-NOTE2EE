@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
 import { fromProjectRoot } from '../config/projectRoot.js';
+import { getAllowedOrigins } from '../config/publicDomain.js';
 import { securityMiddleware } from '../middleware/xss/index.js';
 import { validateAuthSecrets } from '../utils/authSecrets.js';
 
@@ -41,7 +42,6 @@ const { historyMetrics } = await import('../health/historyMetrics.js');
 const app = express();
 const PORT = Number(process.env.MESSAGE_SERVICE_PORT || process.env.PORT || 3002);
 const HOST = process.env.HOST || process.env.BIND_HOST || '0.0.0.0';
-const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
 
 await assertAttachmentBlobSchemaCompatible({
   dbPool: pool,
@@ -51,12 +51,7 @@ await assertAttachmentBlobSchemaCompatible({
 await pool.query('SELECT source_bytes,reserved_bytes FROM media_ingests LIMIT 0');
 await pool.query('SELECT video_metadata,poster_blob_id FROM attachment_objects LIMIT 0');
 
-const allowedOrigins = [
-  FRONT_URL,
-  'https://void0000.online',
-  'http://localhost:5173',
-  'http://localhost',
-];
+const allowedOrigins = getAllowedOrigins();
 
 app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
 app.use(

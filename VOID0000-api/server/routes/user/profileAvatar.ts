@@ -8,6 +8,7 @@ import { avatarUploadLimiter } from '../../middleware/rate_limit.js';
 import { queueImageUpload, imageQueueEvents } from '../../queues/imageQueue.js';
 import { minioClient, BUCKET } from '../../minio.js';
 import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
+import { getCdnOrigin } from '../../config/publicDomain.js';
 
 const router = express.Router();
 
@@ -124,7 +125,7 @@ router.put('/profile/avatar', avatarUploadLimiter, async (req, res) => {
     // 8. Wait for the worker to finish (timeout after 30s)
     const result = await job.waitUntilFinished(imageQueueEvents, 30000);
 
-    const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+    const baseUrl = getCdnOrigin();
     const newAvatarUrl = `${baseUrl}/avatars/${result.filename}`;
 
     // 9. Get updated profile from DB
@@ -236,7 +237,7 @@ router.get('/profile/avatar/:filename', async (req, res) => {
   }
 
   // Redirect to CDN/MinIO
-  const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+  const baseUrl = getCdnOrigin();
   res.redirect(301, `${baseUrl}/avatars/${filename}`);
 });
 

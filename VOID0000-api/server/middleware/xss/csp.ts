@@ -1,8 +1,10 @@
 import type { RequestHandler } from 'express';
+import { getCdnOrigin, getPublicDomain, getVmdPublicOrigin } from '../../config/publicDomain.js';
 
 export const customCSP = (allowedOrigins: readonly string[] = []): RequestHandler => {
     return (req, res, next) => {
         const host = req.headers.host || 'localhost:3001';
+        const domain = getPublicDomain();
 
         const directives = [
             "default-src 'self'",
@@ -15,12 +17,12 @@ export const customCSP = (allowedOrigins: readonly string[] = []): RequestHandle
             "style-src 'self' 'unsafe-inline'",
 
             // Images - only from your CDN and local data/blob fallbacks
-            "img-src 'self' data: blob: https://cdn.void0000.online https://vmd.void0000.online",
+            `img-src 'self' data: blob: ${new URL(getCdnOrigin()).origin} ${new URL(getVmdPublicOrigin()).origin}`,
 
             "font-src 'self' data:",
 
             // Connections - your origins + WebSocket
-            `connect-src 'self' ${allowedOrigins.filter(o => o.startsWith('http')).join(' ')} ws://${host} wss://${host} wss://api.void0000.online https://*.void0000.online`,
+            `connect-src 'self' ${allowedOrigins.filter(o => o.startsWith('http')).join(' ')} ws://${host} wss://${host} wss://api.${domain} https://*.${domain}`,
 
             "frame-src 'self'",
             "object-src 'none'",

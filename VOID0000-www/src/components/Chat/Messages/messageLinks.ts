@@ -3,7 +3,9 @@ export type MessageTextSegment =
   | { type: 'link'; value: string; url: string };
 
 const URL_REGEX = /https?:\/\/[^\s<>"'|]+/gi;
-const TRUSTED_ROOT_HOSTS = ['void0000.online'];
+const TRUSTED_ROOT_HOSTS = [import.meta.env?.VITE_PUBLIC_DOMAIN?.trim().toLowerCase()].filter(
+  (domain): domain is string => Boolean(domain),
+);
 
 const normalizeHostname = (hostname: string) => hostname.trim().toLowerCase().replace(/^www\./, '');
 

@@ -2,6 +2,8 @@ name: ${VOID_COMPOSE_PROJECT:-voidapp-prod}
 
 x-api-common: &api-common
   image: void-api:${VOID_IMAGE_TAG:?Run voidctl setup before using Compose}
+  environment:
+    PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
   env_file:
     - ./deploy/.env
   init: true
@@ -275,6 +277,7 @@ services:
         condition: service_healthy
     environment:
       PORT: "3001"
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
     command: ["node", "dist/server/entrypoints/account-server.js"]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -294,6 +297,7 @@ services:
     environment:
       PORT: "3002"
       MESSAGE_SERVICE_PORT: "3002"
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
     command: ["node", "dist/server/entrypoints/message-server.js"]
     volumes:
       - ipc-data:/run/voidapp
@@ -313,6 +317,7 @@ services:
     environment:
       PORT: "3004"
       SOCIAL_SERVICE_PORT: "3004"
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
     command: ["node", "dist/server/entrypoints/social-server.js"]
     networks:
       - data
@@ -331,6 +336,7 @@ services:
     environment:
       PORT: "3005"
       CONVERSATION_SERVICE_PORT: "3005"
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
     command: ["node", "dist/server/entrypoints/conversation-server.js"]
     networks:
       - data
@@ -384,6 +390,8 @@ services:
         VCS_REF: ${VOID_GIT_SHA}
     env_file:
       - ./deploy/.env
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
     depends_on:
       valkey:
         condition: service_healthy
@@ -415,6 +423,8 @@ services:
         VCS_REF: ${VOID_GIT_SHA}
         VITE_API_URL: ""
         VITE_GATEWAY_URL: ""
+        VITE_PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+        VITE_SAME_ORIGIN: "true"
         CDN_URL: ""
     depends_on:
       account:

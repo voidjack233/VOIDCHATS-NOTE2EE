@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { fromProjectRoot } from '../config/projectRoot.js';
 import { debugLog } from '../utils/debugLog.js';
 import { hashEmailVerificationCode } from '../utils/emailVerificationSecurity.js';
+import { getEmailFrom } from '../config/publicDomain.js';
 import type { Pool, PoolClient } from 'pg';
 
 // Create reusable transporter
@@ -49,7 +50,7 @@ export async function sendVerificationEmail(
   });
 
   await transporter.sendMail({
-    from: `"Void App" <no-reply@void0000.online>`,
+    from: getEmailFrom(),
     to: email,
     subject: 'Your Verification Code - Void App',
     text: `Your verification code is: ${code}${verificationUrl ? `\n\nOpen the verification page:\n${verificationUrl}` : ''}\n\nIt will expire in 15 minutes.\n\nIf you didn't request this code, please ignore this email.`,
@@ -69,7 +70,7 @@ export async function sendPasswordResetEmail(email: string, resetUrl: string): P
   });
 
   await transporter.sendMail({
-    from: `"Void App" <no-reply@void0000.online>`,
+    from: getEmailFrom(),
     to: email,
     subject: 'Reset Your Password - Void App',
     text: `Click the link to reset your password:\n\n${resetUrl}\n\nThis link is valid for 1 hour.\n\nIf you didn't request this, please ignore this email.`,

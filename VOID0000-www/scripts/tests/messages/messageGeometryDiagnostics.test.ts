@@ -6,6 +6,7 @@ import {
   selectCorrelatedMessageGeometryEvents,
   type MessageGeometryDebugEntry,
 } from '../../../src/components/Chat/MessageView/messageGeometryDiagnostics';
+import { getInviteCodeFromMessageUrl, isTrustedMessageUrl } from '../../../src/components/Chat/Messages/messageLinks';
 
 const createMessage = (overrides: Partial<Message> = {}): Message => ({
   conversation_id: 'conversation-1',
@@ -21,9 +22,15 @@ const createMessage = (overrides: Partial<Message> = {}): Message => ({
   ...overrides,
 });
 
-test('message geometry traits classify mixed async content without message text', () => {
+test('message geometry traits classify mixed async content without message text', (t) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { hostname: 'chat.example.test' } } });
+  t.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
   const traits = describeMessageGeometryTraits(createMessage({
-    content: 'See https://void0000.online/invite/example',
+    content: 'See https://chat.example.test/invite/example',
     reply_to: 'parent-message',
     attachments: [
       JSON.stringify({ url: 'https://cdn.example/photo.jpg', mime: 'image/jpeg' }),
@@ -44,6 +51,18 @@ test('message geometry traits classify mixed async content without message text'
     hasLinkPreview: true,
     hasInviteEmbed: true,
   });
+});
+
+test('invite recognition trusts the current host rather than an old domain', (t) => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { hostname: 'chat.example.test' } } });
+  t.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  });
+  assert.equal(getInviteCodeFromMessageUrl('https://chat.example.test/invite/test-code'), 'test-code');
+  assert.equal(isTrustedMessageUrl('https://chat.example.test.attacker.test/invite/test-code'), false);
+  assert.equal(isTrustedMessageUrl('https://old-domain.example/invite/test-code'), false);
 });
 
 test('layout-shift correlation keeps only nearby geometry events in chronological order', () => {

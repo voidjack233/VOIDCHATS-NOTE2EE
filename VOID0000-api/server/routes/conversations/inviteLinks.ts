@@ -5,6 +5,7 @@ import type { DatabaseQueryable } from '../../db/types.js';
 import { authenticateUser } from '../../middleware/jwt.js';
 import { BUCKET, GROUP_AVATAR_BUCKET } from '../../minio.js';
 import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
+import { getCdnOrigin } from '../../config/publicDomain.js';
 
 const router = Router();
 
@@ -52,7 +53,7 @@ function isInviteLinkActive(inviteLink: InviteLinkPreview | null): boolean {
   return true;
 }
 
-const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+const baseUrl = getCdnOrigin();
 
 const buildObjectUrl = (bucket: string, filename: string | null | undefined) => (
   filename ? `${baseUrl}/${bucket}/${filename}` : null

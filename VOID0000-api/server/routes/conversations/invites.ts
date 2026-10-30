@@ -11,6 +11,7 @@ import {
 } from '../../utils/groupMembership.js';
 import { canPerformGroupOperation, resolvePermissions } from '../../utils/groupPermissions.js';
 import { generateInviteCode } from './inviteLinks.js';
+import { getFrontendOrigin } from '../../config/publicDomain.js';
 
 const router = Router({ mergeParams: true });
 
@@ -27,7 +28,7 @@ interface MembershipAccessError {
 }
 
 function buildInviteUrl(code: string): string {
-  const frontUrl = process.env.FRONT_URL || 'https://void0000.online';
+  const frontUrl = getFrontendOrigin();
   return `${frontUrl.replace(/\/$/, '')}/invite/${code}`;
 }
 
