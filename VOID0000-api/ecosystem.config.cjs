@@ -80,6 +80,7 @@ const apps = [
   {
     name: 'voidapp-vmd-service',
     script: 'startup/run-vmd-go.sh',
+    cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
     interpreter: 'none',
@@ -136,6 +137,7 @@ const apps = [
   {
     name: 'voidapp-gateway-phoenix',
     script: 'startup/run-phoenix-gateway.sh',
+    cwd: __dirname,
     instances: 1,
     exec_mode: 'fork',
     interpreter: 'none',
